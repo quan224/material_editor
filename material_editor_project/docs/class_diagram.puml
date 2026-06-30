@@ -1,0 +1,267 @@
+@startuml 材质编辑器类图（课1-5已实现部分）
+
+' ============ 全局样式 ============
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 70
+skinparam ranksep 60
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #FAFCFF
+    HeaderBackgroundColor #4A6FB1
+    HeaderFontColor white
+    BorderColor #2C3E50
+    ArrowColor #34495E
+}
+
+' ============ 颜色分组（按子系统） ============
+package "Core（基础设施）" #E8F4FD {
+    class UUID <<struct>> {
+        +uint64_t high
+        +uint64_t low
+        +{static} Generate() : UUID
+        +{static} Invalid() : UUID
+        +ToString() : std::string
+        +IsValid() : bool
+        +operator==(o) : bool
+        +operator<(o) : bool
+    }
+
+    class RefCounted <<utility>> {
+        .. 模板别名 ..
+        +template<T> Ref<T> = std::shared_ptr<T>
+        +template<T> WeakRef<T> = std::weak_ptr<T>
+        +template<T, Args> MakeRef(...) : Ref<T>
+    }
+
+    class Singleton<T> <<template>> {
+        +{static} GetInstance() : T&
+        #Singleton()
+        -Singleton(const Singleton&)
+    }
+
+    class Logger <<utility>> {
+        +{static} Log(level, fmt, ...)
+        ME_LOG_* 宏
+    }
+}
+
+package "MaterialGraph（数据模型）" #FFF4E8 {
+    enum EPinDataDirection {
+        Input
+        Output
+    }
+
+    enum EValueType {
+        Unknown
+        Float1
+        Float2
+        Float3
+        Float4
+    }
+
+    class Types <<utility>> {
+        .. 内联工具函数 ..
+        +CanImplicitConvert(from, to) : bool
+        +GetComponentCount(type) : int
+        +ValueTypeToString(type) : const char*
+    }
+
+    class Pin {
+        +UUID id
+        +std::string name
+        +EValueType type
+        +EPinDataDirection direction
+        +UUID ownerNodeId
+        +std::string defaultValue
+        +std::vector<PinConnection> connections
+        +CanConnectTo(other) : bool
+        +IsConnected() : bool
+        +IsInput() / IsOutput() : bool
+    }
+
+    class Pin::PinConnection <<struct>> {
+        +UUID connectionId
+        +UUID otherPinId
+        +UUID otherNodeId
+    }
+
+    class Node {
+        +UUID id
+        +std::string title
+        +std::string typeName
+        +QPointF position
+        +std::vector<Pin> inputPins
+        +std::vector<Pin> outputPins
+        +nlohmann::json parameters
+        +FindPin(id) : Pin*
+        +FindInputPin(name) : Pin*
+        +FindOutputPin(name) : Pin*
+        +InputCount() / OutputCount() : int
+    }
+
+    class Connection <<struct>> {
+        +UUID id
+        +UUID sourceNodeId
+        +UUID sourcePinId
+        +UUID targetNodeId
+        +UUID targetPinId
+    }
+
+    class Graph {
+        -std::map<UUID, Ref<Node>> nodes_
+        -std::map<UUID, Connection> connections_
+        -UUID outputNodeId_
+        +AddNode(typeName, pos) : Node*
+        +AddNode(node) : Node*
+        +RemoveNode(nodeId)
+        +FindNode(id) : Node*
+        +GetNodes() : const map&
+        +Connect(srcPinId, tgtPinId) : bool
+        +Disconnect(connId)
+        +GetOutputNode() : Node*
+        +EnsureOutputNode()
+        __
+        «signal» NodeAdded(Node*)
+        «signal» NodeRemoved(UUID)
+        «signal» ConnectionAdded(Connection)
+        «signal» ConnectionRemoved(UUID)
+        «signal» GraphChanged()
+    }
+
+    class NodeFactory {
+        -std::vector<NodeTypeInfo> registry_
+        -std::map<std::string, size_t> nameToIndex_
+        +Register(typeName, disp, cat, pins)
+        +Create(typeName, pos) : Ref<Node>
+        +FindType(typeName) : NodeTypeInfo*
+        +GetAllTypes() : const vector&
+        +GetTypesByCategory(cat) : vector<const NodeTypeInfo*>
+    }
+
+    class NodeFactory::NodeTypeInfo <<struct>> {
+        +std::string typeName
+        +std::string displayName
+        +std::string category
+        +std::vector<PinTemplate> pins
+    }
+
+    class GraphCompiler {
+        -Graph* graph_
+        +GraphCompiler(graph)
+        +TopologicalSort(hasCycle*) : vector<Node*>
+        +HasCycles() : bool
+        -Visit(node, visited, inStack, result, hasCycle)
+    }
+}
+
+package "Compiler（编译器，部分实现）" #FCE4EC {
+    class TypeSystem {
+        +{static} GetArithmeticResultType(a, b) : EValueType
+        +{static} GetComponentCount(type) : int
+        +{static} ToHLSLType(type) : const char*
+        __
+        .. 尚未实现 ..
+        MaterialCompiler    (课6)
+        CodeChunk           (课8)
+        HLSLGenerator       (课8)
+    }
+}
+
+package "Expression（表达式基类）" #F3E5F5 {
+    class Expression <<interface>> {
+        +{abstract} GetDisplayName() : std::string
+        +{abstract} GetTypeName() : std::string
+        +{abstract} GetCategory() : std::string
+        +{abstract} GetInputPins() : vector<ExpressionPinDesc>
+        +{abstract} GetOutputPins() : vector<ExpressionPinDesc>
+        +{abstract} Compile(compiler, ownerNode) : vector<int32_t>
+        +GetParameters() : vector<ExpressionParamDesc>
+        +SetParameter(name, json)
+        +GetParameter(name) : json
+        +GetCategoryColor() : std::string
+        __
+        .. 子类示例（课7待实现） ..
+        ExprAdd, ExprConstant, ExprParameter ...
+    }
+}
+
+' ============ 关系 ============
+
+' 继承 / 模板实例化
+NodeFactory --|> Singleton<NodeFactory> : CRTP 单例
+
+' 组合（拥有所有权）
+Graph *-- Node : nodes_ 持有\nRef<Node>
+Graph *-- Connection : connections_
+Node *-- Pin : inputPins / outputPins
+Pin *-- Pin::PinConnection : connections
+NodeFactory *-- NodeFactory::NodeTypeInfo : registry_
+
+' 引用（按 UUID 索引，无指针）
+Pin ..> UUID : ownerNodeId / otherNodeId
+Connection ..> UUID : sourcePinId / targetPinId
+GraphCompiler ..> Graph : graph_ 指针
+Graph ..> Node : 按 UUID 查找
+
+' 类型依赖
+Pin ..> EValueType : type
+Pin ..> EPinDataDirection : direction
+Types ..> EValueType
+TypeSystem ..> EValueType
+NodeFactory::NodeTypeInfo ..> EValueType
+NodeFactory::NodeTypeInfo ..> EPinDataDirection
+
+' 信号订阅（未来）
+Graph ..> Node : NodeAdded\n(课10 UI 监听)
+
+' 共享 ptr
+RefCounted ..> Node : Ref<Node>\nGraph 内部使用
+
+' 编译相关（部分）
+GraphCompiler ..> Node : 拓扑排序结果
+TypeSystem ..> EValueType : 类型推导
+
+' Expression 编译契约（课7）
+Expression ..> MaterialCompiler : 编译时调用\n(待实现)
+
+' ============ 标注已实现/未实现 ============
+note bottom of Graph
+  <b>课1-3 已实现</b>
+  · 节点增删 / 引脚连接 / 环检测
+  · Qt 信号槽已连通但无监听者
+  · 课10 UI 接 NodeAdded/ConnectionAdded
+  · 课6 编译器接 GraphChanged
+end note
+
+note bottom of GraphCompiler
+  <b>课4 已实现</b>
+  · DFS 后序遍历
+  · inStack + visited 双集合检测环
+  · 循环节点会被跳过
+end note
+
+note right of TypeSystem
+  <b>课5 已实现</b>
+  · 类型推导（Float1 自动 broadcast）
+  · 未知类型直接返回 Unknown
+  · 不掩盖错误（你的改进）
+end note
+
+note right of Expression
+  <b>课5 末尾 已实现</b>
+  · 纯抽象接口
+  · Compile 签名：(compiler, ownerNode)
+  · ownerNode 在编译期临时传入，
+    不存为成员（线程安全）
+end note
+
+note bottom of NodeFactory
+  <b>课3 已实现</b>
+  · 注册时填 NodeTypeInfo.pins
+  · Create 时把 PinTemplate 翻译成 Pin
+  · 双索引：vector + map（性能优化）
+end note
+
+@enduml

@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>材质编辑器 - 架构与阶段划分</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; margin: 20px; background: #f7f7fa; }
+  h1 { color: #2c3e50; }
+  h2 { color: #34495e; border-left: 4px solid #3498db; padding-left: 10px; margin-top: 36px; }
+  .legend { background: #fff; border: 1px solid #ddd; padding: 12px 18px; display: inline-block; border-radius: 6px; margin-bottom: 14px; }
+  .legend span { display: inline-block; padding: 4px 10px; border-radius: 4px; margin-right: 10px; font-size: 13px; }
+  .edit { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+  .compile { background: #cce5ff; color: #004085; border: 1px solid #b8daff; }
+  .runtime { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+  .shared { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+  .mermaid { background: #fff; padding: 16px; border-radius: 6px; border: 1px solid #e0e0e0; }
+</style>
+</head>
+<body>
+<h1>材质编辑器 — 架构与阶段划分</h1>
+
+<div class="legend">
+  <span class="shared">■ 共享数据模型（不分阶段）</span>
+  <span class="edit">■ 编辑时（Edit Time）</span>
+  <span class="compile">■ 编译时（Compile Time）</span>
+  <span class="runtime">■ 运行时（Render Time）</span>
+</div>
+
+<h2>1. 分层架构 + 阶段着色</h2>
+<div class="mermaid">
+classDiagram
+  direction TB
+
+  class Types_h {
+    +EValueType
+    +EPinDataDirection
+    +CanImplicitConvert()
+    +GetComponentCount()
+  }
+  class Node {
+    +UUID id
+    +string typeName
+    +QPointF position
+    +vector~Pin~ inputPins
+    +vector~Pin~ outputPins
+  }
+  class Pin {
+    +UUID id
+    +string name
+    +EValueType type
+    +EPinDataDirection direction
+    +IsConnected()
+  }
+  class Graph {
+    +AddNode()
+    +Connect()
+    +GetOutputNode()
+    +FindNode()
+  }
+  class NodeFactory {
+    +Register()
+    +Create()
+  }
+  class GraphCompiler {
+    +TopologicalSort()
+    +HasCycles()
+  }
+
+  class Reflection_h {
+    +FieldDesc
+    +ClassDesc
+    +Registry
+    +Accessor~T~
+  }
+  class ReflectionMacros_h {
+    ME_BEGIN_CLASS
+    ME_FIELD
+    ME_END_CLASS
+  }
+
+  class Expression {
+    <<abstract>>
+    +GetClassDesc()*
+    +GetInputPins()*
+    +GetOutputPins()*
+    +Compile()*
+    +GetParameters()
+    +SetParameter()
+    +GetParameter()
+  }
+  class ExprAdd {
+    +Compile()
+  }
+  class ExprConstant {
+    +float R, G, B
+  }
+
+  class TypeSystem_h {
+    +GetArithmeticResultType()
+    +ToHLSLType()
+  }
+  class MaterialCompiler {
+    +Compile()
+  }
+  class CodeChunk {
+    +string code
+    +EValueType type
+  }
+  class HLSLGenerator {
+    +Generate()
+  }
+
+  class NodeGraphicsItem {
+    +paint()
+    +GetCategoryColor()
+  }
+  class PinGraphicsItem {
+    +GetConnectionPoint()
+  }
+  class GraphWidget {
+    +OnConnectPins()
+  }
+  class MainWindow {
+    +QGraphicsView
+    +QDockWidget
+  }
+
+  %% 关系
+  Pin --> Node : belongs to
+  Node --> Graph : managed by
+  GraphCompiler --> Graph : reads
+  NodeFactory --> Node : creates
+
+  Expression <|-- ExprAdd
+  Expression <|-- ExprConstant
+  ExprConstant ..> Reflection_h : uses macros
+
+  MaterialCompiler --> GraphCompiler : uses
+  MaterialCompiler --> Expression : calls Compile
+  HLSLGenerator --> TypeSystem_h : ToHLSLType
+  Expression --> CodeChunk : produces
+  HLSLGenerator --> CodeChunk : assembles
+
+  NodeGraphicsItem --> Node
+  PinGraphicsItem --> Pin
+  GraphWidget --> NodeGraphicsItem
+  GraphWidget --> Graph
+
+  NodeFactory ..> Expression : mirror pin layout
+</div>
+
+<h2>2. 三大阶段时序（什么阶段做什么）</h2>
+<div class="mermaid">
+flowchart LR
+  subgraph EDIT["🟢 编辑时 Edit Time"]
+    direction TB
+    E1["UI: 用户拖拽节点<br/>GraphWidget"]
+    E2["Graph: AddNode / Connect<br/>建数据模型"]
+    E3["NodeGraphicsItem::paint()<br/>实时绘制"]
+    E1 --> E2 --> E3
+  end
+
+  subgraph COMPILE["🔵 编译时 Compile Time<br/>(用户点击编译按钮)"]
+    direction TB
+    C1["GraphCompiler::TopologicalSort<br/>DFS 后序排节点"]
+    C2["MaterialCompiler<br/>按序调用 Expression::Compile"]
+    C3["Expression::Compile<br/>产出 CodeChunk"]
+    C4["HLSLGenerator<br/>TypeSystem::ToHLSLType 拼字符串"]
+    C5["输出 HLSL 文本"]
+    C1 --> C2 --> C3 --> C4 --> C5
+  end
+
+  subgraph RUNTIME["🔴 运行时 Render Time<br/>(GPU 执行)"]
+    direction TB
+    R1["DX12 编译 HLSL → PSO"]
+    R2["GPU 逐像素执行<br/>材质像素着色"]
+    R1 --> R2
+  end
+
+  EDIT -->|"用户点编译"| COMPILE
+  COMPILE -->|"HLSL 交给 GPU"| RUNTIME
+</div>
+
+<h2>3. 各模块归属阶段</h2>
+<div class="mermaid">
+flowchart TB
+  subgraph shared["🟡 共享数据模型（任何时候都活着）"]
+    S1["MaterialGraph/Public/Types.h<br/>EValueType / EPinDataDirection<br/>GetComponentCount / CanImplicitConvert"]
+    S2["MaterialGraph/Public/{Node,Pin,Graph}.h<br/>节点图数据结构"]
+    S3["Reflection/Public/{Reflection,ReflectionMacros}.h<br/>ClassDesc / FieldDesc / Registry"]
+    S4["Expression/Public/Expression.h<br/>表达式抽象基类 + 反射参数 API"]
+  end
+
+  subgraph edit["🟢 编辑时（仅编辑器需要）"]
+    ED1["UI/GraphicsItems/{Node,Pin}GraphicsItem<br/>Qt 节点渲染"]
+    ED2["UI/MainWindow, GraphWidget<br/>交互、右键菜单"]
+    ED3["MaterialGraph/Public/NodeFactory.h<br/>创建模板节点"]
+  end
+
+  subgraph compile["🔵 编译时（编译按钮触发）"]
+    CO1["MaterialGraph/Public/GraphCompiler.h<br/>拓扑排序、循环检测"]
+    CO2["Compiler/Public/TypeSystem.h<br/>GetArithmeticResultType / ToHLSLType"]
+    CO3["Compiler/Public/{MaterialCompiler,CodeChunk}.h<br/>遍历节点编译"]
+    CO4["Compiler/Public/HLSLGenerator.h<br/>组装 HLSL 代码"]
+  end
+
+  subgraph runtime["🔴 运行时（GPU）"]
+    RT1["Renderer/DX12*<br/>GPU 管线执行"]
+    RT2["HLSL Shader 字节码<br/>逐像素运行"]
+  end
+
+  shared --> edit
+  shared --> compile
+  compile --> runtime
+</div>
+
+<h2>4. 类型系统函数分布（清晰版）</h2>
+<div class="mermaid">
+classDiagram
+  class Types_h {
+    «数据模型层 · 共享»
+    +EValueType enum
+    +EPinDataDirection enum
+    +CanImplicitConvert(from, to) bool
+    +GetComponentCount(type) int
+  }
+  class TypeSystem_h {
+    «编译器专属 · 编译时»
+    +GetArithmeticResultType(a,b) EValueType
+    +ToHLSLType(type) const char*
+  }
+  Types_h <|-- TypeSystem_h
+  note for Types_h "零编译器知识：<br/>不出现 HLSL 字符串、<br/>不出现类型推导规则"
+  note for TypeSystem_h "编译器内部规则：<br/>HLSL 关键字、<br/>类型运算结果推导"
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'default',
+    themeVariables: {
+      primaryColor: '#fff8e1',
+      primaryTextColor: '#5d4037',
+      primaryBorderColor: '#ffa000',
+      lineColor: '#5d4037',
+      fontFamily: 'Microsoft YaHei, sans-serif',
+      fontSize: '14px'
+    }
+  });
+</script>
+</body>
+</html>

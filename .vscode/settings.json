@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "*.h": "cpp"
+    },
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "cmake.buildDirectory": "${workspaceFolder}/material_editor_project/build",
+    "cmake.sourceDirectory": "${workspaceFolder}/material_editor_project",
+    "cmake.configureOnOpen": true,
+    "cmake.automaticReconfigure": false,
+    "cmake.showConfigureWithDebuggerNotification": false,
+    "cmake.showNotAllDocumentsSavedWarning": false,
+    "git.enabled": false,
+    "git.autoRepositoryDetection": false
+}

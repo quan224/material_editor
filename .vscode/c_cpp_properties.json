@@ -1,0 +1,27 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "C:/vcpkg/installed/x64-windows/include",
+                "C:/vcpkg/installed/x64-windows/include/Qt6",
+                "C:/vcpkg/installed/x64-windows/include/Qt6/QtCore",
+                "C:/vcpkg/installed/x64-windows/include/Qt6/QtGui",
+                "C:/vcpkg/installed/x64-windows/include/Qt6/QtWidgets",
+                "C:/vcpkg/installed/x64-windows/include/Qt6/QtOpenGL",
+                "C:/vcpkg/installed/x64-windows/include/Qt6/QtOpenGLWidgets"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-msvc-x64",
+            "compilerPath": "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe"
+        }
+    ],
+    "version": 4
+}

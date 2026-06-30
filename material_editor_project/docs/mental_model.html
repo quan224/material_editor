@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>材质编辑器 - 心智模型 v2</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; margin: 24px; background: #f7f7fa; color: #2c3e50; line-height: 1.6; }
+  h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+  h2 { color: #34495e; border-left: 4px solid #3498db; padding-left: 12px; margin-top: 40px; }
+  h3 { color: #16a085; margin-top: 28px; }
+  .layer-card { background: #fff; border-left: 5px solid; padding: 12px 16px; margin: 10px 0; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }
+  .layer-card.l1 { border-color: #888; }
+  .layer-card.l2 { border-color: #2980b9; }
+  .layer-card.l3 { border-color: #c0392b; }
+  .layer-card.l4 { border-color: #8e44ad; }
+  .layer-card.l5 { border-color: #16a085; }
+  .layer-card .name { font-weight: bold; font-size: 1.1em; }
+  .layer-card .why { color: #7f8c8d; font-style: italic; }
+  code { background: #ecf0f1; padding: 1px 5px; border-radius: 3px; font-family: Consolas, monospace; }
+  .mermaid { background: #fff; padding: 16px; border-radius: 6px; border: 1px solid #e0e0e0; margin: 12px 0; }
+  .legend span { display: inline-block; padding: 4px 10px; border-radius: 4px; margin-right: 10px; font-size: 13px; }
+  .legend { margin: 12px 0; }
+  .l-edit { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+  .l-compile { background: #cce5ff; color: #004085; border: 1px solid #b8daff; }
+  .l-runtime { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+  .l-shared { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+  .takeaway { background: #fffde7; border-left: 5px solid #f1c40f; padding: 12px 18px; margin: 16px 0; border-radius: 4px; }
+  .takeaway::before { content: "💡 心智锚点："; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>材质编辑器 — 心智模型（v2，2026-06-29）</h1>
+
+<div class="legend">
+  <span class="l-shared">🟡 共享数据层</span>
+  <span class="l-edit">🟢 编辑时</span>
+  <span class="l-compile">🔵 编译时</span>
+  <span class="l-runtime">🔴 运行时</span>
+</div>
+
+<h2>1. 五层金字塔 —— 自下而上依赖</h2>
+
+<div class="layer-card l1">
+  <div class="name">L1 · 基础工具层（Core）</div>
+  <div>文件：<code>Core/Public/{UUID.h, Logger.h, Singleton.h, MathTypes.h}</code></div>
+  <div>内容：UUID 生成、日志、单例模板、Vec2/3/4 数学类型</div>
+  <div class="why">为什么存在：所有人都要用的"零依赖"工具，连反射都依赖它</div>
+</div>
+
+<div class="layer-card l2">
+  <div class="name">L2 · 数据模型层（MaterialGraph）</div>
+  <div>文件：<code>MaterialGraph/Public/{Types.h, Node.h, Pin.h, Graph.h, NodeFactory.h, GraphCompiler.h}</code></div>
+  <div>内容：节点/引脚/连接的"数据结构"（不是 UI），类型枚举 EValueType</div>
+  <div class="why">为什么存在：把"图"这个概念独立出来，UI 和编译器都能用同一份</div>
+</div>
+
+<div class="layer-card l3">
+  <div class="name">L3 · 反射系统（Reflection）</div>
+  <div>文件：<code>Reflection/Public/{Reflection.h, ReflectionMacros.h}</code></div>
+  <div>内容：FieldDesc / ClassDesc / Registry / Accessor / ME_* 宏</div>
+  <div class="why">为什么存在：让 UI 和序列化"不认识具体子类也能枚举/读/写字段"</div>
+</div>
+
+<div class="layer-card l4">
+  <div class="name">L4 · 表达式层（Expression）</div>
+  <div>文件：<code>Expression/Public/Expression.h, Expression/Private/Expression.cpp</code></div>
+  <div>内容：表达式抽象基类（4 个纯虚 + 3 个反射驱动 API），具体子类 ExprAdd / ExprConstant 等</div>
+  <div class="why">为什么存在：每种运算（Add、Mul、Constant...）一个子类，统一接口</div>
+</div>
+
+<div class="layer-card l5">
+  <div class="name">L5 · 应用层（UI / Compiler / Renderer）</div>
+  <div>文件：<code>UI/、Compiler/、Renderer/</code></div>
+  <div>内容：Qt 节点图界面、HLSL 编译器、DX12 渲染器</div>
+  <div class="why">为什么存在：用户最终看到的、用到的、跑起来的东西</div>
+</div>
+
+<div class="takeaway">
+每一层只能引用下方层，不能引用上方层。这就是为什么 <code>Types.h</code> 不能出现 HLSL 字符串（HLSL 在 L5），<code>Reflection.h</code> 不能出现 Expression（Expression 在 L4）。
+</div>
+
+<h2>2. 反射系统的内部结构（当前真实状态）</h2>
+
+<div class="mermaid">
+classDiagram
+  direction TB
+
+  class FieldDesc {
+    +string name
+    +FieldType type
+    +size_t offset
+    +void(*toJson)(void*, size_t, json&amp;)
+    +void(*fromJson)(void*, size_t, const json&amp;)
+    +json default_value
+  }
+
+  class ClassDesc {
+    +string type_name
+    +string display_name
+    +string category
+    +string category_color
+    +vector~FieldDesc~ fields
+    +find(name) FieldDesc*
+  }
+
+  class Registry {
+    <<Singleton>>
+    +RegisterClass(ClassDesc)
+    +Find(typeName) ClassDesc*
+    +GetAllTypeNames() vector~string~
+  }
+
+  class Accessor~float~ {
+    <<template specialization>>
+    +static toJson(void*, size_t, jsonamp;)
+    +static fromJson(void*, size_t, const jsonamp;)
+  }
+  class Accessor~int32_t~ {
+    +static toJson/fromJson
+  }
+  class Accessor~bool~ {
+    +static toJson/fromJson
+  }
+  class Accessor~string~ {
+    +static toJson/fromJson
+  }
+  class Accessor~Vec2~ {
+    +static toJson/fromJson
+  }
+  class Accessor~Vec3~ {
+    +static toJson/fromJson
+  }
+  class Accessor~Vec4~ {
+    +static toJson/fromJson
+  }
+
+  ClassDesc "1" o-- "many" FieldDesc
+  Registry "1" o-- "many" ClassDesc
+  FieldDesc ..> Accessor~float~ : 函数指针指向
+  FieldDesc ..> Accessor~Vec3~ : 函数指针指向
+</div>
+
+<h3>反射的本质 —— 三层"擦除"</h3>
+
+反射把"读写字段"这件事拆成三层，从编译期到运行期逐步类型擦除：
+
+<div class="mermaid">
+flowchart LR
+  subgraph T1["🟦 编译期：类型安全"]
+    A1["Accessor&lt;float&gt;::toJson<br/>(obj, offset, out)"]
+    A2["Accessor&lt;Vec3&gt;::toJson<br/>(obj, offset, out)"]
+    A1 -.->|"模板特化<br/>每种类型一份"| A2
+  end
+
+  subgraph T2["🟡 注册期：类型擦除为函数指针"]
+    B["FieldDesc::toJson = &amp;Accessor&lt;float&gt;::toJson<br/>（函数指针，签名统一）"]
+  end
+
+  subgraph T3["🟢 运行期：完全类型无关"]
+    C["field-&gt;toJson(this, offset, out)<br/>（调用方不知道是 float 还是 Vec3）"]
+  end
+
+  T1 --> T2 --> T3
+</div>
+
+<div class="takeaway">
+反射的核心是 <b>FieldDesc 里的两个函数指针</b>。它们把"编译期才知道的类型 T"擦除成"运行期统一的 void* 签名"。调用方拿一个 FieldDesc 就能读写字段，不需要知道字段是 float 还是 Vec3。
+</div>
+
+<h2>3. Expression 类的当前形态</h2>
+
+<div class="mermaid">
+classDiagram
+  direction TB
+
+  class Expression {
+    <<abstract>>
+    +virtual GetClassDesc()* ClassDesc*
+    +virtual GetInputPins()* vector~ExpressionPinDesc~
+    +virtual GetOutputPins()* vector~ExpressionPinDesc~
+    +virtual Compile(compiler, node)* vector~int~
+    +GetParameters() vector~FieldDesc~
+    +SetParameter(name, json)
+    +GetParameter(name) json
+  }
+
+  class TestExpr {
+    +float scale
+    +Vec3 color
+    +bool enabled
+    +string label
+    +GetClassDesc() — 用 ME_END_CLASS 自动生成
+  }
+
+  class ExprAdd {
+    (课7 实现)
+    +GetInputPins() → [A, B]
+    +Compile() → compiler-&gt;Add(A, B)
+  }
+
+  class ExprConstant {
+    (课7 实现)
+    +float R, G, B
+  }
+
+  Expression <|-- TestExpr
+  Expression <|-- ExprAdd
+  Expression <|-- ExprConstant
+
+  note for Expression "4 个纯虚 = 子类必须自己实现<br/>3 个非虚 = 反射自动驱动，子类不用碰"
+  note for TestExpr "ME_BEGIN_CLASS/ME_FIELD/ME_END_CLASS<br/>3 行宏自动生成 GetClassDesc"
+</div>
+
+<h3>Expression 的 4 个纯虚 vs 3 个非虚 —— 关键区别</h3>
+
+<table border="1" cellpadding="8" style="border-collapse: collapse; background: #fff;">
+<tr style="background: #34495e; color: #fff;"><th>API</th><th>性质</th><th>谁实现</th><th>为什么</th></tr>
+<tr>
+  <td><code>GetClassDesc</code></td>
+  <td>纯虚 → 宏自动实现</td>
+  <td>ME_END_CLASS 宏</td>
+  <td>每个子类的字段布局不同，必须子类声明；但宏让声明变成 1 行</td>
+</tr>
+<tr>
+  <td><code>GetInputPins / GetOutputPins</code></td>
+  <td>纯虚 → 手动实现</td>
+  <td>子类自己写</td>
+  <td>引脚布局 = 运算语义，与字段不同（字段用反射，引脚用结构化声明）</td>
+</tr>
+<tr>
+  <td><code>Compile</code></td>
+  <td>纯虚 → 手动实现</td>
+  <td>子类自己写</td>
+  <td>每种运算的 HLSL 生成逻辑不同</td>
+</tr>
+<tr>
+  <td><code>GetParameters / Get/SetParameter</code></td>
+  <td><b>非虚</b> → 基类统一实现</td>
+  <td>Expression.cpp</td>
+  <td>走反射路径：基类拿到 ClassDesc 就能读写所有字段，子类不用管</td>
+</tr>
+</table>
+
+<h2>4. 三大阶段的数据流（节点点击 → GPU 跑）</h2>
+
+<div class="mermaid">
+flowchart TB
+  subgraph EDIT["🟢 编辑时（用户操作）"]
+    direction TB
+    E1["用户拖拽节点<br/>NodeFactory::Create()"]
+    E2["Graph::AddNode()<br/>把 Node* 加入图"]
+    E3["NodeGraphicsItem::paint()<br/>读 GetClassDesc() 画节点"]
+    E4["属性面板（课13）<br/>遍历 GetParameters() 生成 UI<br/>用户改值 → SetParameter()"]
+    E1 --> E2 --> E3
+    E3 -.用户选中.-> E4
+  end
+
+  subgraph COMPILE["🔵 编译时（点编译按钮）"]
+    direction TB
+    C1["GraphCompiler::TopologicalSort<br/>DFS 拓扑排序所有节点"]
+    C2["MaterialCompiler::Compile<br/>按序对每个节点调 expr-&gt;Compile()"]
+    C3["ExprCompile 内部<br/>通过 compiler-&gt;Add(A, B) 等 API 生成 CodeChunk"]
+    C4["HLSLGenerator<br/>TypeSystem::ToHLSLType() 拼字符串"]
+    C5["完整 HLSL 文本"]
+    C1 --> C2 --> C3 --> C4 --> C5
+  end
+
+  subgraph RUNTIME["🔴 运行时（GPU 执行）"]
+    direction TB
+    R1["DX12 把 HLSL 编译成着色器字节码"]
+    R2["GPU 逐像素执行"]
+    R1 --> R2
+  end
+
+  EDIT -->|点编译按钮| COMPILE
+  COMPILE -->|HLSL 交给 GPU| RUNTIME
+</div>
+
+<h2>5. 一段"用户改 Vec3 颜色"的完整路径</h2>
+
+<div class="mermaid">
+sequenceDiagram
+  participant U as 用户
+  participant UI as 属性面板 (Qt)
+  participant E as ExprConstant 实例
+  participant CD as ClassDesc (静态)
+  participant F as FieldDesc "color"
+  participant A as Accessor&lt;Vec3&gt;
+
+  U->>UI: 拖动颜色滑块到 (0.5, 0.2, 0.1)
+  UI->>E: SetParameter("color", [0.5, 0.2, 0.1])
+  E->>CD: GetClassDesc()->find("color")
+  CD-->>E: FieldDesc* (offset=12, fromJson=&Accessor<Vec3>::fromJson)
+  E->>F: fromJson(this, offset=12, json=[0.5,0.2,0.1])
+  F->>A: 调用 (&this->color, json)
+  A->>A: reinterpret_cast Vec3* at offset 12
+  A->>A: 从 json 取 x,y,z 写入
+  A-->>E: 完成
+  E-->>UI: ok
+
+  Note over E: this->color 现在是 Vec3(0.5, 0.2, 0.1)
+  Note over UI,E: 全程不知道"color 是 Vec3"，<br/>靠 FieldDesc 函数指针擦除类型
+</div>
+
+<h2>6. 文件依赖关系（哪些 include 哪些）</h2>
+
+<div class="mermaid">
+flowchart BT
+  Core["🟦 L1 Core<br/>UUID / Logger / Singleton / MathTypes"]
+
+  Types["🟡 L2 Types.h<br/>EValueType / GetComponentCount"]
+  Node["🟡 L2 Node/Graph/Pin<br/>(数据结构)"]
+
+  Refl["🟡 L3 Reflection.h<br/>FieldDesc / ClassDesc / Registry / Accessor"]
+  ReflMacros["🟡 L3 ReflectionMacros.h<br/>ME_BEGIN_CLASS / ME_FIELD / ME_END_CLASS"]
+
+  Expr["🟣 L4 Expression.h<br/>抽象基类"]
+  ExprImpl["🟣 L4 Expression.cpp<br/>Get/Set/GetParameter 实现"]
+
+  TypeSys["🔵 L5 TypeSystem.h<br/>GetArithmeticResultType / ToHLSLType"]
+  HLSLGen["🔵 L5 HLSLGenerator / MaterialCompiler"]
+
+  Core --> Types
+  Types --> Node
+  Core --> Refl
+  Refl --> ReflMacros
+  Types --> Expr
+  Refl --> Expr
+  ReflMacros --> Expr
+  Expr --> ExprImpl
+  Types --> TypeSys
+  Expr --> HLSLGen
+  TypeSys --> HLSLGen
+</div>
+
+<h2>7. 关键概念对比表（不要混淆）</h2>
+
+<table border="1" cellpadding="8" style="border-collapse: collapse; background: #fff;">
+<tr style="background: #2c3e50; color: #fff;"><th>概念</th><th>是什么</th><th>不是什么</th></tr>
+<tr>
+  <td><b>FieldDesc</b></td>
+  <td>一个字段的元信息（名字、类型、offset、读写函数指针）</td>
+  <td>不是字段值本身</td>
+</tr>
+<tr>
+  <td><b>ClassDesc</b></td>
+  <td>一个类的所有 FieldDesc 集合 + 元数据（type_name 等）</td>
+  <td>不是类实例</td>
+</tr>
+<tr>
+  <td><b>Accessor&lt;T&gt;</b></td>
+  <td>编译期的"类型安全读写器"（模板特化）</td>
+  <td>不存任何状态，纯函数集合</td>
+</tr>
+<tr>
+  <td><b>Registry</b></td>
+  <td>类型名 → ClassDesc 的全局表（手动注册）</td>
+  <td>不存对象实例</td>
+</tr>
+<tr>
+  <td><b>EValueType</b></td>
+  <td>引脚数据类型（Float1/2/3/4），编译器关心</td>
+  <td>不是反射的 FieldType</td>
+</tr>
+<tr>
+  <td><b>FieldType</b></td>
+  <td>反射字段类型（Float/Int/Bool/...），反射内部用</td>
+  <td>不是 EValueType</td>
+</tr>
+<tr>
+  <td><b>ExpressionPinDesc</b></td>
+  <td>引脚布局声明（名字、类型、默认值）</td>
+  <td>不是 Pin（Pin 是图里的实际连接点）</td>
+</tr>
+</table>
+
+<h2>8. 你应该这样理解整个项目</h2>
+
+<h3>🎯 一句话总结</h3>
+<div class="takeaway">
+这个项目把"材质编辑器"拆成了 <b>5 层金字塔</b>，<b>反射系统</b>是 L3，作用是让 UI 和序列化层在<b>不知道子类</b>的情况下也能枚举/读/写<b>所有字段</b>。
+</div>
+
+<h3>🧭 三句话记住架构</h3>
+<ol>
+  <li><b>L1-L2 是数据</b>：UUID、Vec3、Node、Pin、Graph —— 不依赖任何上层</li>
+  <li><b>L3 反射</b>：编译期把字段的"类型 T"擦除成运行期统一的函数指针签名</li>
+  <li><b>L4-L5 是行为</b>：Expression 子类声明字段+引脚+编译逻辑，UI/Compiler 调用它们</li>
+</ol>
+
+<h3>📚 课 5 你学到的 C++ 技能</h3>
+<ul>
+  <li><b>模板偏特化</b>：每个 Accessor&lt;T&gt; 是一个特化</li>
+  <li><b>函数指针类型擦除</b>：FieldDesc::toJson 把模板函数存成统一签名</li>
+  <li><b>offsetof</b>：通过偏移量定位字段在对象内的位置</li>
+  <li><b>reinterpret_cast + static_cast&lt;char*&gt;</b>：字节级指针运算</li>
+  <li><b>if constexpr + static_assert</b>：编译期类型分发</li>
+  <li><b>宏编程</b>：多行宏、字符串化 #、记号粘贴 ##</li>
+  <li><b>const_cast</b>：在 const 成员函数里调非 const 函数指针</li>
+  <li><b>Singleton 模式</b>：Meyers singleton 避免静态初始化顺序问题</li>
+</ul>
+
+<h3>🔄 "改来改去"的统一解释</h3>
+<p>这一段时间的反复修改，本质上都是在解决两个问题：</p>
+<ol>
+  <li><b>设计一致性问题</b>：FieldType 缺 String、Accessor::fromJson 没 const、Registry::Find 逻辑反 —— 这些是<b>设计中没暴露的不一致</b>，编译器跑起来才暴露</li>
+  <li><b>分层依赖问题</b>：ValueTypeToString 该不该在 Types.h、宏该不该用 lambda 包一层 —— 这些是在<b>争论"哪个东西属于哪一层"</b></li>
+</ol>
+<p>解决之后，代码就稳定了。后面课 6（编译器）、课 7（10 个表达式子类）会很简单：基本就是<b>用反射 + 实现 Compile</b>。</p>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'default',
+    themeVariables: {
+      primaryColor: '#fff8e1',
+      primaryTextColor: '#5d4037',
+      primaryBorderColor: '#ffa000',
+      lineColor: '#5d4037',
+      fontFamily: 'Microsoft YaHei, sans-serif',
+      fontSize: '14px'
+    }
+  });
+</script>
+</body>
+</html>

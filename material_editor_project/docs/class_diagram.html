@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>材质编辑器类图</title>
+    <style>
+        body {
+            font-family: "Microsoft YaHei", sans-serif;
+            background: #fafafa;
+            margin: 0;
+            padding: 24px;
+            color: #2c3e50;
+        }
+        h1 { color: #2c3e50; border-bottom: 2px solid #4a6fb1; padding-bottom: 8px; }
+        h2 { color: #34495e; margin-top: 32px; }
+        .note {
+            background: #fff8e1;
+            border-left: 4px solid #ffb300;
+            padding: 12px 16px;
+            margin: 16px 0;
+            border-radius: 4px;
+        }
+        .mermaid {
+            background: white;
+            padding: 24px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            text-align: center;
+            margin: 16px 0;
+        }
+        .legend {
+            background: #e8f4fd;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin: 16px 0;
+        }
+        table { border-collapse: collapse; margin: 8px 0; }
+        td, th { padding: 4px 12px; border-bottom: 1px solid #d0d7de; }
+    </style>
+</head>
+<body>
+    <h1>材质编辑器类图（课1-5 已实现部分）</h1>
+
+    <div class="note">
+        <strong>查看提示：</strong> 图1 是完整类图，图2 只画类与类之间的关系。<br>
+        若图未显示，等几秒（加载 CDN）。
+    </div>
+
+    <div class="legend">
+        <strong>图例</strong>
+        <table>
+            <tr><th>箭头</th><th>含义</th></tr>
+            <tr><td><code>--|&gt;</code></td><td>继承（CRTP 单例）</td></tr>
+            <tr><td><code>*--</code></td><td>组合（拥有所有权）</td></tr>
+            <tr><td><code>..&gt;</code></td><td>依赖（引用 / UUID 索引）</td></tr>
+        </table>
+    </div>
+
+    <h2>图 1：完整类图</h2>
+    <div class="mermaid">
+classDiagram
+    direction TB
+
+    class UUID {
+        +high : uint64
+        +low : uint64
+        +Generate()
+        +Invalid()
+        +ToString()
+        +IsValid()
+    }
+
+    class RefCounted {
+        Ref shared_ptr alias
+        MakeRef()
+    }
+
+    class Singleton {
+        GetInstance()
+    }
+
+    class EPinDataDirection {
+        &lt;&lt;enum&gt;&gt;
+        Input
+        Output
+    }
+
+    class EValueType {
+        &lt;&lt;enum&gt;&gt;
+        Unknown
+        Float1
+        Float2
+        Float3
+        Float4
+    }
+
+    class PinConnection {
+        +connectionId : UUID
+        +otherPinId : UUID
+        +otherNodeId : UUID
+    }
+
+    class Pin {
+        +id : UUID
+        +name : string
+        +type : EValueType
+        +direction : EPinDataDirection
+        +ownerNodeId : UUID
+        +defaultValue : string
+        +connections
+        +CanConnectTo()
+        +IsConnected()
+        +IsInput()
+        +IsOutput()
+    }
+
+    class Node {
+        +id : UUID
+        +title : string
+        +typeName : string
+        +position : QPointF
+        +inputPins
+        +outputPins
+        +parameters : json
+        +FindPin()
+        +FindInputPin()
+        +FindOutputPin()
+        +InputCount()
+        +OutputCount()
+    }
+
+    class Connection {
+        +id : UUID
+        +sourceNodeId : UUID
+        +sourcePinId : UUID
+        +targetNodeId : UUID
+        +targetPinId : UUID
+    }
+
+    class Graph {
+        -nodes_
+        -connections_
+        -outputNodeId_
+        +AddNode()
+        +RemoveNode()
+        +FindNode()
+        +GetNodes()
+        +Connect()
+        +Disconnect()
+        +GetOutputNode()
+        +EnsureOutputNode()
+    }
+
+    class NodeTypeInfo {
+        +typeName : string
+        +displayName : string
+        +category : string
+        +pins
+    }
+
+    class NodeFactory {
+        -registry_
+        -nameToIndex_
+        +Register()
+        +Create()
+        +FindType()
+        +GetAllTypes()
+        +GetTypesByCategory()
+    }
+
+    class GraphCompiler {
+        -graph_
+        +TopologicalSort()
+        +HasCycles()
+        -Visit()
+    }
+
+    class TypeSystem {
+        +GetArithmeticResultType()
+        +GetComponentCount()
+        +ToHLSLType()
+    }
+
+    class Expression {
+        &lt;&lt;interface&gt;&gt;
+        +GetDisplayName()
+        +GetTypeName()
+        +GetCategory()
+        +GetInputPins()
+        +GetOutputPins()
+        +Compile()
+        +GetParameters()
+        +SetParameter()
+        +GetParameter()
+        +GetCategoryColor()
+    }
+
+    NodeFactory --|> Singleton : 继承 CRTP
+    Graph *-- Node : 组合 nodes_
+    Graph *-- Connection : 组合 connections_
+    Node *-- Pin : 包含 inputPins/outputPins
+    Pin *-- PinConnection : 包含 connections
+    NodeFactory *-- NodeTypeInfo : 组合 registry_
+
+    Pin ..> UUID : ownerNodeId
+    Pin ..> EPinDataDirection : 方向
+    Pin ..> EValueType : 类型
+    Connection ..> UUID : 端点引用
+    GraphCompiler ..> Graph : graph_ 指针
+    Graph ..> Node : 按 UUID 查找
+    TypeSystem ..> EValueType : 类型推导
+    Expression ..> Node : Compile ownerNode
+    </div>
+
+    <h2>图 2：简化关系图</h2>
+    <div class="mermaid">
+flowchart TB
+    subgraph Core["Core（基础设施）"]
+        UUID["UUID<br/>128-bit 唯一 ID"]
+        RefCounted["RefCounted<br/>shared_ptr 别名"]
+        Singleton["Singleton&lt;T&gt;<br/>CRTP 单例基类"]
+    end
+
+    subgraph MG["MaterialGraph（数据模型）"]
+        Graph["Graph<br/>管理所有节点和连接<br/>: public QObject"]
+        Node["Node<br/>节点（含 inputPins/outputPins）"]
+        Pin["Pin<br/>引脚（含 connections）"]
+        PinConn["PinConnection<br/>connectionId / otherPinId / otherNodeId"]
+        Conn["Connection<br/>sourcePinId / targetPinId"]
+        NodeFactory["NodeFactory<br/>注册 + 创建节点<br/>: Singleton&lt;NodeFactory&gt;"]
+        NodeTypeInfo["NodeTypeInfo<br/>节点类型元信息"]
+        GraphCompiler["GraphCompiler<br/>拓扑排序 + 环检测"]
+        Types["EPinDataDirection<br/>EValueType"]
+    end
+
+    subgraph Comp["Compiler（部分实现）"]
+        TypeSystem["TypeSystem ✅<br/>类型推导<br/>─── 待实现 ───<br/>MaterialCompiler (课6)<br/>CodeChunk (课8)<br/>HLSLGenerator (课8)"]
+    end
+
+    subgraph Expr["Expression（抽象）"]
+        Expression["«interface» Expression<br/>───────────<br/>Compile(compiler, ownerNode)<br/>─── 待实现 ───<br/>ExprAdd, ExprConstant ... (课7)"]
+    end
+
+    NodeFactory -.->|继承| Singleton
+    Graph ==>|组合 nodes_| Node
+    Graph ==>|组合 connections_| Conn
+    Node ==>|包含| Pin
+    Pin ==>|包含| PinConn
+    NodeFactory ==>|registry_| NodeTypeInfo
+
+    Pin -.->|ownerNodeId| UUID
+    GraphCompiler -.->|graph_| Graph
+    Graph -.->|按 UUID 查找| Node
+
+    TypeSystem -.-> Types
+    Expression -.->|ownerNode| Node
+
+    style Core fill:#e8f4fd,stroke:#4a6fb1
+    style MG fill:#fff4e8,stroke:#e07020
+    style Comp fill:#fce4ec,stroke:#c2185b
+    style Expr fill:#f3e5f5,stroke:#7b1fa2
+    </div>
+
+    <script src="https://cdn.staticfile.org/mermaid/10.4.0/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
+            themeVariables: {
+                primaryColor: '#eef3fb',
+                primaryTextColor: '#2c3e50',
+                primaryBorderColor: '#4a6fb1',
+                lineColor: '#34495e',
+                secondaryColor: '#fff8e1',
+                tertiaryColor: '#fafafa',
+                fontFamily: 'Microsoft YaHei, sans-serif'
+            }
+        });
+    </script>
+</body>
+</html>

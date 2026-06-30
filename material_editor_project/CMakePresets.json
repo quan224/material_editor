@@ -1,0 +1,36 @@
+{
+    "version": 3,
+    "vendor": {
+        "description": "材质编辑器项目 CMake 预设"
+    },
+    "configurePresets": [
+        {
+            "name": "vcpkg-vs2022",
+            "displayName": "vcpkg + VS2022",
+            "description": "使用 vcpkg 工具链 + Visual Studio 2022 生成器",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+            }
+        },
+        {
+            "name": "default",
+            "displayName": "默认配置",
+            "description": "继承 vcpkg-vs2022，作为默认选项",
+            "inherits": "vcpkg-vs2022"
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "vcpkg-vs2022",
+            "configuration": "Debug"
+        },
+        {
+            "name": "release",
+            "configurePreset": "vcpkg-vs2022",
+            "configuration": "Release"
+        }
+    ]
+}
