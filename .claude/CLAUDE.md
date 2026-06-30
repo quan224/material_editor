@@ -10,7 +10,7 @@
 - 仓库根目录：当前目录（含 `.git/`、`.claude/`、`MaterialEditor/`、`material_editor_project/`）
 - 教案与文档：`MaterialEditor/`
 - 代码实现：`material_editor_project/`
-- UE5 分析文档：`UE5_Material_System_Analysis.md`
+- UE5 分析文档：`.claude/UE5_Material_System_Analysis.md` —— 1029 行 UE5 材质系统全景分析，写课 6/7/11 时参考
 - UE5 源码参考（外部，可选）：`E:\UE5\` —— 仅在新机器装了 UE5 时可用
 
 ## 核心工作原则
