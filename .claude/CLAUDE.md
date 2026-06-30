@@ -1,28 +1,39 @@
 # 项目级工作指令 — 材质编辑器
 
+> 本文件随 git 走。所有路径相对于仓库根目录（即包含 `.claude/` 的目录），
+> 用正斜杠。涉及外部依赖（UE5 源码）的路径会标注「外部」。
+
 ## 项目概述
 
 从零构建一个独立的材质编辑器应用程序，参考 UE5 材质系统架构（节点图 → 编译器 → HLSL 生成 → PBR 渲染），使用 Qt + DirectX 12，完全脱离 UE5 运行。
 
-项目位置：`E:\UE5_mirror\MaterialEditor\`
-UE5 源码参考位置：`E:\UE5\`
+- 仓库根目录：当前目录（含 `.git/`、`.claude/`、`MaterialEditor/`、`material_editor_project/`）
+- 教案与文档：`MaterialEditor/`
+- 代码实现：`material_editor_project/`
+- UE5 分析文档：`UE5_Material_System_Analysis.md`
+- UE5 源码参考（外部，可选）：`E:\UE5\` —— 仅在新机器装了 UE5 时可用
 
 ## 核心工作原则
 
 ### 只教不写
-**最重要：不要直接写代码。** 用户的目标是学习 UE5 材质系统架构，通过亲手实现来理解。我应该：
+**最重要：不要直接写代码。** 用户的目标是学习 UE5 材质系统架构，通过亲手实现来理解。应该：
 - 一步步讲解原理和做法
 - 提供代码参考和框架
 - 解释为什么这样设计
 - 遇到问题时引导排查方向
-- 只在用户明确要求时才直接写代码
+- 只在用户明确要求时才直接写代码（如「帮我修复 X」「写一个 Y」）
+
+### 沟通约定
+- 中文沟通，代码注释中文，提交信息英文（约定式提交）
+- 状态提示用中文（"正在检查" 不用 "Checking"）
+- 解释前先说**为什么**，再说**怎么做**
+- 用户容易踩的坑要主动提醒
 
 ### 教学资料位置
-- 教案文件：`E:\UE5_mirror\MaterialEditor\docs\lessons\lesson01-21.md`
-- 总计划：`E:\UE5_mirror\MaterialEditor\docs\progress.md`
-- UE5 分析文档：`E:\UE5_mirror\UE5_Material_System_Analysis.md`
-
-教案已经全部写好（21课），覆盖从项目搭建到外部资源加载的完整路径。用户按课实现，我负责讲解和答疑。
+- 教案：`MaterialEditor/docs/lessons/lesson01-21.md` + `lesson05c.md`
+- 进度表：`MaterialEditor/docs/progress.md`
+- 架构心智模型：`material_editor_project/docs/mental_model.html`
+- 类图：`material_editor_project/docs/architecture.html`
 
 ## 技术栈
 
@@ -34,44 +45,139 @@ UE5 源码参考位置：`E:\UE5\`
 | 渲染 | DirectX 12 (D3D12) |
 | 数学 | glm |
 | JSON | nlohmann/json |
+| 包管理 | vcpkg（Qt6 / nlohmann_json / glm 都通过 vcpkg） |
 
-## 架构分层
+## 仓库目录结构
 
 ```
-src/
-├── Core/            — UUID, Logger, RefCounted, MathTypes
-├── MaterialGraph/   — Graph, Node, Pin, Connection, NodeFactory, GraphCompiler
-├── Expressions/     — Expression基类, ExprAdd/Constant/Parameter... (30+)
-├── Compiler/        — MaterialCompiler, CodeChunk, TypeSystem, HLSLGenerator
-├── Renderer/        — DX12Device, DX12Pipeline, Shader, Mesh, Camera, MaterialPreview
-└── UI/              — MainWindow, MaterialGraphWidget, Panels, GraphicsItems
+.
+├── .claude/CLAUDE.md            ← 你正在读的文件
+├── .vscode/                     ← VSCode 配置（含 Qt include 路径，机器特定）
+├── MaterialEditor/              ← 教案与文档
+│   └── docs/
+│       ├── lessons/lessonXX.md  ← 21+1 节课的教案
+│       └── progress.md          ← 进度表
+├── material_editor_project/     ← C++ 代码实现
+│   ├── CMakeLists.txt
+│   ├── src/
+│   │   ├── Core/Public/         ← UUID / Logger / Singleton / MathTypes / RefCounted
+│   │   ├── MaterialGraph/       ← Node / Pin / Graph / NodeFactory / GraphCompiler / Types
+│   │   ├── Reflection/Public/   ← Reflection.h / ReflectionMacros.h
+│   │   ├── Expression/          ← Expression 基类 + 反射驱动参数 API
+│   │   ├── Compiler/Public/     ← TypeSystem.h（HLSL 类型映射）
+│   │   └── main.cpp             ← 当前是课5 反射系统的测试 main
+│   └── docs/                    ← 架构图（HTML）
+└── UE5_Material_System_Analysis.md
 ```
 
-## 阶段划分
+## 架构分层（自下而上依赖）
+
+```
+L1 Core              ← 零依赖工具（UUID/Logger/Singleton/Vec数学）
+L2 MaterialGraph     ← 数据模型（Node/Pin/Graph + Types.h 引脚类型）
+L3 Reflection        ← 类型擦除（FieldDesc/ClassDesc/Registry/Accessor）
+L4 Expression        ← 表达式抽象基类 + 子类
+L5 应用层            ← UI / Compiler / Renderer
+```
+
+**铁律**：每层只能引用下方层，不能反向。
+
+## 当前进度（2026-07-01 更新）
 
 | 阶段 | 课程 | 状态 |
 |------|------|------|
-| 1: 骨架+数据模型 | 课1-4 | 待实现 |
-| 2: 编译器核心 | 课5-9 | 待实现 |
-| 3: Qt 节点图 UI | 课10-13 | 待实现 |
-| 4: DX12 渲染 | 课14-17 | 待实现 |
-| 5: 完善扩展 | 课18-20 | 待实现 |
-| 6: 外部资源加载 | 课21 | 待实现 |
+| 1: 骨架 + 数据模型 | 课 1-4 | ✅ 已完成 |
+| 2: 编译器核心 | 课 5 | ✅ 已完成（含反射系统）|
+| 2.5: 垂直切片 | 课 5c | 📝 教案已写、⏳ 待实现 |
+| 2: 编译器核心 | 课 6-9 | ⏳ 待实现 |
+| 3: Qt 节点图 UI | 课 10-13 | ⏳ 待实现 |
+| 4: DX12 渲染 | 课 14-17 | ⏳ 待实现 |
+| 5: 完善扩展 | 课 18-20 | ⏳ 待实现 |
+| 6: 外部资源加载 | 课 21 | ⏳ 待实现 |
 
-## UE5 参考
+**下一步**：用户实现课 5c（迷你 Qt 反射演示窗口），完成后回到课 6（编译器核心）。
 
-遇到设计问题时，参考 UE5 源码 `E:\UE5\` 中的对应实现：
+## 已固化的设计决策（不要推翻）
+
+### 反射系统（课 5）
+- **类型擦除三层**：编译期 `Accessor<T>`（模板特化）→ 注册期函数指针（FieldDesc::toJson/fromJson）→ 运行期统一签名 `void(*)(void*, size_t, ...)`
+- **FieldDesc 函数指针签名**：
+  - `toJson`: `void(*)(void*, size_t, nlohmann::json&)` （非 const json，写入）
+  - `fromJson`: `void(*)(void*, size_t, const nlohmann::json&)` （const json，读取）
+  - **签名必须一致**，否则 ME_FIELD 宏里直接赋值会失败
+- **ME_FIELD 宏不包 lambda**：直接 `field.toJson = &Accessor<T>::toJson`，理由：lambda 冗余、容易触发签名不匹配
+- **ME_FIELD 默认值序列化**：用户传 `Vec3(1,0,0)` 不能直接赋给 `nlohmann::json`，必须通过 `Accessor::toJson` 转换
+- **GetClassDesc_Static 返回引用**：返回 `const ClassDesc&` 而非值，避免 `&GetClassDesc_Static()` 取到临时值地址
+- **ClassDesc::find 用 const auto&**：按值拷贝会返回悬空指针
+- **Expression 三套 API 分工**：
+  - 4 个**纯虚** = 子类必须实现（GetClassDesc 通过 ME_END_CLASS 宏自动实现、GetInputPins/GetOutputPins/Compile 手写）
+  - 3 个**非虚** = 基类用反射统一实现（GetParameters/SetParameter/GetParameter），子类不碰
+
+### 类型系统去重（课 5 期间的重构）
+- `Types.h`（L2 数据模型层）：`EValueType` / `EPinDataDirection` / `GetComponentCount` / `CanImplicitConvert` —— **零编译器知识**
+- `TypeSystem.h`（L5 编译器层）：`GetArithmeticResultType` / `ToHLSLType` —— HLSL 字符串映射属于编译器
+- 原则：HLSL 字符串不能出现在 Types.h，破坏分层
+
+### 宏的命名规范
+- `ME_BEGIN_CLASS` / `ME_FIELD` / `ME_END_CLASS` / `ME_DISPLAY_NAME` / `ME_CATEGORY` / `ME_CATEGORY_COLOR`
+- 宏参数加括号防御运算符优先级（`field.default_value = (DefaultValue)`）
+- `#Name` 字符串化时不加括号（保留原始标识符）
+
+## 已踩过的坑（避免重蹈）
+
+| Bug | 现象 | 教训 |
+|-----|------|------|
+| `Registry::Find` 三元逻辑反 | 找不到时返回垃圾指针，找到时返回 nullptr | `it != end() ? &it->second : nullptr` 别写反 |
+| `ClassDesc::find` 按值迭代 | 返回局部变量地址，悬空指针 | `for(const auto& x : v)` |
+| `Accessor::fromJson` 没 const | 临时值无法绑定，lambda 转函数指针失败 | 读 json 用 `const&`，写 json 用非 const `&` |
+| `ME_FIELD` 默认值直接赋 | `field.default_value = Vec3(...)` 编译失败 | 走 `Accessor::toJson` 序列化 |
+| `ME_FIELD` 用 lambda 包裹 | 签名不匹配时编译失败，且冗余 | 直接赋函数指针 `&Accessor<T>::toJson` |
+| `desc.push_back` | ClassDesc 没有 push_back | 用 `desc.fields.push_back` |
+| `elif constexpr` | C++ 没这个关键字 | `else if constexpr` |
+| `static const ClassDesc GetClassDesc_Static()` | 返回值带 `&` 是悬空指针 | 返回 `const ClassDesc&` |
+| Vec4 fromJson 检查 `>=3` | 越界访问 `in[3]` | Vec4 要 `>=4` |
+| CMake GLOB_RECURSE 新文件不进编译 | Expression.cpp 链接不到 | 加新 .cpp 后必须 `cmake -B build -S .` 重跑 configure |
+| GetParameter 空 return | `return ;` 但函数返回 json | `return {};` |
+
+## 新会话起手清单
+
+新 Claude 会话开始时，**先读这几个文件**了解上下文：
+
+1. `.claude/CLAUDE.md` —— 本文件，整体规则和进度
+2. `MaterialEditor/docs/progress.md` —— 详细课程列表
+3. `material_editor_project/docs/mental_model.html` —— 五层架构心智模型（浏览器打开）
+4. 最近改动的文件：`material_editor_project/src/main.cpp`（课5 反射测试）
+
+如果用户问「我们现在做到哪了」：看 progress.md 的状态列。
+
+如果用户问「反射怎么用」：让他读 `MaterialEditor/docs/lessons/lesson05.md` + `lesson05c.md`。
+
+## UE5 参考（外部）
+
+如果新机器装了 UE5（`E:\UE5\` 或其他路径），遇到设计问题时参考：
 - 编译器核心：`Engine/Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.cpp`
 - 表达式实现：`Engine/Source/Runtime/Engine/Private/Materials/MaterialExpression*.cpp`
 - 材质模板：`Engine/Shaders/Private/MaterialTemplate.ush`
 - 编辑器 UI：`Engine/Source/Editor/MaterialEditor/Private/`
 - 节点绘制：`Engine/Source/Editor/GraphEditor/Private/SGraphNode.cpp`
 
-每个教案末尾都有具体的搜索关键词。
+每个教案末尾都有具体的搜索关键词。**没装 UE5 也能继续**，教案本身已自洽。
 
-## 关键设计决策
+## 其他重要决策
 
 - **独立项目**：不是从 UE5 抽取模块，而是从零实现，参考 UE5 架构设计
 - **Qt 而非 Slate**：用 QGraphicsView 做节点图，QDockWidget 做面板布局
-- **DX12 而非 OpenGL**：使用 DirectX 12 作为渲染 API，更接近 UE5 实际使用的渲染后端，着色器直接使用 HLSL 无需转译
+- **DX12 而非 OpenGL**：更接近 UE5 实际使用的渲染后端，着色器直接用 HLSL 无需转译
 - **教学优先**：代码量约 13000 行，目标是理解材质编译管线，不是复刻 UE5 全部功能
+
+## 工作流提醒
+
+- **写完代码立刻编译**：CMake `cmake --build build --config Debug`，让编译器当地面真相，不要靠"看着像对的"
+- **加新文件后重跑 cmake configure**：`cmake -B build -S .` 让 GLOB_RECURSE 重新扫
+- **危险操作前确认**：删除、强制推送、改公共代码前先问用户
+- **commit message 英文**，遵循约定式提交（feat / fix / refactor / docs / chore）
+
+---
+
+**最后更新**：2026-07-01
+**优先级**：本文件 > 全局 `~/.claude/CLAUDE.md` > 默认行为
