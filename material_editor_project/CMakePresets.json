@@ -1,9 +1,22 @@
 {
     "version": 3,
     "vendor": {
-        "description": "材质编辑器项目 CMake 预设"
+        "description": "材质编辑器项目 CMake 预设（双工具链：MinGW 本地 + MSVC 备用）"
     },
     "configurePresets": [
+        {
+            "name": "mingw",
+            "displayName": "MinGW (MSYS2)",
+            "description": "MSYS2 MinGW-w64 + Qt6。显式指定编译器路径，绕过系统 PATH 里旧 MinGW 的冲突。",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-mingw",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "C:/msys64/mingw64/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "C:/msys64/mingw64/bin/g++.exe",
+                "CMAKE_MAKE_PROGRAM": "C:/msys64/mingw64/bin/ninja.exe"
+            }
+        },
         {
             "name": "vcpkg-vs2022",
             "displayName": "vcpkg + VS2022",
@@ -17,11 +30,15 @@
         {
             "name": "default",
             "displayName": "默认配置",
-            "description": "继承 vcpkg-vs2022，作为默认选项",
-            "inherits": "vcpkg-vs2022"
+            "description": "继承 mingw，作为本地默认选项",
+            "inherits": "mingw"
         }
     ],
     "buildPresets": [
+        {
+            "name": "mingw-debug",
+            "configurePreset": "mingw"
+        },
         {
             "name": "debug",
             "configurePreset": "vcpkg-vs2022",

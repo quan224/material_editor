@@ -38,9 +38,11 @@ public:
     virtual std::vector<int32_t> Compile(MaterialCompiler *compiler, Node *ownerNode) const = 0;
 
     // 参数读写，反射实现，子类无需重写
-
+    // 获取或有参数描述
     std::vector<reflection::FieldDesc> GetParameters() const;
+    // 写入参数值到类对象中
     void SetParameter(const std::string& name, const nlohmann::json& value);
+    // 从类对象中恢复参数值为json
     nlohmann::json GetParameter(const std::string& name)const;
 
 };

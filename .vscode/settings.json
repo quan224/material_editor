@@ -3,7 +3,7 @@
         "*.h": "cpp"
     },
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
-    "cmake.buildDirectory": "${workspaceFolder}/material_editor_project/build",
+    "cmake.useCMakePresets": "always",
     "cmake.sourceDirectory": "${workspaceFolder}/material_editor_project",
     "cmake.configureOnOpen": true,
     "cmake.automaticReconfigure": false,
