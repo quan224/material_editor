@@ -41,8 +41,19 @@ elseif(MINGW)
 endif()
 
 # === 复制资源（resources 目录存在时才复制，避免 configure 失败）===
-# 注意：Qt 平台插件（platforms/qwindows.dll）暂不处理——当前 main.cpp
-# 不创建 QApplication，无需插件即可运行。等课10 做 Qt 窗口时再用 windeployqt。
 if(EXISTS "${CMAKE_SOURCE_DIR}/resources")
     file(COPY resources/ DESTINATION ${CMAKE_BINARY_DIR}/resources)
 endif()
+
+# === 打包目标：用 windeployqt 收集 Qt 运行时依赖到构建目录 ===
+# 日常开发：cmake --build build-mingw                  （快，不跑 windeployqt）
+# 发布打包：cmake --build build-mingw --target deploy  （先 build，再自动收集 Qt dll + 平台插件）
+# 注意：windeployqt 运行需要 PATH 里有 Qt 的 bin 目录（MSYS2 下是 C:\msys64\mingw64\bin）
+add_custom_target(deploy
+    COMMAND $<TARGET_FILE:Qt6::windeployqt>
+            $<TARGET_FILE:MaterialEditor>
+            --no-translations
+    DEPENDS MaterialEditor
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Collecting Qt runtime dependencies (windeployqt)"
+)
