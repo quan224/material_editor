@@ -16,8 +16,8 @@
 | 3 | 图数据模型 | [lesson03.md](lessons/lesson03.md) | 📝 教案已写 |
 | 4 | 节点工厂 + 图遍历 | [lesson04.md](lessons/lesson04.md) | 📝 教案已写 |
 | 5 | 表达式基类 + 类型系统 + 反射系统 | [lesson05.md](lessons/lesson05.md) | 📝 教案已写 |
-| 5c | 迷你垂直切片：可视化反射（教学跳章） | [lesson05c.md](lessons/lesson05c.md) | 📝 教案已写 |
-| 6 | 编译器核心 | [lesson06.md](lessons/lesson06.md) | 📝 教案已写 |
+| 5c | 迷你垂直切片：可视化反射（教学跳章） | [lesson05c.md](lessons/lesson05c.md) | ✅ 已完成 |
+| 6 | 编译器核心 | [lesson06.md](lessons/lesson06.md) | ⏳ 进行中 |
 | 7 | 第一批表达式 | [lesson07.md](lessons/lesson07.md) | 📝 教案已写 |
 | 8 | HLSL 代码生成 | [lesson08.md](lessons/lesson08.md) | 📝 教案已写 |
 | 9 | 命令行验证编译管线 | [lesson09.md](lessons/lesson09.md) | 📝 教案已写 |
