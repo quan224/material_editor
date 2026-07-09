@@ -78,7 +78,7 @@ public:
     bool IsConstant(int32_t index) const;
     float GetConstantValue(int32_t index) const;
 
-private:
+// private:
     // 代码块管理
     int32_t AddCodeChunk(EValueType type, const std::string& code, bool is_inline=false);
     int32_t AddConstantChunk(EValueType type, float value);
@@ -93,7 +93,7 @@ private:
     // 最终代码生成（课8 完善）
     std::string GenerateCode(const std::map<std::string, int32_t>& outputs);
 
-
+private:
     // 状态
     std::vector<CodeChunk> chunks_;
     std::map<uint64_t, int32_t> hash_to_chunk_;              // 哈希去重
