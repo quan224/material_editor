@@ -640,14 +640,28 @@ void MainWindow::SetupDockWidgets() {
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `E:\UE5\Engine\Source\Editor\GraphEditor\Private\SConnectionDrawingPolicy.cpp` — 连线绘制
-- 搜索 `MakeCachedSpline` — 贝塞尔曲线计算
-- `E:\UE5\Engine\Source\Editor\GraphEditor\Private\SGraphPanel.cpp` — 画布控件
-- 搜索 `SpawnContextMenu` — 右键菜单
-- 搜索 `OnMouseMove` / `OnMouseButtonUp` — 连线拖拽
-- 搜索 `GetZoomAmount` — 缩放
+- `Engine/Source/Editor/GraphEditor/Private/SConnectionDrawingPolicy.cpp` — 连线绘制（对照 `ConnectionGraphicsItem`）
+- `Engine/Source/Editor/GraphEditor/Private/SGraphPanel.cpp` — 画布控件（对照 `MaterialGraphWidget`）
+
+### 对照 UE 连线/画布
+
+| 我们的（Qt）| UE（Slate）| 作用 |
+|------------|-----------|------|
+| `ConnectionGraphicsItem`（QGraphicsPathItem）| `SConnectionDrawingPolicy` | 贝塞尔连线绘制 |
+| `CreateBezierPath`（`cubicTo`）| `MakeCachedSpline` / `ComputeSpline` | S 形贝塞尔曲线 |
+| `MaterialGraphWidget`（QGraphicsView）| `SGraphPanel` | 画布：缩放/平移/右键/连线拖拽 |
+| `wheelEvent`（`scale`）| `OnMouseWheel` + `GetZoomAmount` | 缩放 |
+| `contextMenuEvent`（QMenu）| `SpawnContextMenu`（FMenuBuilder）| 右键节点菜单 |
+| `Pin::CanConnectTo`（连线验证）| `FConnectionDrawingPolicy::CheckConnection` | 类型兼容检查 |
+
+**关键差异**：
+1. **UE 的连线**由 `SConnectionDrawingPolicy` 统一管理（所有连线在一次 paint pass 里画，性能优化），我们每个连线是独立 `QGraphicsPathItem`（Qt 场景管理，节点多时可能慢，但教学够用）。
+2. **连线验证**（`Pin::CanConnectTo`）：UE 在 `FConnectionDrawingPolicy::CheckConnection` 做类型兼容检查；我们在 `Pin::CanConnectTo`（Types.h），扩展版要支持 Int/Matrix/Texture 的新类型兼容规则（如 Int+Float 升级、Texture 类型必须相同等）。
+3. **右键菜单**：UE 用 `FMenuBuilder`（Slate），我们用 `QMenu`——都是分组 + action，概念一致。
+
+> **搜索关键词**（UE 源码）：`SConnectionDrawingPolicy`、`MakeCachedSpline`、`SGraphPanel::OnMouseMove`、`SpawnContextMenu`、`GetZoomAmount`。
 
 ---
 

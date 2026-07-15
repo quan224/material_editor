@@ -178,15 +178,11 @@ public:
             const auto& chunk = (*params.chunks)[i];
             if (chunk.isInline) continue;
 
-            std::string typeName;
-            switch (chunk.type) {
-                case EValueType::Float1: typeName = "float"; break;
-                case EValueType::Float2: typeName = "float2"; break;
-                case EValueType::Float3: typeName = "float3"; break;
-                case EValueType::Float4: typeName = "float4"; break;
-                default: typeName = "float"; break;  // 未知类型兜底为 float（理论上不应发生）
-            }
-            declarations += "    " + typeName + " " + chunk.symbolName + " = " + chunk.code + ";\n";
+            // 用 TypeSystem::ToHLSLType（课6 扩展版，支持 Float/Int/Matrix 全类型，
+            // 不用手写 switch——加新类型时 TypeSystem 自动覆盖）。
+            // 注意：HLSLGenerator.h 要 #include "Compiler/Public/TypeSystem.h"
+            declarations += std::string("    ") + TypeSystem::ToHLSLType(chunk.type)
+                          + " " + chunk.symbolName + " = " + chunk.code + ";\n";
         }
 
         // 2. 生成材质属性赋值
@@ -298,11 +294,29 @@ Constant3(1,0,0) → Multiply(0.5) → Add(0.1) → BaseColor
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `E:\UE5\Engine\Shaders\Private\MaterialTemplate.ush` — UE5 的材质模板
-- `HLSLMaterialTranslator.cpp` 搜索 `GetMaterialShaderCode` — 最终代码输出
-- 注意：UE5 内部也使用 HLSL 作为主要着色语言，DX12 后端直接使用 HLSL 字节码
+- `Engine/Shaders/Private/MaterialTemplate.ush` — UE5 的材质模板（本课 HLSLTemplate 的对标）
+- `Engine/Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.cpp` 搜索 `GetMaterialShaderCode` — 最终代码拼装
+
+### 对照 UE `MaterialTemplate.ush`（占位符注入机制）
+
+UE 的材质模板和我们用**同样的"占位符注入"思路**——模板里有占位标记，编译器把生成的代码填进去：
+
+| 我们的占位符 | UE 的占位符（`MaterialTemplate.ush`）| 填什么 |
+|------------|--------------------------------------|--------|
+| `{{UNIFORMS}}` | `%PARAMETER_DECLARATION%` | 材质 uniform 参数声明（cbuffer）|
+| `{{MATERIAL_FUNCTIONS}}` | `%MATERIAL_BODY%`（局部变量声明 Local0/Local1...）| 编译器生成的中间变量 |
+| `{{MATERIAL_BODY}}` | 各 `%PIXELMATERIAL_...%`（BaseColor/Metallic/...）| 材质属性赋值 |
+
+**关键差异**：
+1. **UE 的 `MaterialTemplate.ush` 是 `.ush`（header）**，用 `#include` 进 translator 生成的 .usf，占位符是 `%NAME%` 格式，靠字符串替换填充。我们是 `R"hlsl(...)hlsl"` 原始字符串 + `{{NAME}}` 替换，本质一样。
+2. **UE 模板远比我们的复杂**：含 Substrate、虚拟纹理、光线追踪、各材质域（Surface/Unlit/PostProcess）的分支、自动导数等几千行。我们的只保留核心 PBR + 几个占位符（教学够用）。
+3. **PBR 函数**（DistributionGGX/GeometrySmith/FresnelSchlick）我们直接写进模板；UE 的在 `Engine/Shaders/Private/BRDF.ush` 等单独文件 `#include`。
+
+> **搜索关键词**（UE 源码）：`MaterialTemplate.ush`、`GetMaterialShaderCode`、`%MATERIAL_BODY%`、`ReplaceParameter`。
+
+注意：UE5 内部用 HLSL 作为主要着色语言，DX12 后端直接编译 HLSL 字节码（fxc/DXC），不需要 GLSL 转换——这也是我们选 DX12 + HLSL 的原因。
 
 ---
 

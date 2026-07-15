@@ -480,7 +480,7 @@ if (hasError_) {
 
 ## UE5 参考
 
-- `E:\UE5\Engine\Source\Editor\MaterialEditor\Private\MaterialEditor.cpp`
+- `Engine/Source/Editor/MaterialEditor/Private/MaterialEditor.cpp`
 - 搜索 `CompileMaterial` — 编译和错误处理
 - 搜索 `HandleMaterialCompilationErrors` — 错误可视化
 - UE5 撤销/重做：搜索 `FScopedTransaction` / `GEditor->Undo`

@@ -841,11 +841,11 @@ ME_LOG_INFO("VS compile: %s", vsResult.IsValid() ? "OK" : vsResult.errorMessage.
 
 ## UE5 参考
 
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\StaticMesh.cpp` — 网格生成
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\MaterialEditorRender.cpp` — 材质预览渲染
+- `Engine/Source/Runtime/Engine/Private/StaticMesh.cpp` — 网格生成
+- `Engine/Source/Runtime/Engine/Private/MaterialEditorRender.cpp` — 材质预览渲染
 - 搜索 `DrawSphere` / `DrawCube` — 预览几何体
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\ShaderCompiler\` — 着色器编译
-- `E:\UE5\Engine\Source\Runtime\RHI\` — RHI 抽象层（DX12/OpenGL/Vulkan）
+- `Engine/Source/Runtime/Engine/Private/ShaderCompiler/` — 着色器编译
+- `Engine/Source/Runtime/RHI/` — RHI 抽象层（DX12/OpenGL/Vulkan）
 
 ---
 

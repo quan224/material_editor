@@ -541,8 +541,8 @@ void DX12Texture::SetToCommandList(ID3D12GraphicsCommandList* cmdList,
 5. **SRV（Shader Resource View）** — 描述符的一种，告诉 GPU "如何解读这个纹理资源"。创建 SRV 后，像素着色器才能通过 `Texture2D tex : register(t0)` 访问纹理。
 
 **UE5 参考**：
-- `E:\UE5\Engine\Source\Runtime\D3D12RHI\Private\D3D12Texture.cpp` — `CreateTexture2DFromSurface`
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\TextureDerivedDataTask.cpp` — 纹理压缩和处理管线
+- `Engine/Source/Runtime/D3D12RHI/Private/D3D12Texture.cpp` — `CreateTexture2DFromSurface`
+- `Engine/Source/Runtime/Engine/Private/TextureDerivedDataTask.cpp` — 纹理压缩和处理管线
 
 ---
 
@@ -929,8 +929,8 @@ private:
 ```
 
 **UE5 参考**：
-- `E:\UE5\Engine\Source\Runtime/Engine/Private/Factories/FbxFactory.cpp` — UE5 的 FBX 导入器（几千行）
-- `E:\UE5\Engine\Source\Runtime/Engine/Private/StaticMesh.cpp` — `UStaticMesh` 的实现
+- `Engine/Source/Runtime/Engine/Private/Factories/FbxFactory.cpp` — UE5 的 FBX 导入器（几千行）
+- `Engine/Source/Runtime/Engine/Private/StaticMesh.cpp` — `UStaticMesh` 的实现
 
 ---
 

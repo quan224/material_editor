@@ -57,16 +57,25 @@ src/UI/Private/GraphicsItems/PinGraphicsItem.cpp
 #include <QColor>
 
 // 引脚颜色（参考 UE5 的连接点颜色）
-// 注意：当前 EValueType 只有 Float1~4，Int1/Bool 等类型在课3 Types.h 中
-// 被注释为"后续可扩展"但从未实际添加——所以这里 switch 不能写 Int1/Bool 分支，
-// 否则编译失败。如果将来在 Types.h 加了新类型，记得在这里补对应分支
+// 扩展版：EValueType 已含 Int/Matrix/Texture/Sampler（课6 扩展），这里全覆盖
 inline QColor GetPinColor(EValueType type) {
     switch (type) {
-        case EValueType::Float1: return QColor(100, 200, 100);   // 绿色
+        // float 系列 —— 绿→黄→红渐变（按分量数区分）
+        case EValueType::Float1: return QColor(100, 200, 100);   // 绿
         case EValueType::Float2: return QColor(180, 200, 80);    // 黄绿
-        case EValueType::Float3: return QColor(240, 200, 60);    // 黄色
-        case EValueType::Float4: return QColor(240, 80, 80);     // 红色
-        default: return QColor(150, 150, 150);                    // Unknown 类型，灰色
+        case EValueType::Float3: return QColor(240, 200, 60);    // 黄
+        case EValueType::Float4: return QColor(240, 80, 80);     // 红
+        // int 系列 —— 蓝色（和 float 区分）
+        case EValueType::Int1: case EValueType::Int2:
+        case EValueType::Int3: case EValueType::Int4:
+            return QColor(80, 140, 240);
+        // 矩阵 —— 紫色
+        case EValueType::Matrix3x3: case EValueType::Matrix4x4:
+            return QColor(180, 100, 220);
+        // 纹理 / 采样器 —— 粉色（对象类型，和数值类型区分）
+        case EValueType::Texture2D:    return QColor(220, 120, 180);
+        case EValueType::SamplerState: return QColor(220, 150, 150);
+        default: return QColor(150, 150, 150);   // Unknown，灰
     }
 }
 ```
@@ -513,14 +522,30 @@ view.show();
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `E:\UE5\Engine\Source\Editor\GraphEditor\Private\SGraphNode.cpp` — `paint()` 方法
-- `E:\UE5\Engine\Source\Editor\MaterialEditor\Private\MaterialNodes\SGraphNodeMaterialBase.cpp`
-- 搜索 `GetDefaultTitleBarColor` — 节点标题颜色
-- 搜索 `GetNodeTitleColor` — 标题文字颜色
-- `E:\UE5\Engine\Source\Editor\GraphEditor\Private\SGraphPin.cpp` — 引脚绘制
-- `E:\UE5\Engine\Source\Editor\MaterialEditor\Private\MaterialPins\SGraphPinMaterialInput.cpp`
+- `Engine/Source/Editor/GraphEditor/Private/SGraphNode.cpp` — 节点 `paint()` 方法（对照我们的 `NodeGraphicsItem::paint`）
+- `Engine/Source/Editor/MaterialEditor/Private/MaterialNodes/SGraphNodeMaterialBase.cpp` — 材质节点基类
+- `Engine/Source/Editor/GraphEditor/Private/SGraphPin.cpp` — 引脚绘制（对照 `PinGraphicsItem::paint`）
+- `Engine/Source/Editor/MaterialEditor/Private/MaterialPins/SGraphPinMaterialInput.cpp` — 材质引脚
+
+### 对照 UE 节点渲染（SGraphNode vs QGraphicsItem）
+
+| 我们的（Qt Graphics View）| UE（Slate Graph Editor）| 作用 |
+|---------------------------|------------------------|------|
+| `QGraphicsScene` | `SGraphPanel` | 场景，管理所有图形项 |
+| `QGraphicsView` | `SGraphViewer` | 视图，渲染 + 缩放/平移 |
+| `NodeGraphicsItem : QGraphicsItem` | `SGraphNode : SCompoundWidget` | 单个节点的渲染 + 交互 |
+| `PinGraphicsItem` | `SGraphPin` | 引脚圆点 |
+| `GetPinColor(EValueType)` | `GetDefaultPinColor` / `GetPinColor` | 引脚类型颜色 |
+| `GetCategoryColor()`（从 ClassDesc）| `GetDefaultTitleBarColor` | 节点标题栏颜色 |
+
+**关键差异**：
+1. **UE 用 Slate widget**（`SGraphNode` 是 `SCompoundWidget`，用 Slate 声明式 UI），我们用 **QGraphicsItem + QPainter** 手绘——本质都是"自己画节点矩形 + 引脚圆点 + 文字"。
+2. **UE 的引脚颜色**（`SGraphPin::GetPinColor`）和我们的 `GetPinColor` 一样按类型分色：Float=绿、Float3=黄、Bool=红等。我们扩展版加了 Int(蓝)/Matrix(紫)/Texture(粉)。
+3. **节点标题色**：UE 用 `GetDefaultTitleBarColor`（按节点类别），我们用 `GetCategoryColor`（从反射 `ClassDesc::category_color` 查，课5 的设计）。
+
+> **搜索关键词**（UE 源码）：`SGraphNode::Paint`、`SGraphPin`、`GetDefaultTitleBarColor`、`GetPinColor`。
 
 ---
 

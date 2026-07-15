@@ -442,8 +442,8 @@ cmake --build build --config Debug
 
 ## UE5 参考
 
-- `E:\UE5\Engine\Source\Editor\PropertyEditor\Private\DetailItemTree.cpp` —— UE5 属性面板的核心
-- `E:\UE5\Engine\Source\Editor\DetailCustomizations\Private\DetailWidgetCreator.cpp` —— 根据字段类型（FProperty）生成对应 widget
+- `Engine/Source/Editor/PropertyEditor/Private/DetailItemTree.cpp` —— UE5 属性面板的核心
+- `Engine/Source/Editor/DetailCustomizations/Private/DetailWidgetCreator.cpp` —— 根据字段类型（FProperty）生成对应 widget
 - 搜索 `FProperty::GetPropertyFlags` —— UE5 字段元数据查询
 
 UE5 的属性面板比我们的复杂 100 倍（嵌套对象、数组、回调、自定义 drawer），但**核心思路一样**：遍历字段元信息 → 根据类型生成控件 → 控件变化时写回。

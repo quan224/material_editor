@@ -1375,6 +1375,20 @@ UE5 的 DX12 实现分散在 `D3D12RHI` 模块中。以下文件展示了 UE5 �
 - UE5 不会像我们这样调用 `D3DCompileFromFile`，而是用自研的着色器编译管线（Shader Compiler）
 - 搜索 `FHLSLMaterialTranslator`、`Compile`、`GenerateCode`
 
+### 扩展预告：多进程 shader 编译（块7，见 `lesson06-extension.md`）
+
+本课的 `CompileShader` 是**单进程运行时编译**（`D3DCompileFromFile`），适合学习调试。但一个材质项目有**上万 shader 变体**，单进程串行编译会很慢。
+
+`lesson06-extension.md` 的**块7**规划了**多进程 shader 编译集成**（对标 UE 的 `ShaderCompileWorker`）：
+- 主进程线程池调度 + N 个 worker 进程（`CreateProcess`）+ IPC（管道/文件）
+- fxc/DXC 在 worker 进程里编译（隔离崩溃 + 规避 fxc 线程不安全）
+- shader 缓存（HLSL hash → DXBC）
+- **这块是系统学并发编程的地方**（std::thread/CreateProcess/管道/mutex/cv/future）
+
+块7 是独立大块（+2000-4000 行），在课16-17 阶段做（那时 DX12 渲染就绪、有字节码需求）。本课先用单进程 `D3DCompileFromFile` 打通基础管线，等块7 再升级多进程。
+
+> **UE 对照**：`Engine/Source/Runtime/RenderCore/Private/ShaderCompiler*` + `Engine/Source/Programs/ShaderCompileWorker`（worker 进程源码）。
+
 ### UE5 vs 我们的简化版本
 
 | 概念 | UE5 的做法 | 我们的做法 |

@@ -97,7 +97,7 @@ struct hash<UUID> {
 - `std::hash` 特化使其可用于 `std::unordered_map`
 - `IsValid()` 检查是否为全零（无效值）
 
-**UE5 参考**：`E:\UE5\Engine\Source\Runtime\Core\Public\Misc\Guid.h`
+**UE5 参考**：`Engine/Source/Runtime/Core/Public/Misc/Guid.h`
 
 ### 3. Hash.h
 
@@ -138,7 +138,7 @@ inline uint64_t HashRaw(const void* data, size_t size) {
 - `HashRaw` — 对任意内存块做哈希
 - UE5 用 CityHash64（Google 的高性能哈希），我们用 FNV-1a 够用且简单
 
-**UE5 参考**：搜索 `E:\UE5\Engine\Source\Runtime\Core\Public\` 中的 `CityHash`
+**UE5 参考**：搜索 `Engine/Source/Runtime/Core/Public/` 中的 `CityHash`
 
 ### 4. Logger.h
 
@@ -187,7 +187,7 @@ inline void LogToFile(const char* msg) {
 - `std::ios::app` 以追加模式打开文件，不会覆盖之前的日志
 - `##__VA_ARGS__` 是可变参数宏（MSVC 和 GCC 都支持），允许零个额外参数
 
-**UE5 参考**：`E:\UE5\Engine\Source\Runtime\Core\Public\Logging\LoggingMacros.h` — `UE_LOG` 宏
+**UE5 参考**：`Engine/Source/Runtime/Core/Public/Logging/LoggingMacros.h` — `UE_LOG` 宏
 
 ### 5. RefCounted.h
 
@@ -213,7 +213,7 @@ using WeakRef = std::weak_ptr<T>;
 - `MakeRef` 封装 `std::make_shared`，一次分配内存
 - `WeakRef` 用于打破循环引用（后续有需要时用）
 
-**UE5 参考**：`E:\UE5\Engine\Source\Runtime\Core\Public\Templates\SharedPointer.h`
+**UE5 参考**：`Engine/Source/Runtime/Core/Public/Templates/SharedPointer.h`
 
 ### 6. MathTypes.h
 
@@ -245,7 +245,7 @@ constexpr float RAD_TO_DEG = 180.0f / PI;
 - 用 `using` 起别名而不是 `typedef`，C++11 推荐方式
 - 后续渲染器中的矩阵运算（投影、变换）都用 glm
 
-**UE5 参考**：`E:\UE5\Engine\Source\Runtime\Core\Public\Math\Vector.h` 等
+**UE5 参考**：`Engine/Source/Runtime/Core/Public/Math/Vector.h` 等
 
 ---
 

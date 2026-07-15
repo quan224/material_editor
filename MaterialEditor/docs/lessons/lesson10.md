@@ -451,12 +451,29 @@ int main(int argc, char* argv[]) {
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `E:\UE5\Engine\Source\Editor\MaterialEditor\Private\MaterialEditor.h` — 主编辑器类
-- 搜索 `FLayoutExtender` / `FDefaultPlacementInfo` 了解面板布局
-- `E:\UE5\Engine\Source\Editor\MaterialEditor\Private\MaterialEditor.cpp` — `InitToolMenuContext` 中看菜单/工具栏注册
-- `E:\UE5\Engine\Source\Editor\MaterialEditor\Private\SMaterialEditorToolBar.cpp` — 工具栏实现
+- `Engine/Source/Editor/MaterialEditor/Private/MaterialEditor.h` — UE 主编辑器类（对照我们的 `MainWindow`）
+- `Engine/Source/Editor/MaterialEditor/Private/MaterialEditor.cpp` — `InitToolMenuContext` 看菜单/工具栏注册
+- `Engine/Source/Editor/MaterialEditor/Private/SMaterialEditorToolBar.cpp` — 工具栏实现
+
+### 对照 UE 布局系统（Slate vs Qt）
+
+| 我们的（Qt）| UE（Slate）| 作用 |
+|------------|-----------|------|
+| `QMainWindow` | `IMaterialEditor` 接口 + `SDockTab` 容器 | 主窗口 |
+| `QDockWidget` | `SDockableTab` / `SDockSplitter` | 可停靠、浮动、堆叠的面板 |
+| `addDockWidget(LeftDockArea, dock)` | `FLayoutExtender` + `FDefaultPlacementInfo` | 面板默认位置布局 |
+| `tabifyDockWidget(a, b)` | `SDockSplitter` 的标签页模式 | 堆叠为标签页 |
+| `menuBar()->addMenu("&File")` | `FExtender` + `FMenuEntryDesc` | 菜单栏 |
+| `addToolBar` + `QAction` | `SMaterialEditorToolBar`（Slate widget）| 工具栏 |
+
+**关键差异**：
+1. **UE 用 Slate（声明式 C++ UI 框架）**，我们用 Qt Widgets——两套完全不同的 UI 框架，但**布局概念一致**（可停靠面板、菜单、工具栏）。
+2. **UE 的布局是可序列化的**（`FLayoutExtender` 把面板布局存进编辑器配置，下次打开恢复）——我们的 `QMainWindow` 用 `saveState()/restoreState()` 能做到同样的事（课18 保存时加上）。
+3. **UE 工具栏是 Slate widget**（`SMaterialEditorToolBar`），Qt 用 `QToolBar` + `QAction`，更简单。
+
+> **搜索关键词**（UE 源码）：`MaterialEditor.h`、`FLayoutExtender`、`SDockableTab`、`SMaterialEditorToolBar`。
 
 ---
 

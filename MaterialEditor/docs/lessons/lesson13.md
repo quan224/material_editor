@@ -224,6 +224,10 @@ private:
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QFrame>
+#include <QSpinBox>       // Int 编辑器（扩展版新增）
+#include <QCheckBox>      // Bool 编辑器
+#include <QLineEdit>      // String 编辑器
+#include <QHBoxLayout>
 
 PropertyPanel::PropertyPanel(QWidget* parent) : QWidget(parent) {
     auto* mainLayout = new QVBoxLayout(this);
@@ -270,72 +274,112 @@ void PropertyPanel::SetNode(Node* node) {
     auto* paramGroup = new QGroupBox("Parameters");
     auto* formLayout = new QFormLayout(paramGroup);
 
+    // 扩展版：支持所有 FieldType（Float/Int/Bool/String/Float2/3/4）
+    // 参数读写统一用 node->parameters[name]（JSON），值变化时 emit ParameterChanged 触发重编译
     for (auto& param : params) {
+        const std::string& name = param.name;
         switch (param.type) {
-            case reflection::FieldType::Float: {
-                float val = 0.0f;
-                if (node->parameters.contains(param.name) &&
-                    node->parameters[param.name].is_number()) {
-                    val = node->parameters[param.name].get<float>();
-                }
+
+        case reflection::FieldType::Float: {
+            auto* spin = new QDoubleSpinBox;
+            spin->setRange(-10000.0, 10000.0);
+            spin->setDecimals(3);
+            spin->setSingleStep(0.1);
+            float val = (node->parameters.contains(name) && node->parameters[name].is_number())
+                        ? node->parameters[name].get<float>() : 0.0f;
+            spin->setValue(val);
+            formLayout->addRow(QString::fromStdString(name), spin);
+            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, [this, name](double v){
+                if (currentNode_) { currentNode_->parameters[name] = (float)v; emit ParameterChanged(); }
+            });
+            break;
+        }
+
+        case reflection::FieldType::Int: {   // 扩展版新增
+            auto* spin = new QSpinBox;
+            spin->setRange(-1000000, 1000000);
+            int val = (node->parameters.contains(name) && node->parameters[name].is_number_integer())
+                      ? node->parameters[name].get<int>() : 0;
+            spin->setValue(val);
+            formLayout->addRow(QString::fromStdString(name), spin);
+            connect(spin, QOverload<int>::of(&QSpinBox::valueChanged),
+                    this, [this, name](int v){
+                if (currentNode_) { currentNode_->parameters[name] = v; emit ParameterChanged(); }
+            });
+            break;
+        }
+
+        case reflection::FieldType::Bool: {   // 扩展版新增
+            auto* check = new QCheckBox;
+            bool val = (node->parameters.contains(name) && node->parameters[name].is_boolean())
+                       ? node->parameters[name].get<bool>() : false;
+            check->setChecked(val);
+            formLayout->addRow(QString::fromStdString(name), check);
+            connect(check, &QCheckBox::toggled, this, [this, name](bool v){
+                if (currentNode_) { currentNode_->parameters[name] = v; emit ParameterChanged(); }
+            });
+            break;
+        }
+
+        case reflection::FieldType::String: {   // 扩展版新增
+            auto* edit = new QLineEdit;
+            std::string val = (node->parameters.contains(name) && node->parameters[name].is_string())
+                              ? node->parameters[name].get<std::string>() : "";
+            edit->setText(QString::fromStdString(val));
+            formLayout->addRow(QString::fromStdString(name), edit);
+            connect(edit, &QLineEdit::textEdited, this, [this, name](const QString& v){
+                if (currentNode_) { currentNode_->parameters[name] = v.toStdString(); emit ParameterChanged(); }
+            });
+            break;
+        }
+
+        case reflection::FieldType::Float2:    // 扩展版：统一向量处理
+        case reflection::FieldType::Float3:
+        case reflection::FieldType::Float4: {
+            // 向量：N 个 SpinBox 横排，值统一存为 JSON 数组 [x,y,z,w]
+            int n = (param.type == reflection::FieldType::Float2) ? 2 :
+                    (param.type == reflection::FieldType::Float3) ? 3 : 4;
+            QStringList labels = {"X", "Y", "Z", "W"};
+            auto* widget = new QWidget;
+            auto* hLayout = new QHBoxLayout(widget);
+            hLayout->setContentsMargins(0, 0, 0, 0);
+
+            // 读当前数组值
+            std::vector<float> vals(n, 0.0f);
+            if (node->parameters.contains(name) && node->parameters[name].is_array()) {
+                for (int i = 0; i < n && i < (int)node->parameters[name].size(); ++i)
+                    vals[i] = node->parameters[name][i].get<float>();
+            }
+
+            for (int i = 0; i < n; ++i) {
+                hLayout->addWidget(new QLabel(labels[i]));
                 auto* spin = new QDoubleSpinBox;
                 spin->setRange(-10000.0, 10000.0);
                 spin->setDecimals(3);
                 spin->setSingleStep(0.1);
-                spin->setValue(val);
-                spinBoxes_[param.name] = spin;
-
-                formLayout->addRow(
-                    QString::fromStdString(param.name), spin);
-
-                // 值变化时更新节点参数
+                spin->setValue(vals[i]);
+                hLayout->addWidget(spin);
+                // 写回：更新数组的第 i 个分量
                 connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                        this, [this, name = param.name](double val) {
-                    if (currentNode_) {
-                        currentNode_->parameters[name] = (float)val;
-                        emit ParameterChanged();
-                    }
+                        this, [this, name, i, n](double v){
+                    if (!currentNode_) return;
+                    if (!currentNode_->parameters[name].is_array())
+                        currentNode_->parameters[name] = std::vector<float>(n, 0.0f);
+                    while ((int)currentNode_->parameters[name].size() <= i)
+                        currentNode_->parameters[name].push_back(0.0f);
+                    currentNode_->parameters[name][i] = (float)v;
+                    emit ParameterChanged();
                 });
-                break;
             }
-            case reflection::FieldType::Float3: {
-                // 三个浮点编辑器（R/G/B 或 X/Y/Z）
-                auto* widget = new QWidget;
-                auto* hLayout = new QHBoxLayout(widget);
-                hLayout->setContentsMargins(0, 0, 0, 0);
+            formLayout->addRow(QString::fromStdString(name), widget);
+            break;
+        }
 
-                QStringList labels = {"R", "G", "B"};
-                for (int i = 0; i < 3; i++) {
-                    auto* spin = new QDoubleSpinBox;
-                    spin->setRange(-10000.0, 10000.0);
-                    spin->setDecimals(3);
-                    spin->setSingleStep(0.1);
-                    hLayout->addWidget(new QLabel(labels[i]));
-                    hLayout->addWidget(spin);
-
-                    std::string paramKey = labels[i].toStdString();
-                    float val = 0.0f;
-                    if (currentNode_->parameters.contains(paramKey) &&
-                        currentNode_->parameters[paramKey].is_number()) {
-                        val = currentNode_->parameters[paramKey].get<float>();
-                    }
-                    spin->setValue(val);
-                    spinBoxes_[paramKey] = spin;
-
-                    connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                            this, [this, key = paramKey](double val) {
-                        if (currentNode_) {
-                            currentNode_->parameters[key] = (float)val;
-                            emit ParameterChanged();
-                        }
-                    });
-                }
-                formLayout->addRow(
-                    QString::fromStdString(param.name), widget);
-                break;
-            }
-            default:
-                break;
+        default:
+            // 未支持的类型（如 Matrix——参数层不常用，见课5 两层类型系统说明）
+            formLayout->addRow(QString::fromStdString(name), new QLabel("(unsupported type)"));
+            break;
         }
     }
 
@@ -603,11 +647,30 @@ void MainWindow::SetupDockWidgets() {
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `E:\UE5\Engine\Source\Editor\MaterialEditor\Private\SMaterialPalette.cpp` — 调色板
-- `E:\UE5\Engine\Source\Editor\MaterialEditor\Private\MaterialEditorDetailCustomization.cpp` — 详情面板
-- `E:\UE5\Engine\Source\Editor\PropertyEditor\Private\PropertyEditor.cpp` — 属性编辑器框架
+- `Engine/Source/Editor/MaterialEditor/Private/SMaterialPalette.cpp` — 调色板（对照 `NodePalettePanel`）
+- `Engine/Source/Editor/MaterialEditor/Private/MaterialEditorDetailCustomization.cpp` — 材质详情面板定制
+- `Engine/Source/Editor/PropertyEditor/Private/PropertyEditor.cpp` — 属性编辑器框架（对照 `PropertyPanel`）
+
+### 对照 UE 属性面板（Details Panel）
+
+| 我们的（Qt）| UE（Slate + PropertyEditor）| 作用 |
+|------------|----------------------------|------|
+| `PropertyPanel`（QWidget）| `IDetailsView` / `SDetailsView` | 属性面板 |
+| `switch(param.type)` 选控件 | `IPropertyTypeCustomization` | 按类型生成编辑器 |
+| `QDoubleSpinBox`（Float）| `SNumericDropDown` / `SSpinBox` | 浮点编辑 |
+| `QSpinBox`（Int）| `SNumericEntryBox<int>` | 整数编辑 |
+| `QCheckBox`（Bool）| `SCheckBox` | 布尔编辑 |
+| `QLineEdit`（String）| `SEditableTextBox` | 字符串编辑 |
+| N × SpinBox（向量）| `SNumericVectorInputBox` | 向量编辑（xyzw）|
+
+**关键差异**：
+1. **UE 的属性面板是通用框架**（`IPropertyTypeCustomization`），每种类型注册一个定制器，反射（UProperty）驱动生成。我们的 `PropertyPanel` 用 `switch(FieldType)`——更简单，但本质一样（反射字段驱动 UI）。
+2. **UE 支持更多类型**（矩阵、枚举、对象引用、数组等），我们的 `PropertyPanel` 覆盖常用类型（Float/Int/Bool/String/向量）；Matrix 参数层不常用（见课5 两层类型系统），暂不支持。
+3. **数据绑定**：UE 的属性面板直接绑定 UProperty（读写对象字段）；我们读写 `node->parameters[name]`（JSON map），编译时再 `SetParameter` 到 Expression。
+
+> **搜索关键词**（UE 源码）：`IDetailsView`、`IPropertyTypeCustomization`、`FDetailWidgetRow`、`SMaterialPalette`。
 
 ---
 

@@ -582,8 +582,8 @@ JSON 文件格式保持兼容：依然是 `parameters` 字段下的 key-value �
 
 ## UE5 参考
 
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\Materials\Material.cpp` — 搜索 `Serialize`
-- `E:\UE5\Engine\Source\Runtime\Core\Private\Serialization\` — 序列化框架
+- `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp` — 搜索 `Serialize`
+- `Engine/Source/Runtime/Core/Private/Serialization/` — 序列化框架
 - 材质导出：搜索 `Export` 或 `CopyMaterialFunctions`
 
 ---

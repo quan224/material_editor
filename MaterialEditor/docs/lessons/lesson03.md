@@ -162,7 +162,7 @@ public:
 - `CanConnectTo` 做三个检查：方向、自身、类型兼容
 - `defaultValue` 用字符串存储默认值（模仿 UE5 的 FString DefaultValue），格式如 "0.5"、"(0,0,1)"，编译时由编译器解析
 
-**UE5 参考**：`E:\UE5\Engine\Source\Runtime\Engine\Classes\EdGraph\EdGraphPin.h` — 查看 `FEdGraphPin` 和 `FEdGraphPinType`
+**UE5 参考**：`Engine/Source/Runtime/Engine/Classes/EdGraph/EdGraphPin.h` — 查看 `FEdGraphPin` 和 `FEdGraphPinType`
 
 ### 4. Node.h / Node.cpp — 节点
 
@@ -239,8 +239,8 @@ const Pin* Node::FindOutputPin(const std::string& name) const {
 - 引脚查找通过名称，这在编译时很常用：`node->FindInputPin("BaseColor")`
 
 **UE5 参考**：
-- `E:\UE5\Engine\Source\Runtime\Engine\Classes\EdGraph\EdGraphNode.h` — `NodePosX`, `NodePosY` 等属性
-- `E:\UE5\Engine\Source\Runtime\Engine\Public\Materials\MaterialExpression.h` — `GetInput()`, `GetOutput()` 方法
+- `Engine/Source/Runtime/Engine/Classes/EdGraph/EdGraphNode.h` — `NodePosX`, `NodePosY` 等属性
+- `Engine/Source/Runtime/Engine/Public/Materials/MaterialExpression.h` — `GetInput()`, `GetOutput()` 方法
 
 ### 5. Connection.h — 连接
 
@@ -503,8 +503,8 @@ void Graph::Disconnect(const UUID& connectionId) {
 - 所有修改操作都发射信号（`NodeAdded` 等），UI 层监听这些信号来更新显示
 
 **UE5 参考**：
-- `E:\UE5\Engine\Source\Runtime\Engine\Classes\EdGraph\EdGraph.h`
-- `E:\UE5\Engine\Source\Runtime\Engine\Classes\Materials\Material.h` — 查看 FExpressionInput 列表
+- `Engine/Source/Runtime/Engine/Classes/EdGraph/EdGraph.h`
+- `Engine/Source/Runtime/Engine/Classes/Materials/Material.h` — 查看 FExpressionInput 列表
 
 ---
 

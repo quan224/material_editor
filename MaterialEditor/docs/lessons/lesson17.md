@@ -956,11 +956,11 @@ endif()
 
 ## UE5 参考
 
-- `E:\UE5\Engine\Source\Editor\MaterialEditor\Private\MaterialEditorPreview.cpp` — 预览渲染
+- `Engine/Source/Editor/MaterialEditor/Private/MaterialEditorPreview.cpp` — 预览渲染
 - 搜索 `UpdateMaterialPreview` — 预览更新逻辑
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\MaterialEditorRender.cpp` — 预览渲染实现
-- `E:\UE5\Engine\Source\Runtime\Engine\Shaders\Private\BasePassPixelShader.ush` — PBR 着色
-- `E:\UE5\Engine\Source\Runtime\RHI\D3D12\` — UE5 的 DX12 RHI 实现
+- `Engine/Source/Runtime/Engine/Private/MaterialEditorRender.cpp` — 预览渲染实现
+- `Engine/Source/Runtime/Engine/Shaders/Private/BasePassPixelShader.ush` — PBR 着色
+- `Engine/Source/Runtime/RHI/D3D12/` — UE5 的 DX12 RHI 实现
 
 ---
 

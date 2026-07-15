@@ -22,6 +22,18 @@
 
 这个模式对应 UE5 中每个 `MaterialExpression*.cpp` 的 `Compile()` 方法 + UPROPERTY 字段声明。
 
+**对照 UE `UMaterialExpression`**（`Engine/Source/Runtime/Engine/Public/Materials/MaterialExpression.h`）：
+
+| 我们的 | UE | 作用 |
+|--------|-----|------|
+| `Expression` 基类 | `UMaterialExpression` | 表达式抽象基类 |
+| `ME_FIELD` 字段 | `UPROPERTY` 字段 | 暴露给属性面板的可编辑参数 |
+| `Compile(MaterialCompiler*, Node*)` | `Compile(FMaterialCompiler*, int32 OutputIndex)` | 编译逻辑：调编译器算子 |
+| `ME_DISPLAY_NAME/CATEGORY` | `GetCaption()` + 节点分类 | UI 显示名 + 调色板分组 |
+| `ExpressionRegistry` 注册 | UCLASS 自动注册到反射系统 | 按 type_name 创建实例 |
+
+UE 的 `UMaterialExpression` 比 `Expression` 多很多东西（撤销重做、复制粘贴、节点位置、引脚对象 `FExpressionInput` 等），但**核心 Compile 模式一致**：递归编译输入引脚 → 调编译器算子。详见下文"UE5 参考"的逐行对照。
+
 ---
 
 ## 操作步骤
@@ -362,14 +374,80 @@ int main(int argc, char* argv[]) {
 
 ---
 
-## UE5 参考
+## 扩展版验证：向量折叠（课6 扩展版的核心能力）
 
-每个表达式对照 UE5 源码：
-- Add: `MaterialExpressionAdd.cpp` → 搜索 `int32 UMaterialExpressionAdd::Compile`
-- Multiply: `MaterialExpressionMultiply.cpp`
-- Constant3Vector: `MaterialExpressionConstant3Vector.cpp`
+把上面的测试改成"**两个 Constant3Vector 相加**"，验证课6 扩展版的向量常数折叠：
 
-文件都在 `E:\UE5\Engine\Source\Runtime\Engine\Private\Materials\` 下，每个文件 50~200 行，结构清晰。
+```cpp
+// 两个常量向量节点
+auto nodeC1 = NodeFactory::GetInstance().Create("ExprConstant3Vector", {0, 0});
+nodeC1->parameters["r_"] = 1.0f; nodeC1->parameters["g_"] = 0.0f; nodeC1->parameters["b_"] = 0.0f;  // 红 (1,0,0)
+
+auto nodeC2 = NodeFactory::GetInstance().Create("ExprConstant3Vector", {0, 100});
+nodeC2->parameters["r_"] = 0.0f; nodeC2->parameters["g_"] = 1.0f; nodeC2->parameters["b_"] = 0.0f;  // 绿 (0,1,0)
+
+auto nodeAdd = NodeFactory::GetInstance().Create("ExprAdd", {300, 0});
+// 连接：C1 → Add.A，C2 → Add.B，Add → Output.BaseColor
+graph.Connect(nodeC1->outputPins[0].id, nodeAdd->FindInputPin("A")->id);
+graph.Connect(nodeC2->outputPins[0].id, nodeAdd->FindInputPin("B")->id);
+graph.Connect(nodeAdd->outputPins[0].id, graph.GetOutputNode()->FindInputPin("BaseColor")->id);
+
+auto result = compiler.Compile(&graph);
+```
+
+**预期：`Add((1,0,0), (0,1,0))` 编译期折叠成 `(1,1,0)`**——因为课6 扩展版的 `Constant3` 走常量路径存 `Vec3`，`Add` 发现两边都是常量就调 `ConstantFolding::FoldBinary` 逐分量算。生成的 HLSL 只有一个常量、**没有加法指令**：
+
+```
+    // Material outputs
+    // BaseColor = float3(1.000000, 1.000000, 0.000000)
+```
+
+> 如果折叠没生效，HLSL 会是 `float3 Local0 = float3(1,0,0); float3 Local1 = float3(0,1,0); float3 Local2 = Local0 + Local1;`——说明 `Constant3` 没走常量路径（检查课6 的 `AddConstantChunk` 是否接收 variant）或 `Add` 没判断 `IsConstant`。这正是扩展版 variant 折叠要验证的。
+
+---
+
+## UE5 参考（相对 `Engine/` 路径）
+
+每个表达式对照 UE5 真实实现——UE 的 `UMaterialExpression` 子类结构和我们一样：UPROPERTY 字段 + `Compile(FMaterialCompiler*)` 方法。
+
+| 我们的表达式 | UE 对应 | UE 源码位置（相对 `Engine/`）|
+|-------------|---------|------------------------------|
+| `ExprAdd` | `UMaterialExpressionAdd` | `Source/Runtime/Engine/Private/Materials/MaterialExpressionAdd.cpp` |
+| `ExprSubtract` | `UMaterialExpressionSubtract` | 同目录 `MaterialExpressionSubtract.cpp` |
+| `ExprMultiply` | `UMaterialExpressionMultiply` | `MaterialExpressionMultiply.cpp` |
+| `ExprDivide` | `UMaterialExpressionDivide` | `MaterialExpressionDivide.cpp` |
+| `ExprPower` | `UMaterialExpressionPower` | `MaterialExpressionPower.cpp` |
+| `ExprLerp` | `UMaterialExpressionLinearInterpolate` | `MaterialExpressionLinearInterpolate.cpp` |
+| `ExprClamp` | `UMaterialExpressionClamp` | `MaterialExpressionClamp.cpp` |
+| `ExprAbs` | `UMaterialExpressionAbs` | `MaterialExpressionAbs.cpp` |
+| `ExprConstant` | `UMaterialExpressionConstant` | `MaterialExpressionConstant.cpp` |
+| `ExprConstant3Vector` | `UMaterialExpressionConstant3Vector` | `MaterialExpressionConstant3Vector.cpp` |
+
+**UE 的 `UMaterialExpressionAdd::Compile` 真实长什么样**（对照我们的 `ExprAdd::Compile`）：
+
+```cpp
+// UE: Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionAdd.cpp
+int32 UMaterialExpressionAdd::Compile(FMaterialCompiler* Compiler, int32 OutputIndex)
+{
+    int32 Result = INDEX_NONE;
+    int32 A = Compiler->CompileInput(A_input);   // ← 等同我们的 c->CompileInputPin(node, "A")
+    int32 B = Compiler->CompileInput(B_input);
+    if (A != INDEX_NONE && B != INDEX_NONE)
+    {
+        Result = Compiler->Add(A, B);             // ← 等同我们的 c->Add(a, b)
+    }
+    return Result;
+}
+```
+
+**逐行对照**：
+- UE `Compiler->CompileInput(A_input)` ≈ 我们 `c->CompileInputPin(node, "A")`——递归编译上游引脚
+- UE `Compiler->Add(A, B)` ≈ 我们 `c->Add(a, b)`——调编译器算子生成代码块
+- UE 返回 `int32`（chunk 索引）≈ 我们返回 `int32_t`
+
+**几乎一模一样**——我们的表达式设计就是 UE 的简化版。区别只在：UE 的 `CompileInput` 接收 `FExpressionInput`（带引脚对象引用），我们接收引脚名字字符串；UE 用 `INDEX_NONE`(-1) 表错误，我们也用负数哨兵。
+
+**搜索关键词**（在 UE 源码）：`UMaterialExpressionAdd::Compile`、`UMaterialExpressionConstant::Compile`、`Compiler->Add`、`Compiler->Constant`。
 
 ---
 

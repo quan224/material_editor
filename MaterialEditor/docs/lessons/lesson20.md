@@ -618,10 +618,10 @@ void MainWindow::OnCompile() {
 
 ## UE5 参考
 
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\Materials\MaterialExpressionScalarParameter.cpp`
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\Materials\MaterialExpressionVectorParameter.cpp`
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\Materials\MaterialExpressionTextureSample.cpp`
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\Materials\MaterialExpressionFresnel.cpp`
+- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionScalarParameter.cpp`
+- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionVectorParameter.cpp`
+- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionTextureSample.cpp`
+- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionFresnel.cpp`
 - 着色器统计：搜索 `GetShaderInstructionCount` / `MaterialStats`
 - 多平台：搜索 `EShaderPlatform` / `CompileShader`
 

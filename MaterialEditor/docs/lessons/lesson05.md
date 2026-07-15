@@ -209,6 +209,32 @@ FieldType_t 确定                    调用 toJson：
 
 **理解了这三个层次，再往下看具体实现就一目了然**：FieldType 是层 2，FieldDesc 里那两个函数指针是层 3，Accessor<T> 是层 1 的实现。
 
+#### 对照 UE 反射系统（UProperty / UClass / UHT）
+
+UE 的反射是工业级，但核心思路和我们的类型擦除一致——都是"编译期把类型信息压扁成运行期可查询的元数据"：
+
+| 我们的教学版 | UE 对应 | 作用 |
+|-------------|---------|------|
+| `FieldDesc`（字段描述符）| `FProperty`（旧名 `UProperty`）| 描述一个字段：名字、类型、偏移、读写 |
+| `ClassDesc`（类描述符）| `UClass` | 描述一个类：所有字段的集合 + 元数据 |
+| `Accessor<T>::toJson/fromJson` | `FProperty::ImportText/ExportText` | 类型擦除的读写（UE 用虚函数，我们用函数指针）|
+| `ME_FIELD` 宏 | `UPROPERTY` 宏 | 标记字段参与反射 |
+| `ME_BEGIN_CLASS`/`ME_END_CLASS` | `UCLASS` + UHT 代码生成 | 注册类的元数据 |
+| `Registry`（全局注册表）| `UClass` 静态对象 + 全局对象工厂 | 按 type_name 找到类元信息 |
+
+**三个关键差异**：
+
+1. **代码生成方式**：UE 用 **UHT（UnrealHeaderTool）单独的预处理阶段**扫描 `UCLASS`/`UPROPERTY` 宏，生成 `.generated.h` 反射代码。我们用**宏 + 模板在 C++ 编译期直接生成**（`ME_BEGIN_CLASS` 展开成 `GetClassDesc_Static()`），不需要单独工具——代价是宏写起来绕、调试难，但教学项目够用。
+
+2. **类型擦除手段**：UE 用**虚函数**（`FProperty::ImportText` 是虚函数，子类 `FFloatProperty` 等重写），我们用**函数指针**（`FieldDesc::toJson`）。本质都是运行期分发，函数指针更轻量（无虚表）、但没 UE 的继承扩展性。
+
+3. **元数据范围**：UE 的 `UClass` 包含**远多于此**的信息——继承链、接口、函数表（`TArray<UFunction*>`）、属性回调、GC 信息。我们的 `ClassDesc` 只管字段表（材质编辑器够用，不需要 GC/继承/函数反射）。
+
+> **UE 源码**（相对 `Engine/`）：
+> - `Engine/Source/Runtime/CoreUObject/Public/UObject/ObjectMacros.h` — `UCLASS`/`UPROPERTY` 宏定义
+> - `Engine/Source/Runtime/CoreUObject/Public/UObject/UnrealType.h` — `FProperty`/`UField`（字段基类）
+> - `Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h` — `UClass`（类元信息）
+
 ---
 
 ### 1.3 字段类型枚举（层 2：运行期类型 ID）
@@ -241,6 +267,26 @@ enum class FieldType {
 ```
 
 每种类型对应一个 Accessor 模板偏特化。需要支持新类型时，这里加枚举值 + 写偏特化。
+
+#### 对照 UE：两层类型系统（重要——理解反射 vs 编译器的关键）
+
+项目里有**两个类型枚举**，分别管不同层：
+
+| 枚举 | 所在层 | 描述什么 | 取值 |
+|------|--------|---------|------|
+| `FieldType`（反射层，本课）| L3 反射 | **参数/属性**的类型（UI 编辑的字段）| Float / **Int** / Bool / String / Float2/3/4 |
+| `EValueType`（编译器层，课6）| L2 数据模型 | **引脚/代码块**的类型（HLSL 运算）| Float1-4 / Int1-4 / Matrix / Texture / Sampler |
+
+**为什么 `FieldType` 没有 Matrix / Texture / Sampler**：
+- `FieldType` 管"UI 参数"——材质参数是 float/int/bool/string/向量这些**能直接在属性面板手调的值**。
+- **Matrix** 极少作为参数（矩阵是运算中间结果，如 `Transform` 节点内部产生，不是手调参数）。
+- **Texture** 是资源引用，走单独的 `TextureParameter`（课18 参数系统），不是普通字段。
+- **Sampler** 是渲染状态，不暴露为参数。
+- 所以反射层 `FieldType` 不需要它们——这些类型在编译器层 `EValueType`（课6 扩展）处理。
+
+**对照 UE `EMaterialValueType`**（`Engine/Source/Runtime/Engine/Public/MaterialValueType.h`）：UE 用一个 **64 位 bitmask** 统一表示所有类型（float/int/matrix/texture 全在一个 enum），不区分"参数层/代码层"。教学版**分两个枚举**是为了**可读性**（反射层只见可编辑类型，编译器层见运算类型），代价是两层要做映射（`GetFieldType` + 反射序列化时转换）。
+
+> **一句话**：`FieldType` 管"属性面板能编辑什么"，`EValueType` 管"HLSL 代码能运算什么"——各管一段，在 `Expression::Compile()` 这个边界对接（参数值 → HLSL 常量）。
 
 ### 1.4 字段描述符 FieldDesc（层 3：函数指针存什么）
 

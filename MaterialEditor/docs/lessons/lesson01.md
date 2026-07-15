@@ -14,14 +14,14 @@
 CMake 是 C++ 的构建配置工具。你写一个 `CMakeLists.txt` 描述"源文件在哪、依赖什么库"，CMake 就帮你生成 VS 项目或 Makefile。
 
 在 UE5 中，这个角色由 **UnrealBuildTool**（UBT）承担。每个 UE5 模块有一个 `*.Build.cs` 文件，等同于我们的 `CMakeLists.txt`。例如：
-- UE5：`E:\UE5\Engine\Source\Editor\MaterialEditor\MaterialEditor.Build.cs`
+- UE5：`Engine/Source/Editor/MaterialEditor/MaterialEditor.Build.cs`
 - 我们：`MaterialEditor/CMakeLists.txt`
 
 ### Qt 的程序入口
 Qt 程序的入口和普通 C++ 程序一样是 `main()`，但需要创建一个 `QApplication` 对象来管理事件循环（窗口消息、鼠标键盘事件等）。最后调用 `app.exec()` 进入事件循环，程序就不会退出了。
 
 在 UE5 中，这个角色是 `FEngineLoop`：
-- UE5：`E:\UE5\Engine\Source\Runtime\Launch\Private\Launch.cpp` → `ENGINE_MAIN()`
+- UE5：`Engine/Source/Runtime/Launch/Private/Launch.cpp` → `ENGINE_MAIN()`
 - 我们：`src/main.cpp` → `main()`
 
 ### CMAKE_AUTOMOC 是什么？
@@ -33,7 +33,7 @@ Qt 有一个叫 **MOC（Meta-Object Compiler）** 的工具。当你写一个类
 
 ### 1. 创建目录结构
 
-在 `E:\UE5_mirror\MaterialEditor\` 下手动创建以下结构：
+在 `E:/UE5_mirror/MaterialEditor/` 下手动创建以下结构：
 
 ```
 MaterialEditor/
@@ -145,7 +145,7 @@ vcpkg install glm nlohmann-json qtbase --triplet x64-windows
 ### 5. 配置和编译
 
 ```bash
-cd E:\UE5_mirror\MaterialEditor
+cd E:/UE5_mirror/MaterialEditor
 
 # 配置（指定 Qt 路径和生成器）
 cmake -B build -G "Visual Studio 17 2022" -DCMAKE_PREFIX_PATH="C:/Qt/6.5.0/msvc2019_64"
@@ -184,7 +184,7 @@ build\Debug\MaterialEditor.exe
 | `QWidget window` | UE5 中 `SWindow` — Slate 窗口控件 |
 
 想看 UE5 的最小程序结构可以参考：
-`E:\UE5\Engine\Source\Programs\BlankProgram\` — 这是 UE5 源码中最简单的独立程序，只有几百行。
+`Engine/Source/Programs/BlankProgram/` — 这是 UE5 源码中最简单的独立程序，只有几百行。
 
 ---
 

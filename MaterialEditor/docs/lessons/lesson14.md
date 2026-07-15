@@ -1036,10 +1036,9 @@ endif()
 ### 6. 编译和运行
 
 ```bash
-cd E:/UE5_mirror/MaterialEditor
-mkdir build && cd build
-cmake ..
-cmake --build . --config Debug
+cd material_editor_project
+cmake --preset mingw            # 配置（MinGW preset，见课5 环境搭建）
+cmake --build build-mingw       # 编译
 ```
 
 运行后应该看到一个蓝色窗口，标题为 "Material Editor -- DX12 Clear Screen Test"。

@@ -236,6 +236,26 @@ void Test_ConstantFolding() {
     }
 }
 
+// 测试3b：向量常数折叠（扩展版核心能力，直接测编译器 API）
+// 验证课6 扩展版的 variant 折叠：Constant3 + Constant3 → 编译期算成 Vec3
+void Test_VectorConstantFolding() {
+    ME_LOG_INFO("=== 测试3b: 向量折叠 Constant3(1,0,0) + Constant3(0,1,0) ===");
+    MaterialCompiler c;
+    int32_t a = c.Constant3(1.0f, 0.0f, 0.0f);
+    int32_t b = c.Constant3(0.0f, 1.0f, 0.0f);
+    int32_t s = c.Add(a, b);
+
+    if (c.IsConstant(s)) {
+        // GetConstantValue 返回 variant，取 Vec3
+        Vec3 v = std::get<Vec3>(c.GetConstantValue(s));
+        bool ok = (v.x == 1.0f && v.y == 1.0f && v.z == 0.0f);
+        ME_LOG_INFO("向量折叠: (1,0,0)+(0,1,0) = (%f,%f,%f) %s",
+                    v.x, v.y, v.z, ok ? "PASS" : "FAIL");
+    } else {
+        ME_LOG_ERROR("向量折叠未生效：Add 结果不是常量（检查课6 variant 折叠）");
+    }
+}
+
 // 测试4：循环检测
 void Test_CycleDetection() {
     ME_LOG_INFO("=== 测试4: 循环检测 ===");
@@ -293,6 +313,7 @@ int main(int argc, char* argv[]) {
     Test_TypeSystem();
     Test_CycleDetection();
     Test_ConstantFolding();
+    Test_VectorConstantFolding();   // 扩展版：向量折叠
     Test_Constant3ToBaseColor();
     Test_ComplexChain();
 
@@ -381,12 +402,14 @@ BaseColor = float3(Local3, Local3, Local3);
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `E:\UE5\Engine\Source\Runtime\Engine\Private\Materials\HLSLMaterialTranslator.cpp`
-- 搜索 `TranslateMaterial` — 编译入口
-- 搜索 `GetMaterialShaderCode` — 最终代码输出
-- 搜索 `VerifyShaderIsValid` — 验证逻辑
+- `Engine/Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.cpp`
+- 搜索 `TranslateMaterial` — 编译入口（对照我们的 `MaterialCompiler::Compile`）
+- 搜索 `GetMaterialShaderCode` — 最终代码输出（对照 `GenerateCode`/`HLSLGenerator::Generate`）
+- 搜索 `VerifyShaderIsValid` — 验证逻辑（对照我们的 `result.success` 检查）
+
+**UE 的端到端验证**：UE 有完整的自动化测试（`MaterialTest.cpp`、`HLSLMaterialTranslatorTest.cpp`），覆盖各种节点组合 + 折叠 + 类型推导。我们的 `test_compiler_pipeline.cpp` 就是简化版——同样的思路（构造图 → 编译 → 验证 HLSL），只是测试用例少（UE 有几百个）。
 
 ---
 
