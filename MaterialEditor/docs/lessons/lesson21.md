@@ -1741,7 +1741,7 @@ request.setRawHeader("User-Agent",
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
 | 功能 | UE5 源码位置 |
 |------|-------------|
@@ -1750,9 +1750,34 @@ request.setRawHeader("User-Agent",
 | FBX 导入 | `Engine/Source/Runtime/FbxMeshBuilder/Private/FbxMeshBuilder.cpp` |
 | OBJ 导入 | `Engine/Source/Runtime/GeometryCollection/Factories/GeometryCollectionOBJFactory.cpp` |
 | 资源导入框架 | `Engine/Source/Runtime/Engine/Classes/Factories/Factory.h` |
-| 材质贴图绑定 | `Engine/Source/Runtime/Engine/Private/Materials/MaterialShader.cpp` — 搜索 `FMaterialShaderParameters` |
+| 材质贴图绑定 | `Engine/Source/Runtime/Engine/Private/Materials/MaterialShader.cpp` — `FMaterialShaderParameters` |
 | 描述符管理 | `Engine/Source/Runtime/D3D12RHI/Private/D3D12DescriptorCache.cpp` |
 | 异步资源加载 | `Engine/Source/Runtime/Engine/Private/AsyncLoading.cpp` |
+
+### 对照 UE 资源加载
+
+| 我们的 | UE | 作用 |
+|--------|-----|------|
+| stb_image（单文件库）| `Texture2D` + UAsset 导入管线 | 纹理加载 |
+| Assimp（开源）| FBX SDK（Autodesk 授权）+ 自研 OBJ | 模型导入 |
+| 同步加载 | 异步加载（`AsyncLoading` + 流式）| 加载策略 |
+| 手动 SRV 描述符 | `FD3D12DescriptorCache`（描述符池）| 描述符管理 |
+
+**四个关键差异**：
+
+1. **纹理格式**：UE 用自研压缩格式（BC/ASTC/ETC，平台相关，GPU 直接解压）。我们用 stb_image 解码成 **RGBA 未压缩**——简单但占显存大（一张 4K 贴图 64MB）。生产要用压缩纹理（块1 纹理类型，`lesson06-extension.md`）。
+
+2. **模型导入**：UE 用 FBX SDK（Autodesk 授权，闭源，质量高）+ 自研 OBJ/USD。我们用 **Assimp**（开源，支持 40+ 格式）——免费，但复杂 FBX 的导入质量不如 FBX SDK。
+
+3. **异步加载**：UE 的资源加载是**异步的**（`AsyncLoading` + 后台线程 + 流式 + 引用计数卸载），不卡帧。我们是**同步加载**（加载时卡）——简单，大模型会卡。
+
+4. **描述符管理**：UE 用 `FD3D12DescriptorCache`（描述符池 + 复用，避免每帧重建）。我们手动创建 SRV（每个纹理一个描述符，不复用）——简单，但纹理多时描述符堆吃紧。
+
+### 扩展预告：纹理类型（块1，见 `lesson06-extension.md`）
+
+块1（类型系统扩展）规划 `EValueType::Texture2D` / `SamplerState`——让纹理成为**编译器层一等类型**（不是参数层）。`TextureSample` 节点接收 `Texture2D` + `SamplerState`，编译期类型检查，采样返回 `Float4`。当前 lesson21 的纹理加载（stb_image + DX12 上传）是基础——块1 让纹理能进材质图编译（传给 TextureSample）。
+
+> **搜索关键词**（UE 源码）：`Texture2D`、`FTexture2DMipMap`、`UAssetManager`、`FStreamableManager`、`FMaterialShaderParameters`、`FD3D12DescriptorCache`。
 
 ---
 

@@ -954,13 +954,30 @@ endif()
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `Engine/Source/Editor/MaterialEditor/Private/MaterialEditorPreview.cpp` — 预览渲染
-- 搜索 `UpdateMaterialPreview` — 预览更新逻辑
+- `Engine/Source/Editor/MaterialEditor/Private/MaterialEditorPreview.cpp` — 预览渲染（对照我们的 `MaterialPreview`）
 - `Engine/Source/Runtime/Engine/Private/MaterialEditorRender.cpp` — 预览渲染实现
 - `Engine/Source/Runtime/Engine/Shaders/Private/BasePassPixelShader.ush` — PBR 着色
 - `Engine/Source/Runtime/RHI/D3D12/` — UE5 的 DX12 RHI 实现
+
+### 对照 UE 材质预览
+
+| 我们的 | UE | 作用 |
+|--------|-----|------|
+| `MaterialPreview`（HLSL → PSO → 渲染）| `FMaterialEditorPreviewMaterial` + 预览 CDO | 材质预览管理 |
+| `DX12Widget`（QWidget + HWND + DX12）| `SViewport`（Slate）+ `FViewport` | 渲染窗口 |
+| QTimer 60fps 实时编译预览 | `UpdateMaterialPreview`（实时 RT 更新）| 编辑反馈循环 |
+
+**三个关键差异**：
+
+1. **UE 的预览渲染到独立 Render Target**（纹理），再显示在 `SViewport`——和主渲染管线解耦。我们的 `DX12Widget` 直接把交换链绑到 Qt 的 HWND——更直接，但和主窗口耦合（resize/生命周期要小心）。
+
+2. **UE 的预览是 RealTime viewport**（独立刷新，不等主渲染帧）。我们的用 QTimer 60fps 触发渲染——思路一样，都是"编辑→重编译→预览"的反馈循环。
+
+3. **PBR 着色器复杂度**：UE 的 `BasePassPixelShader.ush` 含光照模型、GI、反射、阴影接收等几千行。我们用课8 的简化 PBR（`DistributionGGX`/`GeometrySmith`/`FresnelSchlick` 几十行）——**核心算法一样**，UE 多了工业化细节（多光源、IBL、自阴影等）。
+
+> **搜索关键词**（UE 源码）：`MaterialEditorPreview`、`UpdateMaterialPreview`、`FViewport`、`SViewport`、`BasePassPixelShader`。
 
 ---
 

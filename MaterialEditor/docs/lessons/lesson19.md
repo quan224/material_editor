@@ -478,12 +478,29 @@ if (hasError_) {
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `Engine/Source/Editor/MaterialEditor/Private/MaterialEditor.cpp`
-- 搜索 `CompileMaterial` — 编译和错误处理
-- 搜索 `HandleMaterialCompilationErrors` — 错误可视化
-- UE5 撤销/重做：搜索 `FScopedTransaction` / `GEditor->Undo`
+- `Engine/Source/Editor/MaterialEditor/Private/MaterialEditor.cpp` — 编辑器主类
+- 搜索 `CompileMaterial` / `HandleMaterialCompilationErrors` — 编译 + 错误可视化
+- UE5 撤销/重做：搜索 `FScopedTransaction` / `GEditor->UndoTransaction`
+
+### 对照 UE 撤销重做系统
+
+| 我们的（命令模式）| UE（事务 + 对象快照）| 作用 |
+|----------------|---------------------|------|
+| `ICommand`（Do/Undo 虚函数）| `FUndoableTransaction` | 可撤销操作 |
+| `UndoStack`（命令栈）| `GEditor->UndoTransaction` / `RedoTransaction` | 撤销栈 |
+| 手写每个命令的 Do/Undo | `FScopedTransaction` + 对象 `Serialize` 快照 | 记录变更 |
+
+**三个关键差异**：
+
+1. **UE 用事务 + 对象快照**（`FScopedTransaction` 开启事务 → 修改 UObject → 事务自动记录修改前/后状态 → Undo 时恢复快照）。我们用**命令模式**（每个操作一个 `ICommand`，手写 Do/Undo）——更直接易懂，但每种操作（加节点/连线/改参数）都要写专门的命令类。
+
+2. **UE 的撤销是通用的**（任何 UObject 修改都能撤销，因为反射 + 序列化自动记录）。我们的命令模式要为每种操作手写——代价是没有"通用撤销"，但好处是撤销逻辑显式、可控。
+
+3. **错误可视化**：UE 的编译错误高亮到具体节点（`HandleMaterialCompilationErrors`）。这关联块5（错误诊断，`lesson06-extension.md`）——编译错误带节点/pin 定位，编辑器据此高亮。
+
+> **搜索关键词**（UE 源码）：`FScopedTransaction`、`GEditor->Undo`、`HandleMaterialCompilationErrors`、`CompileMaterial`。
 
 ---
 

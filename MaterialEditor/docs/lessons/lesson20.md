@@ -616,14 +616,38 @@ void MainWindow::OnCompile() {
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionScalarParameter.cpp`
-- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionVectorParameter.cpp`
-- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionTextureSample.cpp`
-- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionFresnel.cpp`
+- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionFresnel.cpp` — 复杂表达式
+- `Engine/Source/Runtime/Engine/Private/Materials/MaterialExpressionScalarParameter.cpp` — 参数表达式
 - 着色器统计：搜索 `GetShaderInstructionCount` / `MaterialStats`
 - 多平台：搜索 `EShaderPlatform` / `CompileShader`
+
+### 对照 UE 扩展功能
+
+| 我们的 | UE | 作用 |
+|--------|-----|------|
+| 更多 `ExprXxx`（Fresnel/Desaturation/...）| 100+ `UMaterialExpression*` | 节点库 |
+| 着色器指令数统计 | `GetShaderInstructionCount` / `MaterialStats` | 性能分析 |
+| 单平台（DX12）| `EShaderPlatform`（SM5/SM6/Vulkan/Metal）| 多平台编译 |
+
+**三个关键差异**：
+
+1. **表达式数量**：UE 有 **100+** `UMaterialExpression`（Fresnel、Desaturation、DDXY、CameraVector、Time、ViewProperty...）。我们的课7 只实现 ~10 个基础表达式——按需加，每个照课7 的反射模式（`ME_BEGIN_CLASS` + `Compile`），50-200 行/个。
+
+2. **着色器统计**：UE 显示指令数、纹理采样数、寄存器压力、shader 复杂度警告。我们的可以加（用 DX12 shader 反射查指令数）。
+
+3. **多平台**：UE 编译到 SM5/SM6/Vulkan/Metal/各主机后端。我们单平台（DX12/HLSL）——多平台是大工程（`lesson06-extension.md` 已排除，专注 DX12）。
+
+### 扩展预告：错误诊断（块5）+ 材质域/混合模式（块6）
+
+`lesson06-extension.md` 的块5/6 规划：
+- **块5 错误诊断**：编译错误（类型不匹配 / 循环依赖 / 未连接必需引脚 / 除零）带**节点 + pin 定位**，编辑器据此高亮出错节点（对照 UE 的 `HandleMaterialCompilationErrors`）。
+- **块6 材质域/混合模式**：`EMaterialDomain`（Surface/Unlit/PostProcess/Decal）+ `EBlendMode`（Opaque/Masked/Translucent/Additive）——决定 shader 结构（课8 的模板分支）+ blend state。
+
+这两块在课20 阶段加（扩展功能），`lesson06-extension.md` 有详细规划。
+
+> **搜索关键词**（UE 源码）：`MaterialExpressionFresnel`、`GetShaderInstructionCount`、`EShaderPlatform`、`EMaterialDomain`、`EBlendMode`、`HandleMaterialCompilationErrors`。
 
 ---
 

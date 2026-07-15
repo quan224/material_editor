@@ -580,11 +580,32 @@ JSON 文件格式保持兼容：依然是 `parameters` 字段下的 key-value �
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
 - `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp` — 搜索 `Serialize`
-- `Engine/Source/Runtime/Core/Private/Serialization/` — 序列化框架
-- 材质导出：搜索 `Export` 或 `CopyMaterialFunctions`
+- `Engine/Source/Runtime/Core/Private/Serialization/` — 序列化框架（对照我们的 `MaterialSerializer`）
+
+### 对照 UE 序列化
+
+| 我们的 | UE | 作用 |
+|--------|-----|------|
+| `MaterialSerializer`（JSON 文本）| `UMaterial::Serialize`（二进制 .uasset）| 保存/加载 |
+| `node->parameters`（JSON map）| `UPROPERTY` 字段自动序列化 | 节点参数 |
+| 引脚名称存连接（不是引脚 ID）| `FExpressionInput` 存对象引用 | 连接 |
+
+**三个关键差异**：
+
+1. **UE 用二进制 + 反射自动序列化**（`UPROPERTY` 字段自动进序列化流，不用手写每个字段）。我们用 **JSON + 手动序列化**（`MaterialSerializer::Serialize` 手写节点/连接每个字段）——好处是 `.mat.json` 人能读、能 git diff；代价是加字段要改序列化代码（反射能消除这个，见课5）。
+
+2. **连接存储**：UE 的 `FExpressionInput` 直接存对象引用（表达式指针）。我们用**节点 ID + 引脚名称**（加载时按名查找引脚）——因为我们的引脚 ID 每次创建都变，但名称稳定。
+
+3. **版本兼容**：UE 的 `FArchive` 有完善的版本控制 + 向后兼容（旧版本资产能加载）。我们用简单的 `"version": "0.1.0"` 字段 + 加载时检查——教学够用。
+
+### 扩展预告：参数系统（块4，见 `lesson06-extension.md`）
+
+当前 `node->parameters` 存的是**节点参数**（Constant 的 value、Constant3Vector 的 R/G/B）。块4 规划的**材质级参数**（`ScalarParameter`/`VectorParameter`/`TextureParameter`）是另一种——它们是**暴露给材质实例的 uniform**（蓝图/C++ 外部能改的变量），要单独存到材质参数表，不在 `node->parameters` 里。块4 在 `lesson06-extension.md` 详细规划，课18 先用 node->parameters。
+
+> **搜索关键词**（UE 源码）：`UMaterial::Serialize`、`FArchive`、`FMaterialResource::Serialize`、`ExportMaterialFunctions`。
 
 ---
 

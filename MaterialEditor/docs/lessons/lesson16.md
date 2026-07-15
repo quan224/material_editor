@@ -839,13 +839,30 @@ ME_LOG_INFO("VS compile: %s", vsResult.IsValid() ? "OK" : vsResult.errorMessage.
 
 ---
 
-## UE5 参考
+## UE5 参考（相对 `Engine/` 路径）
 
-- `Engine/Source/Runtime/Engine/Private/StaticMesh.cpp` — 网格生成
+- `Engine/Source/Runtime/Engine/Private/StaticMesh.cpp` — 网格生成（对照我们的 `Mesh`）
 - `Engine/Source/Runtime/Engine/Private/MaterialEditorRender.cpp` — 材质预览渲染
-- 搜索 `DrawSphere` / `DrawCube` — 预览几何体
-- `Engine/Source/Runtime/Engine/Private/ShaderCompiler/` — 着色器编译
-- `Engine/Source/Runtime/RHI/` — RHI 抽象层（DX12/OpenGL/Vulkan）
+- `Engine/Source/Runtime/RHI/` — RHI 抽象层（DX12/Vulkan/Metal 统一接口）
+
+### 对照 UE 渲染抽象（RHI 层）
+
+| 我们的（直接 DX12）| UE（RHI 抽象）| 作用 |
+|------------------|--------------|------|
+| `Shader`（D3DCompile + 根签名 + PSO）| `FRHIShader` + `FPipelineStateObject` | 着色器 + 管线状态 |
+| `Mesh`（顶点/索引缓冲）| `FRHIVertexBuffer` / `FStaticMeshVertexBuffers` | 几何数据 |
+| `Camera`（视图/投影矩阵）| `FSceneView` | 相机 |
+| `DX12Device`（课14）| `FD3D12Device` / `IRHIDevice` | GPU 设备 |
+
+**三个关键差异**：
+
+1. **UE 有 RHI（Render Hardware Interface）抽象层**——一套 `FRHI*` 接口，底层有 DX12/Vulkan/Metal 各实现，引擎上层不关心用哪个 API。我们的项目**直接用 DX12**（单后端），没有 RHI 层——代价是跨平台难，好处是简单、直接学 DX12 本身。
+
+2. **UE 的网格**（`FStaticMesh`）含 LOD、流式加载（`FStreamableRenderResource`）、显存驻留管理（`FRenderResource`）。我们的 `Mesh` 是简单顶点/索引缓冲，上传一次就用——教学够用，但缺少 LOD 和流式加载。
+
+3. **UE 的相机**（`FSceneView`）集成在场景渲染管线（`FSceneRenderer`），含遮挡剔除、LOD 选择、阴影级联等。我们的 `Camera` 只管生成视图/投影矩阵——纯数学，不含场景管理。
+
+> **搜索关键词**（UE 源码）：`FRHIShader`、`FPipelineStateObject`、`FStaticMeshRenderResources`、`FSceneView`、`FSceneRenderer`、`DrawSphere`。
 
 ---
 
