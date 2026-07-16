@@ -274,13 +274,12 @@ void PropertyPanel::SetNode(Node* node) {
     auto* paramGroup = new QGroupBox("Parameters");
     auto* formLayout = new QFormLayout(paramGroup);
 
-    // 扩展版：支持所有 FieldType（Float/Int/Bool/String/Float2/3/4）
+    // UE 风格：用 dynamic_cast 判断 Property 子类类型（不用枚举 switch）
     // 参数读写统一用 node->parameters[name]（JSON），值变化时 emit ParameterChanged 触发重编译
-    for (auto& param : params) {
-        const std::string& name = param.name;
-        switch (param.type) {
+    for (const Property* prop : params) {
+        const std::string& name = prop->name;
 
-        case reflection::FieldType::Float: {
+        if (dynamic_cast<const FloatProperty*>(prop)) {
             auto* spin = new QDoubleSpinBox;
             spin->setRange(-10000.0, 10000.0);
             spin->setDecimals(3);
@@ -293,10 +292,8 @@ void PropertyPanel::SetNode(Node* node) {
                     this, [this, name](double v){
                 if (currentNode_) { currentNode_->parameters[name] = (float)v; emit ParameterChanged(); }
             });
-            break;
         }
-
-        case reflection::FieldType::Int: {   // 扩展版新增
+        else if (dynamic_cast<const IntProperty*>(prop)) {
             auto* spin = new QSpinBox;
             spin->setRange(-1000000, 1000000);
             int val = (node->parameters.contains(name) && node->parameters[name].is_number_integer())
@@ -307,10 +304,8 @@ void PropertyPanel::SetNode(Node* node) {
                     this, [this, name](int v){
                 if (currentNode_) { currentNode_->parameters[name] = v; emit ParameterChanged(); }
             });
-            break;
         }
-
-        case reflection::FieldType::Bool: {   // 扩展版新增
+        else if (dynamic_cast<const BoolProperty*>(prop)) {
             auto* check = new QCheckBox;
             bool val = (node->parameters.contains(name) && node->parameters[name].is_boolean())
                        ? node->parameters[name].get<bool>() : false;
@@ -319,10 +314,8 @@ void PropertyPanel::SetNode(Node* node) {
             connect(check, &QCheckBox::toggled, this, [this, name](bool v){
                 if (currentNode_) { currentNode_->parameters[name] = v; emit ParameterChanged(); }
             });
-            break;
         }
-
-        case reflection::FieldType::String: {   // 扩展版新增
+        else if (dynamic_cast<const StringProperty*>(prop)) {
             auto* edit = new QLineEdit;
             std::string val = (node->parameters.contains(name) && node->parameters[name].is_string())
                               ? node->parameters[name].get<std::string>() : "";
@@ -331,21 +324,18 @@ void PropertyPanel::SetNode(Node* node) {
             connect(edit, &QLineEdit::textEdited, this, [this, name](const QString& v){
                 if (currentNode_) { currentNode_->parameters[name] = v.toStdString(); emit ParameterChanged(); }
             });
-            break;
         }
-
-        case reflection::FieldType::Float2:    // 扩展版：统一向量处理
-        case reflection::FieldType::Float3:
-        case reflection::FieldType::Float4: {
+        else if (dynamic_cast<const Vec2Property*>(prop) ||
+                 dynamic_cast<const Vec3Property*>(prop) ||
+                 dynamic_cast<const Vec4Property*>(prop)) {
             // 向量：N 个 SpinBox 横排，值统一存为 JSON 数组 [x,y,z,w]
-            int n = (param.type == reflection::FieldType::Float2) ? 2 :
-                    (param.type == reflection::FieldType::Float3) ? 3 : 4;
+            int n = dynamic_cast<const Vec2Property*>(prop) ? 2 :
+                    dynamic_cast<const Vec3Property*>(prop) ? 3 : 4;
             QStringList labels = {"X", "Y", "Z", "W"};
             auto* widget = new QWidget;
             auto* hLayout = new QHBoxLayout(widget);
             hLayout->setContentsMargins(0, 0, 0, 0);
 
-            // 读当前数组值
             std::vector<float> vals(n, 0.0f);
             if (node->parameters.contains(name) && node->parameters[name].is_array()) {
                 for (int i = 0; i < n && i < (int)node->parameters[name].size(); ++i)
@@ -360,7 +350,6 @@ void PropertyPanel::SetNode(Node* node) {
                 spin->setSingleStep(0.1);
                 spin->setValue(vals[i]);
                 hLayout->addWidget(spin);
-                // 写回：更新数组的第 i 个分量
                 connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                         this, [this, name, i, n](double v){
                     if (!currentNode_) return;
@@ -373,13 +362,10 @@ void PropertyPanel::SetNode(Node* node) {
                 });
             }
             formLayout->addRow(QString::fromStdString(name), widget);
-            break;
         }
-
-        default:
-            // 未支持的类型（如 Matrix——参数层不常用，见课5 两层类型系统说明）
+        else {
+            // 未支持的类型
             formLayout->addRow(QString::fromStdString(name), new QLabel("(unsupported type)"));
-            break;
         }
     }
 
@@ -666,7 +652,7 @@ void MainWindow::SetupDockWidgets() {
 | N × SpinBox（向量）| `SNumericVectorInputBox` | 向量编辑（xyzw）|
 
 **关键差异**：
-1. **UE 的属性面板是通用框架**（`IPropertyTypeCustomization`），每种类型注册一个定制器，反射（UProperty）驱动生成。我们的 `PropertyPanel` 用 `switch(FieldType)`——更简单，但本质一样（反射字段驱动 UI）。
+1. **UE 的属性面板是通用框架**（`IPropertyTypeCustomization`），每种类型注册一个定制器，反射（UProperty）驱动生成。我们的 `PropertyPanel` 用 `dynamic_cast<Property子类*>`——更简单，但本质一样（反射字段驱动 UI）。
 2. **UE 支持更多类型**（矩阵、枚举、对象引用、数组等），我们的 `PropertyPanel` 覆盖常用类型（Float/Int/Bool/String/向量）；Matrix 参数层不常用（见课5 两层类型系统），暂不支持。
 3. **数据绑定**：UE 的属性面板直接绑定 UProperty（读写对象字段）；我们读写 `node->parameters[name]`（JSON map），编译时再 `SetParameter` 到 Expression。
 

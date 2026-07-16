@@ -36,7 +36,7 @@ public:
 
 每个 `FieldDesc` 包含：
 - `name`：字段名（"scale"、"color"…）
-- `type`：FieldType 枚举（Float / Bool / String / Float3…）
+- `type`：Property 子类身份（FloatProperty / BoolProperty / StringProperty / Vec3Property…，用 `dynamic_cast` 判断）
 - `default_value`：默认值
 
 这就够了 —— UI 完全可以**数据驱动**地生成：
@@ -182,107 +182,87 @@ ReflectionDemoWidget::ReflectionDemoWidget(Expression* expr, QWidget* parent)
 }
 
 void ReflectionDemoWidget::BuildForm() {
-    auto params = expr_->GetParameters();
-
-    for (const auto& field : params) {
+    // GetParameters 返回 vector<const Property*>（课5 新反射系统）
+    for (const Property* prop : expr_->GetParameters()) {
         QWidget* editor = nullptr;
+        nlohmann::json cur = expr_->GetParameter(prop->name);
 
-        // === 根据 field.type 选 Qt 控件 ===
-        switch (field.type) {
-            case reflection::FieldType::Float: {
+        // === 用 dynamic_cast 判断 Property 子类类型（不用枚举 switch）===
+        if (dynamic_cast<const FloatProperty*>(prop)) {
+            auto* spin = new QDoubleSpinBox;
+            spin->setRange(-1000.0, 1000.0);
+            spin->setDecimals(3);
+            spin->setSingleStep(0.1);
+            spin->setValue(cur.is_number() ? cur.get<float>() : 0.0f);
+            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, &ReflectionDemoWidget::OnFieldChanged);
+            editor = spin;
+        }
+        else if (dynamic_cast<const BoolProperty*>(prop)) {
+            auto* check = new QCheckBox;
+            check->setChecked(cur.is_boolean() ? cur.get<bool>() : false);
+            connect(check, &QCheckBox::stateChanged,
+                    this, &ReflectionDemoWidget::OnFieldChanged);
+            editor = check;
+        }
+        else if (dynamic_cast<const StringProperty*>(prop)) {
+            auto* edit = new QLineEdit;
+            edit->setText(QString::fromStdString(
+                cur.is_string() ? cur.get<std::string>() : ""));
+            connect(edit, &QLineEdit::textEdited,
+                    this, &ReflectionDemoWidget::OnFieldChanged);
+            editor = edit;
+        }
+        else if (dynamic_cast<const Vec3Property*>(prop)) {
+            auto* container = new QWidget;
+            auto* hbox = new QHBoxLayout(container);
+            hbox->setContentsMargins(0, 0, 0, 0);
+            for (int i = 0; i < 3; ++i) {
                 auto* spin = new QDoubleSpinBox;
                 spin->setRange(-1000.0, 1000.0);
                 spin->setDecimals(3);
                 spin->setSingleStep(0.1);
-                // 从 Expression 读当前值作为初始值
-                nlohmann::json cur = expr_->GetParameter(field.name);
-                spin->setValue(cur.is_number() ? cur.get<float>() : 0.0f);
-
-                // QOverload 解决信号重载（valueChanged 有 QString 和 double 两个版本）
+                float v = (cur.is_array() && cur.size() > i) ? cur[i].get<float>() : 0.0f;
+                spin->setValue(v);
                 connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                         this, &ReflectionDemoWidget::OnFieldChanged);
-                editor = spin;
-                break;
+                hbox->addWidget(spin);
             }
-
-            case reflection::FieldType::Bool: {
-                auto* check = new QCheckBox;
-                nlohmann::json cur = expr_->GetParameter(field.name);
-                check->setChecked(cur.is_boolean() ? cur.get<bool>() : false);
-                connect(check, &QCheckBox::stateChanged,
-                        this, &ReflectionDemoWidget::OnFieldChanged);
-                editor = check;
-                break;
-            }
-
-            case reflection::FieldType::String: {
-                auto* edit = new QLineEdit;
-                nlohmann::json cur = expr_->GetParameter(field.name);
-                edit->setText(QString::fromStdString(
-                    cur.is_string() ? cur.get<std::string>() : ""));
-                connect(edit, &QLineEdit::textEdited,   // 注意：textEdited 不是 textChanged
-                        this, &ReflectionDemoWidget::OnFieldChanged);
-                editor = edit;
-                break;
-            }
-
-            case reflection::FieldType::Float3: {
-                // Vec3 用 3 个 SpinBox 横排
-                auto* container = new QWidget;
-                auto* hbox = new QHBoxLayout(container);
-                hbox->setContentsMargins(0, 0, 0, 0);
-                nlohmann::json cur = expr_->GetParameter(field.name);
-                for (int i = 0; i < 3; ++i) {
-                    auto* spin = new QDoubleSpinBox;
-                    spin->setRange(-1000.0, 1000.0);
-                    spin->setDecimals(3);
-                    spin->setSingleStep(0.1);
-                    float v = (cur.is_array() && cur.size() > i) ? cur[i].get<float>() : 0.0f;
-                    spin->setValue(v);
-                    connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                            this, &ReflectionDemoWidget::OnFieldChanged);
-                    hbox->addWidget(spin);
-                }
-                editor = container;
-                break;
-            }
-
-            default:
-                editor = new QLabel("(暂不支持的字段类型)");
+            editor = container;
+        }
+        else {
+            editor = new QLabel("(暂不支持的属性类型)");
         }
 
-        formLayout_->addRow(QString::fromStdString(field.name) + " :", editor);
-        fieldWidgets_[field.name] = editor;
+        formLayout_->addRow(QString::fromStdString(prop->name) + " :", editor);
+        fieldWidgets_[prop->name] = editor;
     }
 }
 
 void ReflectionDemoWidget::OnFieldChanged() {
-    // 遍历所有字段，把当前控件值写回 Expression
-    const reflection::ClassDesc* desc = expr_->GetClassDesc();
+    const ClassDesc* desc = expr_->GetClassDesc();
     if (!desc) return;
 
     for (const auto& [name, widget] : fieldWidgets_) {
-        const reflection::FieldDesc* field = desc->find(name);
-        if (!field) continue;
+        const Property* prop = desc->find(name);  // find 返回 const Property*
+        if (!prop) continue;
 
-        if (field->type == reflection::FieldType::Float) {
+        if (dynamic_cast<const FloatProperty*>(prop)) {
             auto* spin = qobject_cast<QDoubleSpinBox*>(widget);
             if (spin) expr_->SetParameter(name, (float)spin->value());
         }
-        else if (field->type == reflection::FieldType::Bool) {
+        else if (dynamic_cast<const BoolProperty*>(prop)) {
             auto* check = qobject_cast<QCheckBox*>(widget);
             if (check) expr_->SetParameter(name, check->isChecked());
         }
-        else if (field->type == reflection::FieldType::String) {
+        else if (dynamic_cast<const StringProperty*>(prop)) {
             auto* edit = qobject_cast<QLineEdit*>(widget);
             if (edit) expr_->SetParameter(name, edit->text().toStdString());
         }
-        else if (field->type == reflection::FieldType::Float3) {
-            // Vec3 控件是一个 QWidget 包了 3 个 SpinBox
+        else if (dynamic_cast<const Vec3Property*>(prop)) {
             auto* container = qobject_cast<QWidget*>(widget);
             if (!container) continue;
             auto* hbox = container->layout();
-            // 先读当前 JSON 再覆盖（这样未变化的分量保持原值）
             nlohmann::json jv = expr_->GetParameter(name);
             if (!jv.is_array()) jv = nlohmann::json::array({0, 0, 0});
             for (int i = 0; i < 3 && i < hbox->count(); ++i) {
@@ -302,8 +282,8 @@ void ReflectionDemoWidget::OnFieldChanged() {
 void ReflectionDemoWidget::RefreshJsonPreview() {
     // 把所有字段值序列化成 JSON，显示在底部
     nlohmann::json j;
-    for (const auto& field : expr_->GetParameters()) {
-        j[field.name] = expr_->GetParameter(field.name);
+    for (const Property* prop : expr_->GetParameters()) {
+        j[prop->name] = expr_->GetParameter(prop->name);
     }
 
     std::stringstream ss;

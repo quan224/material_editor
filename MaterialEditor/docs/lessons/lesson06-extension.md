@@ -28,7 +28,7 @@
 **要改的文件**：
 - `Types.h`：`EValueType` 加 `Int1/2/3/4`、`Matrix3x3`、`Matrix4x4`、`Texture2D`、`SamplerState`
 - `TypeSystem.h`：算术推导规则扩展（int+float 升级、matrix×vector、matrix×matrix）
-- `Reflection.h`：`FieldType` 同步加（如要让参数也支持 int/matrix）
+- `Reflection.h`：`Property` 继承体系加子类（如 IntProperty 等，同课5 的 Property 继承体系）
 - `Accessor`：加 int / matrix 的读写特化
 
 **关键设计点**：

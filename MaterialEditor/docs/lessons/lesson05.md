@@ -1,443 +1,226 @@
-# 课5：表达式基类 + 类型系统 + 反射系统
+# 课5：表达式基类 + 反射系统（UE 风格：Property 继承 + 注册表）
 
 ## 目标
 
-1. 实现 **迷你反射系统**（类似 UE5 的 UPROPERTY） —— 表达式的元数据由反射集中管理
-2. 定义 **Expression 抽象基类** —— 节点的"行为层"，只剩编译 + 引脚布局，参数全部走反射
-3. 定义 **TypeSystem 工具类** —— HLSL 类型推导规则
+1. 实现 **反射系统**（Property 继承体系 + 注册表，对标 UE5 的 `FProperty`/`UClass`/`IPropertyTypeCustomization`）
+2. 定义 **Expression 抽象基类** —— 节点的"行为层"，参数全部走反射
+3. 定义 **TypeSystem 工具类** —— HLSL 类型推导规则（课6 扩展版用）
 
 三者关系：
 
 ```
 Node（数据层）      Expression（行为层）          反射系统（元数据层）
 ├── id, position    ├── Compile() — 编译逻辑      ├── ClassDesc — 类元信息
-├── inputPins       ├── GetInputPins/             ├── FieldDesc — 字段元信息
-└── parameters      │   GetOutputPins — 引脚布局  └── Registry — 全局注册表
+├── inputPins       ├── GetInputPins/             ├── Property — 字段元信息（继承体系）
+└── parameters      │   GetOutputPins             └── PropertyCustomizer — UI 注册表
                     └── GetClassDesc() — 反射入口
-       │                    │                              │
-       └────── 三个层面共同描述一个材质表达式节点 ──────────┘
 ```
 
-**核心设计原则（这一课贯彻始终）：**
-
-- **元数据全部走反射**（typeName/displayName/category/fields 都存在 ClassDesc 里）
-- **行为用虚函数**（Compile、引脚布局）
-- **没有手写参数虚函数**（没有 GetParameters/SetParameter/GetParameter 这种手写 if-else 路径）
-- **没有 GetCategoryColor 这种 hardcoded if-else**（颜色属于 UI 层，不属于 Expression）
+**核心设计原则（对标 UE5）：**
+- **Property 继承体系**实现类型擦除（虚函数 `toJson`/`fromJson`，对标 `FProperty::ImportText`/`ExportText`）
+- **不使用枚举标识类型**——子类身份就是类型（`FloatProperty` 就是"float 类型"）
+- **注册表**替代 `switch(枚举)`——UI 层为每种类型注册定制器（对标 `IPropertyTypeCustomization`）
+- **ME_FIELD 宏**对标 `UPROPERTY` + UHT 代码生成
 
 ---
 
 ## 背景知识
 
-### Expression 和 Node 的关系
+### 类型擦除：用继承 + 虚函数（对标 UE）
 
-Node 只存数据（位置、引脚、参数 JSON）。但每种表达式有不同的**编译行为**——Add 节点编译成 HLSL 的 `+`，TextureSample 编译成 `tex2D()`。
+反射系统要让 `ClassDesc` 存"一个类的所有字段"。不同字段类型不同（float/int/string/Vec3...），怎么用**统一的方式**存？
 
-**Expression** 是这个"行为"的描述。这和 UE5 的 `UMaterialExpression` 一样。
+**方案：Property 继承体系**——每种类型一个子类，基类定义统一虚函数接口，运行期通过基类指针多态调用。
 
-### TypeSystem 的作用
+```
+Property（基类，虚函数接口）
+  ├── FloatProperty     → 重写 toJson/fromJson（处理 float）
+  ├── IntProperty       → 重写（处理 int32_t）
+  ├── BoolProperty      → 重写（处理 bool）
+  ├── StringProperty    → 重写（处理 std::string）
+  ├── Vec2/3/4Property  → 重写（处理 Vec2/3/4）
 
-Float1 + Float3 → Float3。类型推导规则由 TypeSystem 集中管理。
-
-### 为什么反射是必需的？
-
-设想一个颜色常量 `ExprConstant3Vector`，暴露 R/G/B 给属性面板。**没有反射**时（伪代码，展示"假设要手写"会有多糟）：
-
-```cpp
-// ❌ 反例：假设没有反射时的手写参数虚函数
-class ExprConstant3Vector : public Expression {
-    float R, G, B;
-public:
-    // 假设基类要求子类手写这三个函数（我们的设计里已经不需要）
-    std::vector<ParamDesc> GetParameters() const override {
-        return {
-            {"R", ParamType::Float, R},
-            {"G", ParamType::Float, G},
-            {"B", ParamType::Float, B},
-        };
-    }
-    void SetParameter(const std::string& name, const nlohmann::json& val) override {
-        if (name == "R" && val.is_number()) R = val.get<float>();
-        else if (name == "G" && val.is_number()) G = val.get<float>();
-        else if (name == "B" && val.is_number()) B = val.get<float>();
-    }
-    nlohmann::json GetParameter(const std::string& name) const override {
-        if (name == "R") return R;
-        if (name == "G") return G;
-        if (name == "B") return B;
-        return {};
-    }
-};
+ClassDesc 持有：std::vector<std::unique_ptr<Property>>   ← 基类指针数组
 ```
 
-字段名 `"R"`/`"G"`/`"B"` 各出现 3 次（共 9 次硬编码字符串），加一个参数改 4 处，拼写错误编译器不报错。
+**对标 UE**：UE 的 `FProperty` 就是这个设计——基类 `FProperty` + 子类 `FFloatProperty`/`FBoolProperty`/`FObjectProperty` 等，`UClass` 持有 `TArray<FProperty*>`。
 
-**有反射后**：
+### 对照：枚举方式 vs 继承方式
 
-```cpp
-// ✅ 反射版：声明字段 + 三行宏
-class ExprConstant3Vector : public Expression {
-public:
-    float R = 0.f, G = 0.f, B = 0.f;
-
-    ME_BEGIN_CLASS(ExprConstant3Vector)
-        ME_DISPLAY_NAME("Constant 3Vector")
-        ME_CATEGORY("Constants")
-        ME_FIELD(ExprConstant3Vector, R, 0.0f)
-        ME_FIELD(ExprConstant3Vector, G, 0.0f)
-        ME_FIELD(ExprConstant3Vector, B, 0.0f)
-    ME_END_CLASS(ExprConstant3Vector)
-
-    // ... 只需要写 Compile 和 GetInputPins/GetOutputPins
-};
-```
-
-加一个字段就是加一行 `ME_FIELD`。序列化、类型安全、UI 生成全自动。这就是 UE5 UPROPERTY 的简化版。
+| | 枚举 + 函数指针（旧版）| 继承 + 虚函数（本版，对标 UE）|
+|---|---|---|
+| 类型标识 | `FieldType` 枚举 | **子类身份**（FloatProperty 就是 float）|
+| 类型操作 | 函数指针（FieldDesc::toJson）| **虚函数**（Property::toJson）|
+| 统一存储 | FieldDesc 结构体（值）| `unique_ptr<Property>`（指针）|
+| UI 判断类型 | `switch(FieldType)` | **注册表**（类型→定制器）|
+| 对照 UE | 无（教学简化）| `FProperty` 继承体系 |
 
 ---
 
-## 第一部分：反射系统（元数据层，先讲因为后面要用）
+## 第一部分：反射系统（Property 继承体系）
 
 ### 1.1 文件结构
 
 ```
-src/Reflection/Public/Reflection.h          — 核心数据结构 + Accessor 模板
-src/Reflection/Public/ReflectionMacros.h    — 注册宏（ME_BEGIN_CLASS/ME_FIELD/ME_END_CLASS）
+src/Reflection/Public/Property.h         — Property 基类 + 所有子类
+src/Reflection/Public/ClassDesc.h        — 类描述符（持有 Property 数组）
+src/Reflection/Public/ReflectionMacros.h — 注册宏（ME_BEGIN_CLASS / ME_FIELD / ME_END_CLASS）
+src/Reflection/Public/PropertyCustomizer.h — UI 注册表（对标 IPropertyTypeCustomization）
 ```
 
-### 1.2 为什么需要"类型擦除"？—— 必须先理解的核心设计动机
+### 1.2 Property 基类（对标 `FProperty`）
 
-在写任何代码之前，必须先想清楚一个**根本问题**：
-
-> 反射系统要让 `ClassDesc` 存"一个类的所有字段"。但不同字段类型不同（float、int32_t、std::string、Vec3...），怎么用**一个统一的结构体**装下它们？
-
-#### 第一次尝试：直接用模板（失败）
+**文件：`src/Reflection/Public/Property.h`**
 
 ```cpp
-// ❌ 假设 FieldDesc 是模板
-template <typename T>
-struct FieldDesc {
-    std::string name;
-    T defaultValue;
-    T* ptr;
-};
-```
-
-现在 `ClassDesc` 要存这个类的所有字段：
-
-```cpp
-class ExprConstant {
-    float value_;          // 字段 1：float
-    std::string name_;     // 字段 2：std::string
-};
-
-struct ClassDesc {
-    std::vector<FieldDesc<???>> fields;  // ← 这里写什么？
-};
-```
-
-- 写 `FieldDesc<float>` → 装不下 `string` 字段
-- 写 `FieldDesc<int32_t>` → 装不下 `float` 字段
-- **C++ 是静态类型语言，一个 `vector` 里所有元素类型必须一致**
-
-走不通。
-
-#### 第二次尝试：用 RTTI（被否决）
-
-C++ 有运行时类型信息 RTTI：
-
-```cpp
-struct FieldDesc {
-    std::string name;
-    const std::type_info& type;  // ← typeid(float)、typeid(int) 都能存
-};
-```
-
-但项目不用 RTTI，原因：
-
-| 维度 | 自定义枚举 | RTTI (`type_info`) |
-|---|---|---|
-| 开销 | 4 字节整数 | 比较/哈希较慢 |
-| 可序列化 | ✅ 能写进 JSON | ❌ `name()` 是实现相关的乱码 |
-| 跨编译器 | ✅ 完全一致 | ⚠️ GCC/MSVC/Clang 输出不同 |
-| 可扩展 | ✅ 加新类型加一个枚举 | 难以扩展 |
-
-UE5 也不用 RTTI，自己搞了 `UClass` 系统（更复杂的枚举 + 元数据）。
-
-#### 正确方案：类型擦除（type erasure）
-
-**核心思想：把"编译期才知道的类型 T"压扁成"运行期可存储的标识"**。
-
-类型信息被拆成**三个层次**：
-
-| 层次 | 形式 | 何时确定 | 用途 |
-|---|---|---|---|
-| **1. C++ 真实类型 T** | 模板参数 | 编译期 | 生成专属代码（Accessor<T>） |
-| **2. FieldType 枚举** | 运行期整数 | 编译期映射 | 运行期查询"这是什么类型"（UI 渲染决策） |
-| **3. lambda 闭包** | 编译期烧录 | 编译期生成 | 运行期执行类型相关操作（toJson/fromJson） |
-
-```
-编译期                          运行期
-──────                          ──────
-T = float（模板参数）             FieldDesc {
-   ↓                               name: "value_",
-GetFieldType<float>() ←─┐         type: FieldType::Float,  ← 层 2：枚举标识
-   ↓                     │         offset: 4,
-if constexpr →           │         toJson: lambda ─────────── 层 3：lambda 闭包
-  FieldType::Float ──────┘                       ↑
-                                            内部烧录了 Accessor<float>
-   ↓                                 }
-FieldType_t 确定                    调用 toJson：
-（宏展开时）                            lambda 内部 reinterpret_cast<float*>
-```
-
-- **层 1（T）**：编译期就消失，但生成代码时被"烧录"进 lambda
-- **层 2（FieldType 枚举）**：运行期能查到的"类型 ID"，让 UI 知道"这是 Float 还是 Vec3"
-- **层 3（lambda）**：每个字段的 lambda 是**专属生成**的，内部硬编码了正确的 `Accessor<T>`，运行期通过函数指针调用
-
-**关键洞察：FieldType 枚举不是"真实类型的简化"，而是"运行期可存储的类型 ID"。真实类型操作能力由 lambda 保留。**
-
-#### 类比理解
-
-想象一个快递分拣系统：
-
-- **C++ 类型 T** = 真实的包裹内容（书、衣服、电子设备）
-- **FieldType 枚举** = 快递单上的"类别"标签（"图书"、"服装"、"电子"）
-- **lambda 闭包** = 每个类别的专属处理流水线（图书按重量计费、服装按体积计费）
-
-分拣中心（`vector<FieldDesc>`）只能按"类别标签"统一存档，不能直接存包裹本身。但处理时（调用 lambda），又调用了对应类型的专属流水线。
-
-**理解了这三个层次，再往下看具体实现就一目了然**：FieldType 是层 2，FieldDesc 里那两个函数指针是层 3，Accessor<T> 是层 1 的实现。
-
-#### 对照 UE 反射系统（UProperty / UClass / UHT）
-
-UE 的反射是工业级，但核心思路和我们的类型擦除一致——都是"编译期把类型信息压扁成运行期可查询的元数据"：
-
-| 我们的教学版 | UE 对应 | 作用 |
-|-------------|---------|------|
-| `FieldDesc`（字段描述符）| `FProperty`（旧名 `UProperty`）| 描述一个字段：名字、类型、偏移、读写 |
-| `ClassDesc`（类描述符）| `UClass` | 描述一个类：所有字段的集合 + 元数据 |
-| `Accessor<T>::toJson/fromJson` | `FProperty::ImportText/ExportText` | 类型擦除的读写（UE 用虚函数，我们用函数指针）|
-| `ME_FIELD` 宏 | `UPROPERTY` 宏 | 标记字段参与反射 |
-| `ME_BEGIN_CLASS`/`ME_END_CLASS` | `UCLASS` + UHT 代码生成 | 注册类的元数据 |
-| `Registry`（全局注册表）| `UClass` 静态对象 + 全局对象工厂 | 按 type_name 找到类元信息 |
-
-**三个关键差异**：
-
-1. **代码生成方式**：UE 用 **UHT（UnrealHeaderTool）单独的预处理阶段**扫描 `UCLASS`/`UPROPERTY` 宏，生成 `.generated.h` 反射代码。我们用**宏 + 模板在 C++ 编译期直接生成**（`ME_BEGIN_CLASS` 展开成 `GetClassDesc_Static()`），不需要单独工具——代价是宏写起来绕、调试难，但教学项目够用。
-
-2. **类型擦除手段**：UE 用**虚函数**（`FProperty::ImportText` 是虚函数，子类 `FFloatProperty` 等重写），我们用**函数指针**（`FieldDesc::toJson`）。本质都是运行期分发，函数指针更轻量（无虚表）、但没 UE 的继承扩展性。
-
-3. **元数据范围**：UE 的 `UClass` 包含**远多于此**的信息——继承链、接口、函数表（`TArray<UFunction*>`）、属性回调、GC 信息。我们的 `ClassDesc` 只管字段表（材质编辑器够用，不需要 GC/继承/函数反射）。
-
-> **UE 源码**（相对 `Engine/`）：
-> - `Engine/Source/Runtime/CoreUObject/Public/UObject/ObjectMacros.h` — `UCLASS`/`UPROPERTY` 宏定义
-> - `Engine/Source/Runtime/CoreUObject/Public/UObject/UnrealType.h` — `FProperty`/`UField`（字段基类）
-> - `Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h` — `UClass`（类元信息）
-
----
-
-### 1.3 字段类型枚举（层 2：运行期类型 ID）
-
-```cpp
-// Reflection.h —— 文件开头
 #pragma once
 #include <string>
-#include <vector>
-#include <cstdint>
 #include <cstddef>
-#include <unordered_map>
 #include <nlohmann/json.hpp>
-#include "Core/Public/MathTypes.h"   // Vec2/Vec3/Vec4
-#include "Core/Public/Singleton.h"   // Singleton<T> 模板
+#include <memory>
 
-namespace reflection {
+// ============================================================================
+// Property 基类 —— 所有字段类型的统一接口（对标 UE 的 FProperty）
+// ============================================================================
+// 类型擦除的核心：ClassDesc 存 unique_ptr<Property>，不知具体类型。
+// 调 toJson/fromJson 时虚函数分发到正确的子类。
+//
+// 对标 UE：
+//   FProperty（基类）
+//     ├── ImportText / ExportText（序列化，对应我们的 toJson/fromJson）
+//     ├── Serialize（二进制序列化，我们用 JSON 代替）
+//     └── 各种子类（FFloatProperty/FBoolProperty/...）
+class Property {
+public:
+    virtual ~Property() = default;
 
-enum class FieldType {
-    Float,      // float
-    Int,        // int32_t
-    Bool,       // bool
-    String,     // std::string
-    Float2,     // Vec2
-    Float3,     // Vec3
-    Float4      // Vec4
+    // === 类型擦除的读写接口（对标 FProperty::ExportText/ImportText）===
+    // obj = 对象基址，offset = 字段在对象里的偏移（offsetof 的结果）
+    virtual void toJson(void* obj, nlohmann::json& out) const = 0;
+    virtual void fromJson(void* obj, const nlohmann::json& in) const = 0;
+
+    // === 公共属性 ===
+    std::string name;                  // 字段名，如 "scale"
+    std::size_t offset = 0;            // 字段在对象内存中的偏移
+    nlohmann::json defaultValue;       // 默认值（JSON 统一存，任何类型都能装）
+
+    // === 设置属性（宏里用）===
+    Property& SetName(const std::string& n) { name = n; return *this; }
+    Property& SetOffset(std::size_t o) { offset = o; return *this; }
+    Property& SetDefault(const nlohmann::json& d) { defaultValue = d; return *this; }
 };
-
-} // namespace reflection
 ```
 
-每种类型对应一个 Accessor 模板偏特化。需要支持新类型时，这里加枚举值 + 写偏特化。
+**讲解**：
+- **虚函数 `toJson`/`fromJson`**：类型擦除的读写接口。`obj` 是对象基址（`void*`，不知具体类），`offset` 是字段偏移。子类内部用 `reinterpret_cast` 转成正确类型读写。
+- **`unique_ptr<Property>`**：ClassDesc 持有这个，堆分配。对标 UE 的 `TArray<FProperty*>`。
+- **不设 `GetType()`**：不需要枚举标识类型——子类身份就是类型。UI 层用注册表（见 1.5）。
 
-#### 对照 UE：两层类型系统（重要——理解反射 vs 编译器的关键）
+### 1.3 Property 子类（对标 `FFloatProperty` 等）
 
-项目里有**两个类型枚举**，分别管不同层：
+**文件：`src/Reflection/Public/Property.h`（继续）**
 
-| 枚举 | 所在层 | 描述什么 | 取值 |
-|------|--------|---------|------|
-| `FieldType`（反射层，本课）| L3 反射 | **参数/属性**的类型（UI 编辑的字段）| Float / **Int** / Bool / String / Float2/3/4 |
-| `EValueType`（编译器层，课6）| L2 数据模型 | **引脚/代码块**的类型（HLSL 运算）| Float1-4 / Int1-4 / Matrix / Texture / Sampler |
-
-**为什么 `FieldType` 没有 Matrix / Texture / Sampler**：
-- `FieldType` 管"UI 参数"——材质参数是 float/int/bool/string/向量这些**能直接在属性面板手调的值**。
-- **Matrix** 极少作为参数（矩阵是运算中间结果，如 `Transform` 节点内部产生，不是手调参数）。
-- **Texture** 是资源引用，走单独的 `TextureParameter`（课18 参数系统），不是普通字段。
-- **Sampler** 是渲染状态，不暴露为参数。
-- 所以反射层 `FieldType` 不需要它们——这些类型在编译器层 `EValueType`（课6 扩展）处理。
-
-**对照 UE `EMaterialValueType`**（`Engine/Source/Runtime/Engine/Public/MaterialValueType.h`）：UE 用一个 **64 位 bitmask** 统一表示所有类型（float/int/matrix/texture 全在一个 enum），不区分"参数层/代码层"。教学版**分两个枚举**是为了**可读性**（反射层只见可编辑类型，编译器层见运算类型），代价是两层要做映射（`GetFieldType` + 反射序列化时转换）。
-
-> **一句话**：`FieldType` 管"属性面板能编辑什么"，`EValueType` 管"HLSL 代码能运算什么"——各管一段，在 `Expression::Compile()` 这个边界对接（参数值 → HLSL 常量）。
-
-### 1.4 字段描述符 FieldDesc（层 3：函数指针存什么）
+每种类型一个子类，重写 `toJson`/`fromJson`。内部用 `reinterpret_cast<T*>((char*)obj + offset)` 定位字段。
 
 ```cpp
-namespace reflection {
-
-struct FieldDesc {
-    std::string name;           // 字段名，如 "value_"
-    FieldType   type;           // 类型枚举
-    std::size_t offset;         // 字段在对象内存中的偏移量（offsetof 的结果）
-
-    // 类型擦除的读写函数（下面详细讲）
-    void (*toJson)(void* obj, std::size_t offset, nlohmann::json& out);
-    void (*fromJson)(void* obj, std::size_t offset, const nlohmann::json& in);
-
-    nlohmann::json defaultValue;  // 默认值
-};
-
-} // namespace reflection
-```
-
-`offset` 是最关键的域。对象在内存地址 `0x1000`，字段 offset 是 8，字段地址就是 `0x1008`。通过偏移量，我们可以在**不知道具体类类型**的情况下访问任意字段。
-
-`toJson` 和 `fromJson` 是**函数指针**，用来做类型擦除。
-
-### 1.5 函数指针类型擦除的回顾（动机已在 1.2 解释，这里看具体代码）
-
-C++ 是静态类型语言，编译期就要确定类型。要在一个统一结构体里存"可能是 float、可能是 int、可能是 string"的字段信息，需要**类型擦除**——把类型信息藏起来。
-
-```cpp
-// toJson 签名：接收 void*（不知道是什么类型），输出 json
-void (*toJson)(void* obj, std::size_t offset, nlohmann::json& out);
-```
-
-`void*` 是"指向任意类型的指针"。`toJson` 这个函数知道实际类型——因为我们会为每种类型生成一个专属实现。调用时传入对象指针和偏移量，函数内部做正确的类型转换。
-
-### 1.6 Accessor 模板偏特化（层 1：C++ 真实类型 T 的专属实现）
-
-```cpp
-namespace reflection {
-
-// 模板主声明（无定义，不支持的类型会编译报错）
-template <typename T>
-struct Accessor {
-    // 如果到这里说明类型未被支持，编译期报错
-};
-
-// === float 的偏特化 ===
-template <>
-struct Accessor<float> {
-    static void toJson(void* obj, std::size_t offset, nlohmann::json& out) {
-        float* ptr = reinterpret_cast<float*>(
-            static_cast<char*>(obj) + offset);
+// ============================================================================
+// FloatProperty —— float 字段（对标 FFloatProperty）
+// ============================================================================
+class FloatProperty : public Property {
+public:
+    void toJson(void* obj, nlohmann::json& out) const override {
+        float* ptr = reinterpret_cast<float*>(static_cast<char*>(obj) + offset);
         out = *ptr;
     }
-    static void fromJson(void* obj, std::size_t offset,
-                          const nlohmann::json& in) {
+    void fromJson(void* obj, const nlohmann::json& in) const override {
         if (in.is_number()) {
-            float* ptr = reinterpret_cast<float*>(
-                static_cast<char*>(obj) + offset);
+            float* ptr = reinterpret_cast<float*>(static_cast<char*>(obj) + offset);
             *ptr = in.get<float>();
         }
     }
 };
 
-// === int32_t 的偏特化 ===
-template <>
-struct Accessor<int32_t> {
-    static void toJson(void* obj, std::size_t offset, nlohmann::json& out) {
-        int32_t* ptr = reinterpret_cast<int32_t*>(
-            static_cast<char*>(obj) + offset);
+// ============================================================================
+// IntProperty —— int32_t 字段（对标 FIntProperty）
+// ============================================================================
+class IntProperty : public Property {
+public:
+    void toJson(void* obj, nlohmann::json& out) const override {
+        int32_t* ptr = reinterpret_cast<int32_t*>(static_cast<char*>(obj) + offset);
         out = *ptr;
     }
-    static void fromJson(void* obj, std::size_t offset,
-                          const nlohmann::json& in) {
+    void fromJson(void* obj, const nlohmann::json& in) const override {
         if (in.is_number_integer()) {
-            int32_t* ptr = reinterpret_cast<int32_t*>(
-                static_cast<char*>(obj) + offset);
+            int32_t* ptr = reinterpret_cast<int32_t*>(static_cast<char*>(obj) + offset);
             *ptr = in.get<int32_t>();
         }
     }
 };
 
-// === bool 的偏特化 ===
-template <>
-struct Accessor<bool> {
-    static void toJson(void* obj, std::size_t offset, nlohmann::json& out) {
-        bool* ptr = reinterpret_cast<bool*>(
-            static_cast<char*>(obj) + offset);
+// ============================================================================
+// BoolProperty —— bool 字段（对标 FBoolProperty）
+// ============================================================================
+class BoolProperty : public Property {
+public:
+    void toJson(void* obj, nlohmann::json& out) const override {
+        bool* ptr = reinterpret_cast<bool*>(static_cast<char*>(obj) + offset);
         out = *ptr;
     }
-    static void fromJson(void* obj, std::size_t offset,
-                          const nlohmann::json& in) {
+    void fromJson(void* obj, const nlohmann::json& in) const override {
         if (in.is_boolean()) {
-            bool* ptr = reinterpret_cast<bool*>(
-                static_cast<char*>(obj) + offset);
+            bool* ptr = reinterpret_cast<bool*>(static_cast<char*>(obj) + offset);
             *ptr = in.get<bool>();
         }
     }
 };
 
-// === std::string 的偏特化 ===
-template <>
-struct Accessor<std::string> {
-    static void toJson(void* obj, std::size_t offset, nlohmann::json& out) {
-        std::string* ptr = reinterpret_cast<std::string*>(
-            static_cast<char*>(obj) + offset);
+// ============================================================================
+// StringProperty —— std::string 字段（对标 FStrProperty）
+// ============================================================================
+class StringProperty : public Property {
+public:
+    void toJson(void* obj, nlohmann::json& out) const override {
+        std::string* ptr = reinterpret_cast<std::string*>(static_cast<char*>(obj) + offset);
         out = *ptr;
     }
-    static void fromJson(void* obj, std::size_t offset,
-                          const nlohmann::json& in) {
+    void fromJson(void* obj, const nlohmann::json& in) const override {
         if (in.is_string()) {
-            std::string* ptr = reinterpret_cast<std::string*>(
-                static_cast<char*>(obj) + offset);
+            std::string* ptr = reinterpret_cast<std::string*>(static_cast<char*>(obj) + offset);
             *ptr = in.get<std::string>();
         }
     }
 };
 
-// === Vec2 的偏特化（json 数组 [x,y]）===
-template <>
-struct Accessor<Vec2> {
-    static void toJson(void* obj, std::size_t offset, nlohmann::json& out) {
-        Vec2* ptr = reinterpret_cast<Vec2*>(
-            static_cast<char*>(obj) + offset);
+// ============================================================================
+// Vec2Property / Vec3Property / Vec4Property —— 向量字段（对标 FStructProperty）
+// ============================================================================
+// 需要先 include Vec2/3/4 定义
+#include "Core/Public/MathTypes.h"
+
+class Vec2Property : public Property {
+public:
+    void toJson(void* obj, nlohmann::json& out) const override {
+        Vec2* ptr = reinterpret_cast<Vec2*>(static_cast<char*>(obj) + offset);
         out = nlohmann::json::array({ptr->x, ptr->y});
     }
-    static void fromJson(void* obj, std::size_t offset,
-                          const nlohmann::json& in) {
+    void fromJson(void* obj, const nlohmann::json& in) const override {
         if (in.is_array() && in.size() >= 2) {
-            Vec2* ptr = reinterpret_cast<Vec2*>(
-                static_cast<char*>(obj) + offset);
+            Vec2* ptr = reinterpret_cast<Vec2*>(static_cast<char*>(obj) + offset);
             ptr->x = in[0].get<float>();
             ptr->y = in[1].get<float>();
         }
     }
 };
 
-// === Vec3 的偏特化（json 数组 [x,y,z]）===
-template <>
-struct Accessor<Vec3> {
-    static void toJson(void* obj, std::size_t offset, nlohmann::json& out) {
-        Vec3* ptr = reinterpret_cast<Vec3*>(
-            static_cast<char*>(obj) + offset);
+class Vec3Property : public Property {
+public:
+    void toJson(void* obj, nlohmann::json& out) const override {
+        Vec3* ptr = reinterpret_cast<Vec3*>(static_cast<char*>(obj) + offset);
         out = nlohmann::json::array({ptr->x, ptr->y, ptr->z});
     }
-    static void fromJson(void* obj, std::size_t offset,
-                          const nlohmann::json& in) {
+    void fromJson(void* obj, const nlohmann::json& in) const override {
         if (in.is_array() && in.size() >= 3) {
-            Vec3* ptr = reinterpret_cast<Vec3*>(
-                static_cast<char*>(obj) + offset);
+            Vec3* ptr = reinterpret_cast<Vec3*>(static_cast<char*>(obj) + offset);
             ptr->x = in[0].get<float>();
             ptr->y = in[1].get<float>();
             ptr->z = in[2].get<float>();
@@ -445,19 +228,15 @@ struct Accessor<Vec3> {
     }
 };
 
-// === Vec4 的偏特化（json 数组 [x,y,z,w]）===
-template <>
-struct Accessor<Vec4> {
-    static void toJson(void* obj, std::size_t offset, nlohmann::json& out) {
-        Vec4* ptr = reinterpret_cast<Vec4*>(
-            static_cast<char*>(obj) + offset);
+class Vec4Property : public Property {
+public:
+    void toJson(void* obj, nlohmann::json& out) const override {
+        Vec4* ptr = reinterpret_cast<Vec4*>(static_cast<char*>(obj) + offset);
         out = nlohmann::json::array({ptr->x, ptr->y, ptr->z, ptr->w});
     }
-    static void fromJson(void* obj, std::size_t offset,
-                          const nlohmann::json& in) {
+    void fromJson(void* obj, const nlohmann::json& in) const override {
         if (in.is_array() && in.size() >= 4) {
-            Vec4* ptr = reinterpret_cast<Vec4*>(
-                static_cast<char*>(obj) + offset);
+            Vec4* ptr = reinterpret_cast<Vec4*>(static_cast<char*>(obj) + offset);
             ptr->x = in[0].get<float>();
             ptr->y = in[1].get<float>();
             ptr->z = in[2].get<float>();
@@ -465,217 +244,235 @@ struct Accessor<Vec4> {
         }
     }
 };
-
-} // namespace reflection
 ```
 
-**什么是模板偏特化？**
+**讲解**：
+- 每个子类的 `toJson`/`fromJson` 用 `reinterpret_cast<T*>` 把 `void* + offset` 转成正确类型的指针读写。
+- `static_cast<char*>(obj)` 先转 `char*`（字节级指针），再加 `offset`，最后 `reinterpret_cast<T*>` 转成目标类型。这和旧版 Accessor 内部逻辑完全一样，只是从模板特化变成了虚函数重写。
+- **对标 UE**：UE 的 `FFloatProperty::ExportText` 内部也是 `*(float*)((char*)obj + offset)` 的逻辑。
 
-为特定类型提供专门的实现：
+### 1.4 MakeProperty 工厂 + ME_FIELD 宏（对标 `UPROPERTY` + UHT）
 
-```cpp
-template <typename T>          // 通用模板
-struct Accessor { /* 无定义 */ };
-
-template <>                    // 偏特化：T = float 时用这个
-struct Accessor<float> { /* float 专属实现 */ };
-```
-
-主模板没有定义，意味着 `Accessor<double>`（未支持的类型）会编译报错——**编译期类型安全**。
-
-**reinterpret_cast 为什么要先转 char\*？**
+**文件：`src/Reflection/Public/ReflectionMacros.h`**
 
 ```cpp
-float* ptr = reinterpret_cast<float*>(
-    static_cast<char*>(obj) + offset);  // 先 void* → char*，再加偏移
-```
-
-`char*` 每个元素 1 字节，`char* + offset` 就是"向前 offset 字节"。直接 `void* + offset` 不允许——void* 不知道每次加多少字节。
-
-- `static_cast<char*>(obj)` —— `void* → char*`，C++ 标准合法路径
-- `reinterpret_cast<float*>(charPtr)` —— `char* → float*`，强行重新解释（必须 reinterpret，因为这两类型无合法转换路径）
-
-### 1.7 类描述符 ClassDesc 和注册表 Registry
-
-```cpp
-namespace reflection {
-
-// 类元信息 —— 一个类的所有元数据
-// 承载 typeName/displayName/category/categoryColor + 字段表
-struct ClassDesc {
-    std::string type_name;        // 类名标识，如 "ExprAdd"
-    std::string display_name;     // UI 显示名，如 "Add"
-    std::string category;         // 分类，如 "Math"
-    std::string category_color;   // UI 颜色，如 "#4CA7E8"
-    std::vector<FieldDesc> fields;
-
-    const FieldDesc* find(const std::string& field_name) const {
-        for (const auto& f : fields) {
-            if (f.name == field_name) return &f;
-        }
-        return nullptr;
-    }
-};
-
-// 全局类型注册表 —— 继承 Singleton<T>
-class Registry : public Singleton<Registry> {
-    friend Singleton<Registry>;
-public:
-    void RegisterClass(ClassDesc desc) {
-        classes_[desc.type_name] = std::move(desc);
-    }
-    const ClassDesc* Find(const std::string& type_name) const {
-        auto it = classes_.find(type_name);
-        return it != classes_.end() ? &(it->second) : nullptr;
-    }
-    std::vector<std::string> GetAllTypeNames() const {
-        std::vector<std::string> names;
-        for (const auto& [name, desc] : classes_) names.push_back(name);
-        return names;
-    }
-private:
-    Registry() = default;
-    std::unordered_map<std::string, ClassDesc> classes_;
-};
-
-} // namespace reflection
-```
-
-**Singleton<T> 模板**（Core/Public/Singleton.h，CRTP 模式）：
-
-```cpp
-template <typename T>
-class Singleton {
-public:
-    static T& GetInstance() {
-        static T instance;  // Meyers Singleton：C++11 起线程安全
-        return instance;
-    }
-protected:
-    Singleton() = default;
-    Singleton(const Singleton&) = delete;
-    Singleton& operator=(const Singleton&) = delete;
-};
-```
-
-**CRTP（Curiously Recurring Template Pattern）**：
-
-```cpp
-class Registry : public Singleton<Registry> { ... };
-//                          ▲
-//                          └── 把自己作为模板参数传给基类
-```
-
-基类知道"我服务的子类是谁"，可以返回子类引用 `T&`。NodeFactory 也是这样：
-
-```cpp
-class NodeFactory : public Singleton<NodeFactory> { ... };
-```
-
-整个项目里所有需要单例的类都用同一个模板，风格统一。
-
----
-
-### 1.8 注册宏 ReflectionMacros.h（把三层串起来）
-
-反射系统的"用户接口"。三个核心宏：`ME_BEGIN_CLASS` / `ME_FIELD` / `ME_END_CLASS`，加两个可选元数据宏：`ME_DISPLAY_NAME` / `ME_CATEGORY`。
-
-```cpp
-// ReflectionMacros.h —— 完整内容，直接复制到这个文件即可
 #pragma once
-#include "Reflection/Public/Reflection.h"
-#include <nlohmann/json.hpp>
+#include "Reflection/Public/Property.h"
+#include "Reflection/Public/ClassDesc.h"
 #include <type_traits>
 #include <cstddef>
 
-// 辅助函数：根据 C++ 类型选择 FieldType
-// 用 if constexpr 在编译期决定，不满足的分支不参与编译
+// ============================================================================
+// MakeProperty<T> —— 工厂函数：按 C++ 类型 T 创建对应的 Property 子类
+// ============================================================================
+// 对标 UE 的 UHT：UHT 扫描 UPROPERTY 宏时，根据 C++ 类型生成对应的
+// FProperty 子类实例（FFloatProperty/FBoolProperty/...）。
+// 我们用模板 + if constexpr 在 C++ 编译期做同样的"类型→子类"映射。
 template <typename T>
-constexpr reflection::FieldType GetFieldType() {
+std::unique_ptr<Property> MakeProperty(const std::string& name,
+                                        std::size_t offset,
+                                        const nlohmann::json& defaultValue) {
     using DT = std::decay_t<T>;
-    if constexpr (std::is_same_v<DT, float>)        return reflection::FieldType::Float;
-    else if constexpr (std::is_same_v<DT, int32_t>) return reflection::FieldType::Int;
-    else if constexpr (std::is_same_v<DT, bool>)    return reflection::FieldType::Bool;
-    else if constexpr (std::is_same_v<DT, std::string>) return reflection::FieldType::String;
-    else if constexpr (std::is_same_v<DT, Vec2>)    return reflection::FieldType::Float2;
-    else if constexpr (std::is_same_v<DT, Vec3>)    return reflection::FieldType::Float3;
-    else if constexpr (std::is_same_v<DT, Vec4>)    return reflection::FieldType::Float4;
-    else static_assert(sizeof(T) == 0, "Unsupported field type");
+    std::unique_ptr<Property> prop;
+
+    if constexpr (std::is_same_v<DT, float>)        prop = std::make_unique<FloatProperty>();
+    else if constexpr (std::is_same_v<DT, int32_t>)  prop = std::make_unique<IntProperty>();
+    else if constexpr (std::is_same_v<DT, bool>)     prop = std::make_unique<BoolProperty>();
+    else if constexpr (std::is_same_v<DT, std::string>) prop = std::make_unique<StringProperty>();
+    else if constexpr (std::is_same_v<DT, Vec2>)     prop = std::make_unique<Vec2Property>();
+    else if constexpr (std::is_same_v<DT, Vec3>)     prop = std::make_unique<Vec3Property>();
+    else if constexpr (std::is_same_v<DT, Vec4>)     prop = std::make_unique<Vec4Property>();
+    else static_assert(sizeof(DT) == 0, "Unsupported property type — add a Property subclass + MakeProperty branch");
+
+    prop->SetName(name).SetOffset(offset).SetDefault(defaultValue);
+    return prop;
 }
 
-// 开启类的反射注册（函数体未闭合，ME_END_CLASS 负责闭合）
+// ============================================================================
+// 反射注册宏（对标 UE 的 UCLASS / UPROPERTY）
+// ============================================================================
+
+// ME_BEGIN_CLASS：开启类的反射注册（函数体未闭合，ME_END_CLASS 负责闭合）
 #define ME_BEGIN_CLASS(ClassName)                                                       \
-    static const reflection::ClassDesc &GetClassDesc_Static() {                        \
-        static reflection::ClassDesc desc;                                              \
+    static const ClassDesc& GetClassDesc_Static() {                                     \
+        static ClassDesc desc;                                                          \
         static bool initialized = false;                                                \
         if (!initialized) {                                                             \
             initialized = true;                                                         \
             desc.type_name = #ClassName;                                                \
-            desc.display_name = #ClassName; /* 默认显示名 = 类名 */                       \
-            desc.category = "Misc";                  /* 默认分类 */
+            desc.display_name = #ClassName;                                              \
+            desc.category = "Misc";
 
 #define ME_DISPLAY_NAME(name) desc.display_name = (name);
 #define ME_CATEGORY(name)     desc.category = (name);
 #define ME_CATEGORY_COLOR(hex) desc.category_color = (hex);
 
-// 注册一个字段
+// ME_FIELD：注册一个字段（对标 UPROPERTY 宏 + UHT 生成 FProperty 子类）
 #define ME_FIELD(ClassName, FieldName, DefaultVal)                                      \
     {                                                                                   \
-        using FieldType_t = std::decay_t<decltype(ClassName::FieldName)>;               \
-        reflection::FieldDesc field;                                                    \
-        field.name = #FieldName;                                                        \
-        field.type = GetFieldType<FieldType_t>();                                       \
-        field.offset = offsetof(ClassName, FieldName);                                  \
-        field.defaultValue = (DefaultVal);                                              \
-        field.toJson = [](void* obj, std::size_t off, nlohmann::json& out) {            \
-            reflection::Accessor<FieldType_t>::toJson(obj, off, out);                   \
-        };                                                                              \
-        field.fromJson = [](void* obj, std::size_t off, const nlohmann::json& in) {     \
-            reflection::Accessor<FieldType_t>::fromJson(obj, off, in);                  \
-        };                                                                              \
-        desc.fields.push_back(std::move(field));                                        \
+        desc.fields.push_back(                                                          \
+            MakeProperty<std::decay_t<decltype(ClassName::FieldName)>>(                \
+                #FieldName,                                                             \
+                offsetof(ClassName, FieldName),                                         \
+                (DefaultVal)));                                                         \
     }
 
-// 结束注册，重写 GetClassDesc 虚函数
+// ME_END_CLASS：结束注册，重写 GetClassDesc 虚函数
 #define ME_END_CLASS(ClassName)                                                         \
         }                                                                               \
         return desc;                                                                    \
     }                                                                                   \
-    const reflection::ClassDesc *GetClassDesc() const override {                       \
+    const ClassDesc* GetClassDesc() const override {                                    \
         return &GetClassDesc_Static();                                                  \
     }
 ```
 
-**关键 C++ 技巧速查（宏里用到的）：**
+**讲解**：
+- **`MakeProperty<T>`**：编译期（`if constexpr`）把 C++ 类型 T 映射到对应的 Property 子类，`make_unique` 创建实例。**对标 UE 的 UHT**——UHT 扫描 UPROPERTY 宏时根据 C++ 类型生成 `new FFloatProperty()` 等代码，我们用 `if constexpr + make_unique` 在 C++ 编译期做同样的事。
+- **`ME_FIELD` 宏**：调用 `MakeProperty<T>`，传入字段名（`#FieldName` 字符串化）、偏移（`offsetof`）、默认值。**用户接口和旧版完全一样**（`ME_FIELD(TestExpr, scale, 1.0f)`），内部从"赋函数指针"变成了"工厂创建子类"。
+- **`static_assert`**：不支持的类型编译期报错（和旧版一样）。
 
-| 技巧 | 作用 |
-|---|---|
-| `#FieldName` | 预处理器的字符串化：`#value_` → `"value_"` |
-| `offsetof(Class, Member)` | 返回字段在对象中的字节偏移量 |
-| `decltype(ClassName::FieldName)` | 编译期推导字段类型 |
-| `std::decay_t<T>` | 去掉 const/引用修饰，还原裸类型 |
-| `std::is_same_v<A, B>` | 编译期比较两个类型是否相同 |
-| `if constexpr` | 编译期 if，不匹配的分支被丢弃 |
-| 无捕获 lambda → 函数指针 | 类型擦除：把类型信息"烧录"在 lambda 里，对外暴露统一签名 |
+### 1.5 PropertyCustomizer 注册表（对标 `IPropertyTypeCustomization`）
 
-**offsetof 的近似实现原理：**
+**文件：`src/Reflection/Public/PropertyCustomizer.h`**
+
+这是**替代旧版 `switch(FieldType)` 的方案**——UI 层为每种 Property 类型注册一个"属性编辑器创建器"，不用枚举判断。
 
 ```cpp
-#define offsetof(Class, Member) \
-    (std::size_t)(&((Class*)0)->Member)  // 假设对象在地址 0，成员地址就是偏移量
+#pragma once
+#include "Reflection/Public/Property.h"
+#include <functional>
+#include <map>
+#include <typeindex>
+#include <memory>
+
+// ============================================================================
+// 前向声明：属性编辑器接口（课13 PropertyPanel 实现）
+// ============================================================================
+class QWidget;
+
+// ============================================================================
+// PropertyCustomizerRegistry —— UI 层的类型→编辑器注册表
+// ============================================================================
+// 对标 UE 的 IPropertyTypeCustomization + FDetailPropertyNode：
+// UE 的属性面板（Details Panel）为每种 FProperty 类型注册一个 Customization，
+// 查表创建对应的 UI 控件（不用 switch 枚举）。
+//
+// 我们用 std::type_index（RTTI 类型标识）作为 key——
+// 对应 Property 子类的 typeid，运行期查表。
+class PropertyCustomizerRegistry {
+public:
+    using EditorCreatorFn = std::function<QWidget*(Property*)>;
+
+    // 注册某种 Property 类型对应的编辑器创建器
+    template <typename PropType>
+    void Register(EditorCreatorFn creator) {
+        creators_[std::type_index(typeid(PropType))] = std::move(creator);
+    }
+
+    // 为某个 Property 创建对应的编辑器（查表，不用 switch）
+    QWidget* CreateEditor(Property* prop) const {
+        auto it = creators_.find(std::type_index(typeid(*prop)));
+        if (it != creators_.end()) {
+            return it->second(prop);
+        }
+        return nullptr;  // 未注册的类型返回 nullptr
+    }
+
+private:
+    std::map<std::type_index, EditorCreatorFn> creators_;
+};
 ```
 
-**限制**：`offsetof` 只对 **standard-layout 类型**有定义。我们的 Expression 子类有虚表指针但单继承，仍安全。多重继承下用 offsetof 是 UB。
+**UI 层（课13 PropertyPanel）怎么用**：
+
+```cpp
+// 课13：初始化时注册每种类型的编辑器
+PropertyCustomizerRegistry customizerRegistry;
+
+customizerRegistry.Register<FloatProperty>([](Property* prop) -> QWidget* {
+    auto* spin = new QDoubleSpinBox;
+    spin->setRange(-10000.0, 10000.0);
+    spin->setDecimals(3);
+    // prop->defaultValue 初始值...
+    return spin;
+});
+
+customizerRegistry.Register<BoolProperty>([](Property* prop) -> QWidget* {
+    auto* check = new QCheckBox;
+    return check;
+});
+
+customizerRegistry.Register<StringProperty>([](Property* prop) -> QWidget* {
+    auto* edit = new QLineEdit;
+    return edit;
+});
+
+// customizerRegistry.Register<Vec3Property>(...);  // 向量编辑器
+// ... 每种类型注册一次
+
+// 使用：不用 switch(FieldType)，直接查表
+for (auto& prop : classDesc.fields) {
+    QWidget* editor = customizerRegistry.CreateEditor(prop.get());
+    if (editor) formLayout->addRow(prop->name, editor);
+}
+```
+
+**讲解**：
+- **`std::type_index(typeid(*prop))`**：运行期获取 Property 子类的类型标识（RTTI），作为注册表的 key 查找。**不用枚举，不用 dynamic_cast**。
+- **注册一次，到处用**：初始化时注册每种类型，之后 `CreateEditor(prop)` 自动查表分发。**对标 UE 的属性面板注册 Customization**。
+- **分层干净**：`PropertyCustomizer.h` 在反射层定义接口，UI 层（课13）注册具体实现（lambda 里 `new QDoubleSpinBox`）。反射层不依赖 Qt（只用 `QWidget*` 前向声明）。
 
 ---
 
-## 第二部分：Expression 基类（行为层）
+## 第二部分：ClassDesc（对标 `UClass`）
+
+**文件：`src/Reflection/Public/ClassDesc.h`**
 
 ```cpp
-// Expression.h
 #pragma once
+#include "Reflection/Public/Property.h"
+#include <vector>
+#include <string>
+#include <memory>
+
+// ============================================================================
+// ClassDesc —— 类描述符，持有该类所有 Property（对标 UE 的 UClass）
+// ============================================================================
+struct ClassDesc {
+    std::string type_name;        // 类名标识，如 "TestExpr"
+    std::string display_name;     // UI 显示名，如 "Test Expr"
+    std::string category;         // 分类，如 "Demo"
+    std::string category_color;   // UI 颜色，如 "#FF8800"
+
+    // 字段表——持有 unique_ptr<Property>（基类指针，多态）
+    // 对标 UClass 的 TArray<FProperty*>
+    std::vector<std::unique_ptr<Property>> fields;
+
+    // 按名字查找字段
+    const Property* find(const std::string& field_name) const {
+        for (const auto& f : fields) {
+            if (f->name == field_name) return f.get();
+        }
+        return nullptr;
+    }
+};
+```
+
+**讲解**：
+- **`std::vector<std::unique_ptr<Property>>`**：字段表。`unique_ptr` 管理生命周期（自动 delete），`Property*` 基类指针实现多态。对标 UE `UClass` 的 `TArray<FProperty*>`。
+- **`find`**：按名字查找字段（返回 `const Property*`，调用方通过虚函数读写）。
+
+---
+
+## 第三部分：Expression 基类（行为层）
+
+**文件：`src/Expression/Public/Expression.h`**
+
+```cpp
+#pragma once
+#include "Reflection/Public/ClassDesc.h"
 #include "MaterialGraph/Public/Types.h"
-#include "Reflection/Public/Reflection.h"
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -684,7 +481,6 @@ constexpr reflection::FieldType GetFieldType() {
 class MaterialCompiler;
 class Node;
 
-// 引脚描述（用于 GetInputPins/GetOutputPins）
 struct ExpressionPinDesc {
     std::string name;
     EValueType type;
@@ -696,306 +492,166 @@ public:
     virtual ~Expression() = default;
 
     // === 反射入口（纯虚：子类必须通过 ME_BEGIN_CLASS 宏重写）===
-    virtual const reflection::ClassDesc* GetClassDesc() const = 0;
+    virtual const ClassDesc* GetClassDesc() const = 0;
 
     // === 引脚布局 ===
     virtual std::vector<ExpressionPinDesc> GetInputPins() const = 0;
     virtual std::vector<ExpressionPinDesc> GetOutputPins() const = 0;
 
-    // === 编译 ===
+    // === 编译（课6+ 实现）===
     virtual std::vector<int32_t> Compile(MaterialCompiler* compiler, Node* ownerNode) const = 0;
 
-    // === 参数读写（非虚，纯反射实现）===
-    // 子类不需要也不允许重写
-    std::vector<reflection::FieldDesc> GetParameters() const;
+    // === 参数读写（非虚，纯反射实现，子类不碰）===
+    // 遍历 ClassDesc::fields，调 Property::toJson/fromJson
+    std::vector<const Property*> GetParameters() const;
     void SetParameter(const std::string& name, const nlohmann::json& value);
     nlohmann::json GetParameter(const std::string& name) const;
 };
 ```
 
+**文件：`src/Expression/Private/Expression.cpp`**
+
 ```cpp
-// Expression.cpp
 #include "Expression/Public/Expression.h"
 
-std::vector<reflection::FieldDesc> Expression::GetParameters() const {
-    const reflection::ClassDesc* desc = GetClassDesc();
+// GetParameters：返回字段列表（Property 指针数组）
+std::vector<const Property*> Expression::GetParameters() const {
+    const ClassDesc* desc = GetClassDesc();
     if (!desc) return {};
-    return desc->fields;
+    std::vector<const Property*> result;
+    for (const auto& field : desc->fields) {
+        result.push_back(field.get());
+    }
+    return result;
 }
 
+// SetParameter：按名字找到 Property，调 fromJson 写入字段值
 void Expression::SetParameter(const std::string& name, const nlohmann::json& value) {
-    const reflection::ClassDesc* desc = GetClassDesc();
+    const ClassDesc* desc = GetClassDesc();
     if (!desc) return;
-    const reflection::FieldDesc* field = desc->find(name);
+    const Property* field = desc->find(name);
     if (!field) return;
-    field->fromJson(static_cast<void*>(const_cast<Expression*>(this)), field->offset, value);
+    // const_cast 因为 fromJson 修改对象字段（Property 存的是读接口，实际要写对象）
+    const_cast<Property*>(field)->fromJson(static_cast<void*>(this), field->offset, value);
 }
 
+// GetParameter：按名字找到 Property，调 toJson 读出字段值
 nlohmann::json Expression::GetParameter(const std::string& name) const {
-    const reflection::ClassDesc* desc = GetClassDesc();
+    const ClassDesc* desc = GetClassDesc();
     if (!desc) return {};
-    const reflection::FieldDesc* field = desc->find(name);
+    const Property* field = desc->find(name);
     if (!field) return {};
     nlohmann::json out;
-    field->toJson(static_cast<void*>(const_cast<Expression*>(this)), field->offset, out);
+    field->toJson(const_cast<void*>(static_cast<const void*>(this)), field->offset, out);
     return out;
 }
 ```
 
-**设计要点：**
-
-- `GetClassDesc()` 是**纯虚**——子类必须用宏重写，没有"不启用反射"的逃逸路径
-- `GetParameters/SetParameter/GetParameter` 是**非虚**——子类不能重写，行为完全由反射决定
-- 没有 `GetTypeName/GetDisplayName/GetCategory/GetCategoryColor` 虚函数——这些元数据在 ClassDesc 里，调用方通过 `GetClassDesc()->display_name` 等访问
-- 没有 `ExpressionParamDesc` 这种重复枚举——参数类型就是 `reflection::FieldType`，不重复定义
-
-**调用方怎么读 typeName/category？**
-
-```cpp
-const reflection::ClassDesc* desc = expr->GetClassDesc();
-std::cout << desc->type_name;     // "ExprAdd"
-std::cout << desc->display_name;  // "Add"
-std::cout << desc->category;      // "Math"
-```
+**讲解**：
+- `GetParameters`/`SetParameter`/`GetParameter` 和旧版**外部接口完全一样**——调用方（UI/编译器/序列化）的代码不用改。
+- 内部从"走 FieldDesc 函数指针 + Accessor"变成"走 Property 虚函数"——但调用方看不到差异。
 
 ---
 
-## 第三部分：TypeSystem
+## 第四部分：完整示例 — TestExpr
 
 ```cpp
-// TypeSystem.h
-#pragma once
-#include "MaterialGraph/Public/Types.h"
-#include <cstdint>
-
-class TypeSystem {
-public:
-    // 算术运算结果类型推导
-    static EValueType GetArithmeticResultType(EValueType a, EValueType b) {
-        if (a == EValueType::Unknown || b == EValueType::Unknown)
-            return EValueType::Unknown;
-        if (a == b) return a;
-        if (a == EValueType::Float1) return b;
-        if (b == EValueType::Float1) return a;
-        return EValueType::Unknown;
-    }
-
-    static int GetComponentCount(EValueType type) {
-        switch (type) {
-            case EValueType::Float1: return 1;
-            case EValueType::Float2: return 2;
-            case EValueType::Float3: return 3;
-            case EValueType::Float4: return 4;
-            default: return 0;
-        }
-    }
-
-    // Unknown 返回 nullptr，让调用方知道这是错误
-    static const char* ToHLSLType(EValueType type) {
-        switch (type) {
-            case EValueType::Float1: return "float";
-            case EValueType::Float2: return "float2";
-            case EValueType::Float3: return "float3";
-            case EValueType::Float4: return "float4";
-            default: return nullptr;
-        }
-    }
-};
-```
-
-**规则：**
-
-- 任一为 Unknown → Unknown（错误传播）
-- 同类型 → 该类型
-- Float1 + FloatN → FloatN（标量扩展）
-- Float2 + Float3 → Unknown（编译期错误，**不要写"取较大维度"的隐式升级**）
-
-**UE5 参考**：`HLSLMaterialTranslator.cpp` 搜索 `GetArithmeticResultType`
-
----
-
-## 第四部分：完整示例 — ExprConstant
-
-```cpp
-// ExprConstant.h
-#pragma once
 #include "Expression/Public/Expression.h"
 #include "Reflection/Public/ReflectionMacros.h"
+#include "MaterialGraph/Public/Types.h"
+#include "Core/Public/MathTypes.h"
+#include "Core/Public/Logger.h"
+#include <cstdio>
 
-class ExprConstant : public Expression {
+// ============================================================
+// 测试用 Expression 子类
+// ============================================================
+class TestExpr : public Expression {
 public:
-    float value_ = 0.0f;
+    float      scale   = 1.0f;
+    Vec3       color   = Vec3(1.0f, 0.0f, 0.0f);
+    bool       enabled = true;
+    std::string label  = "default";
 
-    // 反射注册：声明字段 + 元数据
-    ME_BEGIN_CLASS(ExprConstant)
-        ME_DISPLAY_NAME("Constant")
-        ME_CATEGORY("Constants")
-        ME_FIELD(ExprConstant, value_, 0.0f)
-    ME_END_CLASS(ExprConstant)
+    ME_BEGIN_CLASS(TestExpr)
+        ME_DISPLAY_NAME("Test Expr")
+        ME_CATEGORY("Test")
+        ME_CATEGORY_COLOR("#FF8800")
+        ME_FIELD(TestExpr, scale,   1.0f)
+        ME_FIELD(TestExpr, color,   Vec3(1.0f, 0.0f, 0.0f))
+        ME_FIELD(TestExpr, enabled, true)
+        ME_FIELD(TestExpr, label,   std::string("default"))
+    ME_END_CLASS(TestExpr)
 
-    // 引脚布局
-    std::vector<ExpressionPinDesc> GetInputPins() const override { return {}; }
-    std::vector<ExpressionPinDesc> GetOutputPins() const override {
-        return {{"Output", EValueType::Float1, ""}};
-    }
-
-    // 编译
-    std::vector<int32_t> Compile(MaterialCompiler* compiler, Node* ownerNode) const override {
-        return {compiler->Constant(value_)};
-    }
+    std::vector<ExpressionPinDesc> GetInputPins()  const override { return {}; }
+    std::vector<ExpressionPinDesc> GetOutputPins() const override { return {}; }
+    std::vector<int32_t> Compile(MaterialCompiler*, Node*) const override { return {}; }
 };
-```
 
-**这个类只写了 3 件事**：声明字段（反射）、声明引脚、实现编译。没有任何手写参数代码。
+// ============================================================
+// 测试代码
+// ============================================================
+int main() {
+    std::printf("============================================================\n");
+    std::printf("  课5 反射系统测试（UE 风格：Property 继承）\n");
+    std::printf("============================================================\n");
 
----
+    TestExpr obj;
 
-## 工作原理总结
+    // 1. 元数据查询
+    const ClassDesc* desc = obj.GetClassDesc();
+    std::printf("type_name: %s\n", desc->type_name.c_str());
+    std::printf("display_name: %s\n", desc->display_name.c_str());
+    std::printf("category: %s\n", desc->category.c_str());
 
-完整的数据流：
+    // 2. 字段枚举
+    auto params = obj.GetParameters();
+    std::printf("字段数量: %zu\n", params.size());
+    for (const auto* p : params) {
+        std::printf("  - %s (offset=%zu)\n", p->name.c_str(), p->offset);
+    }
 
-```
-1. 编译期
-   ME_BEGIN_CLASS(ExprConstant)
-       ME_FIELD(ExprConstant, value_, 0.0f)
-   ME_END_CLASS(ExprConstant)
-       ↓ 宏展开
-   生成 GetClassDesc_Static()，构造 ClassDesc {
-       type_name: "ExprConstant",
-       display_name: "Constant",
-       category: "Constants",
-       fields: [{ name:"value_", offset:4, toJson:lambda... }]
-   }
-       ↓
-   重写 GetClassDesc() 虚函数
+    // 3. 读默认值
+    auto scale_json = obj.GetParameter("scale");
+    std::printf("scale 默认: %f\n", scale_json.get<float>());
 
-2. 运行时 — 读取参数
-   expr->GetParameter("value_")
-       ↓ 非虚实现
-   GetClassDesc() → ClassDesc
-   ClassDesc->find("value_") → FieldDesc
-   FieldDesc->toJson(this, offset, out)
-       ↓ lambda 内部
-   Accessor<float>::toJson(this, 4, out)
-       ↓
-   float* ptr = (float*)((char*)this + 4);
-   out = *ptr;
-```
+    // 4. 写入 → 回读
+    obj.SetParameter("scale", 3.14f);
+    std::printf("scale 改为: %f\n", obj.scale);
+    std::printf("GetParameter 回读: %f\n", obj.GetParameter("scale").get<float>());
 
----
+    // 5. 未知字段安全
+    auto val = obj.GetParameter("nonexistent");
+    std::printf("未知字段: %s\n", val.is_null() ? "null (安全)" : "有值?");
 
-## 验证
-
-### 测试1：TypeSystem 类型推导
-
-```cpp
-auto r1 = TypeSystem::GetArithmeticResultType(EValueType::Float1, EValueType::Float3);
-assert(r1 == EValueType::Float3);
-
-auto r2 = TypeSystem::GetArithmeticResultType(EValueType::Float2, EValueType::Float3);
-assert(r2 == EValueType::Unknown);
-```
-
-### 测试2：反射参数读写
-
-```cpp
-ExprConstant e;
-e.SetParameter("value_", 42.0f);
-float val = e.GetParameter("value_").get<float>();
-assert(val == 42.0f);
-
-auto params = e.GetParameters();
-assert(params.size() == 1);
-assert(params[0].name == "value_");
-assert(params[0].type == reflection::FieldType::Float);
-```
-
-### 测试3：序列化往返
-
-```cpp
-ExprConstant e;
-e.value_ = 3.14f;
-
-nlohmann::json j;
-for (const auto& field : e.GetParameters()) {
-    j[field.name] = e.GetParameter(field.name);
+    std::printf("============================================================\n");
+    return 0;
 }
-
-ExprConstant e2;
-for (auto it = j.begin(); it != j.end(); ++it) {
-    e2.SetParameter(it.key(), it.value());
-}
-assert(e2.value_ == e.value_);
-```
-
-### 测试4：元数据查询
-
-```cpp
-ExprConstant e;
-const reflection::ClassDesc* desc = e.GetClassDesc();
-assert(desc->type_name == "ExprConstant");
-assert(desc->display_name == "Constant");
-assert(desc->category == "Constants");
 ```
 
 ---
 
-## C++ 知识点速查表
+## UE5 参考（相对 `Engine/` 路径）
 
-| 特性 | 用在哪 | 作用 |
-|------|--------|------|
-| `#` 字符串化 | ME_FIELD | `#value_` → `"value_"` |
-| `offsetof` | ME_FIELD | 字段在对象中的字节偏移 |
-| 模板偏特化 | Accessor<float/int/bool/string/Vec2/Vec3/Vec4> | 为每种类型提供专属读写 |
-| CRTP 单例 | Singleton<T> / Registry / NodeFactory | 编译期类型安全的单例 |
-| `if constexpr` | GetFieldType | 编译期分支 |
-| `std::is_same_v` | GetFieldType | 编译期类型比较 |
-| `std::decay_t` | GetFieldType | 去 const/引用修饰 |
-| `decltype` | ME_FIELD | 自动推导字段类型 |
-| 无捕获 lambda → 函数指针 | ME_FIELD | 类型擦除实现 |
-| `reinterpret_cast` | Accessor | char* + offset → T* |
-| `static_cast` | Accessor | void* → char* |
-
----
-
-## 常见问题
-
-### Q1：offsetof 编译警告 C4204
-
-某些编译器对含虚函数的类用 `offsetof` 会警告。可以 `#pragma warning(suppress: 4204)` 抑制。我们的 Expression 子类满足 standard-layout（单继承 + 虚函数，无虚基类），安全。
-
-### Q2：宏展开后编译错误，看不出哪里错了
-
-VS Code 中右键 → "预处理输出"（或 `cl /P`），看宏展开后的实际代码。或手动展开宏对照。
-
-### Q3：SetParameter 设置了但 GetParameter 读不到
-
-检查 `ME_FIELD` 中的字段名和调用时传入的名字是否**完全一致**（包括下划线）。`#FieldName` 字符串化是精确的，`value_` 不会变成 `value`。
-
-### Q4：lambda 转函数指针报错
-
-只有**无捕获 lambda**能转函数指针。我们的 Accessor lambda 都是无捕获的。
-
----
-
-## UE5 参考
-
-| 功能 | UE5 源码位置 |
-|------|-------------|
-| MaterialExpression 基类 | `Engine/Source/Runtime/Engine/Public/Materials/MaterialExpression.h` |
-| `Compile()` 虚函数 | 同上，搜索 `virtual int32 Compile(FMaterialCompiler*` |
-| 类型推导规则 | `HLSLMaterialTranslator.cpp` 搜索 `GetArithmeticResultType` |
-| UPROPERTY 宏定义 | `Engine/Source/Runtime/CoreUObject/Public/UObject/ObjectMacros.h` |
-| 属性反射系统 | `Engine/Source/Runtime/CoreUObject/Public/UObject/UnrealType.h` |
-| UClass 注册 | `Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h` |
+| 我们的概念 | UE 对应 | 位置 |
+|-----------|---------|------|
+| `Property` 基类 | `FProperty`（旧名 `UProperty`）| `Engine/Source/Runtime/CoreUObject/Public/UObject/UnrealType.h` |
+| `FloatProperty` 等子类 | `FFloatProperty` / `FBoolProperty` 等 | 同上 |
+| `ClassDesc`（持有 `vector<unique_ptr<Property>>`）| `UClass`（持有 `TArray<FProperty*>`）| `Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h` |
+| `MakeProperty<T>` 工厂 | UHT 代码生成（扫描 UPROPERTY → 生成 FProperty 子类）| UHT 是独立工具 |
+| `ME_FIELD` 宏 | `UPROPERTY()` 宏 | `Engine/Source/Runtime/CoreUObject/Public/UObject/ObjectMacros.h` |
+| `ME_BEGIN_CLASS/END_CLASS` | `UCLASS()` + UHT 生成 `.generated.h` | 同上 |
+| `PropertyCustomizerRegistry` | `IPropertyTypeCustomization` + Details Panel 注册 | `Engine/Source/Editor/PropertyEditor/Public/IPropertyTypeCustomization.h` |
+| `Property::toJson/fromJson` | `FProperty::ExportText/ImportText` | `UnrealType.h` |
 
 ---
 
 ## 完成标志
 
-- [ ] Reflection.h 编译通过：FieldType、FieldDesc、Accessor（6 个偏特化）、ClassDesc（含 display_name/category/category_color）、Registry（继承 Singleton）
-- [ ] ReflectionMacros.h 编译通过：GetFieldType、ME_BEGIN_CLASS、ME_DISPLAY_NAME、ME_CATEGORY、ME_FIELD、ME_END_CLASS
-- [ ] Expression.h 编译通过：纯虚 GetClassDesc、纯虚 Compile/GetInputPins/GetOutputPins、非虚 Get/Set/GetParameter
-- [ ] TypeSystem 类型推导规则正确
-- [ ] ExprConstant 反射版的 Get/Set/Serialize/Metadata 查询全部正确
-- [ ] 理解每个 C++ 技巧（offsetof / 偏特化 / if constexpr / 函数指针类型擦除 / CRTP）
+- [ ] Property 基类 + 7 个子类（Float/Int/Bool/String/Vec2/3/4）编译通过
+- [ ] MakeProperty<T> 工厂 + ME_FIELD 宏工作
+- [ ] ClassDesc 持有 `vector<unique_ptr<Property>>`，find 按名查找
+- [ ] Expression::Get/Set/GetParameter 走 Property 虚函数
+- [ ] PropertyCustomizerRegistry 注册表工作（课13 验证）
+- [ ] TestExpr 反射测试通过（元数据查询/字段枚举/读写往返/未知字段安全）
+- [ ] 理解对照 UE：Property↔FProperty、ClassDesc↔UClass、MakeProperty↔UHT、注册表↔IPropertyTypeCustomization
