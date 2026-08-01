@@ -1,66 +1,73 @@
 #pragma once
-#include "Reflection/Public/Reflection.h"
-#include <nlohmann/json.hpp>
+#include "Reflection/Public/Property.h"
+#include "Reflection/Public/ClassDesc.h"
 #include <type_traits>
 #include <cstddef>
 
-// 辅助函数：根据C++类型选择FieldType
-// 用 if constexpr 在编译器决定，不满足的分支不参与编译
-
+// ============================================================================
+// MakeProperty<T> —— 工厂函数：按 C++ 类型 T 创建对应的 Property 子类
+// ============================================================================
+// 对标 UE 的 UHT：根据 C++ 类型生成对应的 FProperty 子类。
+// 用 if constexpr 在编译期做"类型→子类"映射，返回裸指针由 ClassDesc 的 unique_ptr 接管。
 template<typename T>
-
-constexpr reflection::FieldType GetFieldType(){
+Property* MakeProperty(const std::string& name, const size_t offset, const T& default_value){
     using DT = std::decay_t<T>;
-    if constexpr (std::is_same_v<DT, float>) return reflection::FieldType::Float;
-    else if constexpr(std::is_same_v<DT,int>) return reflection::FieldType::Int;
-    else if constexpr(std::is_same_v<DT,bool>) return reflection::FieldType::Bool;
-    else if constexpr(std::is_same_v<DT,std::string>) return reflection::FieldType::String;
-    else if constexpr(std::is_same_v<DT,Vec2>) return reflection::FieldType::Float2;
-    else if constexpr(std::is_same_v<DT,Vec3>) return reflection::FieldType::Float3;
-    else if constexpr(std::is_same_v<DT,Vec4>) return reflection::FieldType::Float4;
-    else static_assert(sizeof(T)==0, "Unsupported field type");
 
+    Property* p = nullptr;
+
+    if constexpr (std::is_same_v<DT, float>)             p = new FloatProperty();
+    else if constexpr (std::is_same_v<DT, int32_t>)      p = new IntProperty();
+    else if constexpr (std::is_same_v<DT, bool>)         p = new BoolProperty();
+    else if constexpr (std::is_same_v<DT, std::string>)  p = new StringProperty();
+    else if constexpr (std::is_same_v<DT, Vec2>)         p = new Vec2Property();
+    else if constexpr (std::is_same_v<DT, Vec3>)         p = new Vec3Property();
+    else if constexpr (std::is_same_v<DT, Vec4>)         p = new Vec4Property();
+    else static_assert(sizeof(T)==0, "Unsupported property type — add a Property subclass + MakeProperty branch");
+
+    p->SetName(name);
+
+    // 默认值序列化：default_value 是独立值，ToJson 的 offset 参数传 0（从其起始地址读）。
+    nlohmann::json j_default;
+    p->ToJson(&default_value, 0, j_default);
+    p->SetDefaultValue(j_default);
+
+    p->SetOffset(offset);   // 记录字段真实偏移，供运行期 Expression 读写用
+
+    return p;
 }
 
-// 开启类的反射注册(函数体未闭合，ME_END_CLASS负责闭合)
+// ============================================================================
+// 反射注册宏（对标 UE 的 UCLASS / UPROPERTY）
+// ============================================================================
+
+// ME_BEGIN_CLASS：开启类的反射注册（函数体未闭合，ME_END_CLASS 负责闭合）
 #define ME_BEGIN_CLASS(ClassName)\
-    static const reflection::ClassDesc& GetClassDesc_Static(){\
-        static reflection::ClassDesc desc;\
+    static const ClassDesc& GetClassDesc_static(){\
+        static ClassDesc desc;\
         static bool initialized = false;\
         if (!initialized){\
             initialized = true;\
             desc.type_name = #ClassName;\
             desc.display_name = #ClassName;\
-            desc.category="Misc";
+            desc.category = "Misc";\
 
 #define ME_DISPLAY_NAME(name) desc.display_name = (name);
-#define ME_CATEGORY(name) desc.category = (name);
+#define ME_CATEGORY(name)     desc.category = (name);
 #define ME_CATEGORY_COLOR(hex) desc.category_color = (hex);
 
-// 注册一个字段
-// 直接赋值静态函数指针（不走 lambda，避免冗余间接调用）
-// DefaultValue 走 Accessor 序列化（Vec3 等用户类型 nlohmann::json 不认识）
+// ME_FIELD：注册一个字段（对标 UPROPERTY + UHT 生成 FProperty 子类）
 #define ME_FIELD(ClassName, FieldName, DefaultValue)\
-    {\
-        using FieldType_t = std::decay_t<decltype(ClassName::FieldName)>;\
-        reflection::FieldDesc field;\
-        field.name = #FieldName;\
-        field.type = GetFieldType<FieldType_t>();\
-        field.offset = offsetof(ClassName, FieldName);\
-        FieldType_t _tmp_default = (DefaultValue);\
-        reflection::Accessor<FieldType_t>::toJson(&_tmp_default, 0, field.default_value);\
-        field.toJson   = &reflection::Accessor<FieldType_t>::toJson;\
-        field.fromJson = &reflection::Accessor<FieldType_t>::fromJson;\
-        desc.fields.push_back(std::move(field));\
-    }\
+            {\
+                desc.fields.emplace_back(MakeProperty<std::decay_t<decltype(ClassName::FieldName)>>(\
+                    #FieldName, offsetof(ClassName, FieldName), DefaultValue\
+                ));\
+            }\
 
-// 结束注册
+// ME_END_CLASS：结束注册，重写 GetClassDesc 虚函数
 #define ME_END_CLASS(ClassName)\
+        }\
+        return desc;\
     }\
-    return desc;\
-}\
-    const reflection::ClassDesc* GetClassDesc()const override{\
-        return &GetClassDesc_Static();\
-}\
-        
-    
+    const ClassDesc* GetClassDesc() const override{\
+        return &GetClassDesc_static();\
+    }\

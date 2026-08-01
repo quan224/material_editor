@@ -99,19 +99,21 @@ L5 应用层            ← UI / Compiler / Renderer
 
 ## 已固化的设计决策（不要推翻）
 
-### 反射系统（课 5）
-- **类型擦除三层**：编译期 `Accessor<T>`（模板特化）→ 注册期函数指针（FieldDesc::toJson/fromJson）→ 运行期统一签名 `void(*)(void*, size_t, ...)`
-- **FieldDesc 函数指针签名**：
-  - `toJson`: `void(*)(void*, size_t, nlohmann::json&)` （非 const json，写入）
-  - `fromJson`: `void(*)(void*, size_t, const nlohmann::json&)` （const json，读取）
-  - **签名必须一致**，否则 ME_FIELD 宏里直接赋值会失败
-- **ME_FIELD 宏不包 lambda**：直接 `field.toJson = &Accessor<T>::toJson`，理由：lambda 冗余、容易触发签名不匹配
-- **ME_FIELD 默认值序列化**：用户传 `Vec3(1,0,0)` 不能直接赋给 `nlohmann::json`，必须通过 `Accessor::toJson` 转换
-- **GetClassDesc_Static 返回引用**：返回 `const ClassDesc&` 而非值，避免 `&GetClassDesc_Static()` 取到临时值地址
-- **ClassDesc::find 用 const auto&**：按值拷贝会返回悬空指针
+### 反射系统（课 5）— UE 风格：Property 继承体系
+- **类型擦除用继承 + 虚函数**（对标 UE `FProperty`）：`Property` 基类（虚函数 `toJson`/`fromJson`）+ 子类（`Float/Int/Bool/StringProperty` + `Vec2/3/4Property`），`ClassDesc` 持有 `vector<unique_ptr<Property>>`。旧三层（FieldType 枚举 / FieldDesc 函数指针 / `Accessor<T>` 模板特化）**已废弃**。
+- **const-correctness（关键，对标 `FProperty::ExportText/ImportText`）**：
+  - `toJson(const void* obj, nlohmann::json&) const` —— 读用 `const void*`
+  - `fromJson(void* obj, const nlohmann::json&) const` —— 写用 `void*`
+  - 两者都是 const 方法（Property 是不可变元数据，只读写传入的 obj）
+  - 这样 `Expression::Get/SetParameter` **全程无 const_cast**
+- **类型→子类映射**：`MakeProperty<T>` 工厂用 `if constexpr`（对标 UE UHT），返回裸指针由 `ClassDesc` 的 `unique_ptr` 接管。
+- **ME_FIELD 默认值序列化**：用户传 `Vec3(1,0,0)` 不能直接赋给 json，必须在 `MakeProperty` 里**用 Property 自己的 toJson** 把默认值序列化进 `prop->defaultValue`（`prop->toJson(&defaultVal, 0, prop->defaultValue)`）。
+- **GetClassDesc_Static 返回引用**：返回 `const ClassDesc&` 而非值，避免 `&GetClassDesc_Static()` 取到临时值地址。
+- **ClassDesc::find 用 const auto&**：按值拷贝会返回悬空指针。
 - **Expression 三套 API 分工**：
   - 4 个**纯虚** = 子类必须实现（GetClassDesc 通过 ME_END_CLASS 宏自动实现、GetInputPins/GetOutputPins/Compile 手写）
   - 3 个**非虚** = 基类用反射统一实现（GetParameters/SetParameter/GetParameter），子类不碰
+- **UI 不 switch 枚举**：`PropertyCustomizerRegistry` 按 `std::type_index` 注册编辑器（对标 `IPropertyTypeCustomization`）。
 
 ### 类型系统去重（课 5 期间的重构）
 - `Types.h`（L2 数据模型层）：`EValueType` / `EPinDataDirection` / `GetComponentCount` / `CanImplicitConvert` —— **零编译器知识**
@@ -129,10 +131,8 @@ L5 应用层            ← UI / Compiler / Renderer
 |-----|------|------|
 | `Registry::Find` 三元逻辑反 | 找不到时返回垃圾指针，找到时返回 nullptr | `it != end() ? &it->second : nullptr` 别写反 |
 | `ClassDesc::find` 按值迭代 | 返回局部变量地址，悬空指针 | `for(const auto& x : v)` |
-| `Accessor::fromJson` 没 const | 临时值无法绑定，lambda 转函数指针失败 | 读 json 用 `const&`，写 json 用非 const `&` |
-| `ME_FIELD` 默认值直接赋 | `field.default_value = Vec3(...)` 编译失败 | 走 `Accessor::toJson` 序列化 |
-| `ME_FIELD` 用 lambda 包裹 | 签名不匹配时编译失败，且冗余 | 直接赋函数指针 `&Accessor<T>::toJson` |
-| `desc.push_back` | ClassDesc 没有 push_back | 用 `desc.fields.push_back` |
+| `ME_FIELD` 默认值直接赋 json | `Vec3` 不能隐式转 `nlohmann::json`，编译失败 | 在 `MakeProperty` 里用 `Property::toJson` 序列化进 `prop->defaultValue` |
+| `desc.fields` 漏写 | ClassDesc 本身没有 push_back/emplace_back | 用 `desc.fields.emplace_back(std::unique_ptr<Property>)` |
 | `elif constexpr` | C++ 没这个关键字 | `else if constexpr` |
 | `static const ClassDesc GetClassDesc_Static()` | 返回值带 `&` 是悬空指针 | 返回 `const ClassDesc&` |
 | Vec4 fromJson 检查 `>=3` | 越界访问 `in[3]` | Vec4 要 `>=4` |

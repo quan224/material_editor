@@ -1,6 +1,6 @@
 #pragma once
 #include "MaterialGraph/Public/Types.h"
-#include "Reflection/Public/Reflection.h"
+#include "Reflection/Public/ClassDesc.h"
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -25,7 +25,7 @@ public:
 
     // === 反射入口（纯虚：子类必须通过宏重写）===
     // 返回的 ClassDesc 包含：typeName / displayName / category / categoryColor / fields[]
-    virtual const reflection::ClassDesc *GetClassDesc() const = 0;
+    virtual const ClassDesc *GetClassDesc() const = 0;
 
     // === 引脚布局（结构化声明，与"可编辑参数"分开）===
     virtual std::vector<ExpressionPinDesc> GetInputPins() const = 0;
@@ -39,7 +39,7 @@ public:
 
     // 参数读写，反射实现，子类无需重写
     // 获取或有参数描述
-    std::vector<reflection::FieldDesc> GetParameters() const;
+    std::vector<const Property*> GetParameters() const;
     // 写入参数值到类对象中
     void SetParameter(const std::string& name, const nlohmann::json& value);
     // 从类对象中恢复参数值为json
