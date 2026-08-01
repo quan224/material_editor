@@ -108,9 +108,10 @@ void NodePalettePanel::BuildTree() {
 
     auto types = factory_->GetAllTypes();
 
-    // 按类别分组
+    // 按类别分组（跳过 hidden 类型：MaterialOutput 自动创建，不进调色板）
     std::map<std::string, std::vector<NodeFactory::NodeTypeInfo>> byCategory;
     for (const auto& t : types) {
+        if (t.hidden) continue;          // hidden 类型不显示（如 MaterialOutput）
         byCategory[t.category].push_back(t);
     }
 
@@ -601,8 +602,7 @@ void MainWindow::SetupDockWidgets() {
             this, [this](const std::string& typeName) {
         QPointF center = graphWidget_->mapToScene(
             graphWidget_->viewport()->rect().center());
-        auto node = factory_->Create(typeName, center);
-        if (node) graph_->AddNode(node);
+        graph_->AddNode(typeName, center);   // 唯一入口：内部经 NodeFactory 构造
     });
 
     // 图变化时重新编译

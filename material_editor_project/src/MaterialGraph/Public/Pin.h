@@ -3,6 +3,7 @@
 #include "Core/Public/UUID.h"
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 class Pin
 {
@@ -12,7 +13,7 @@ public:
     EValueType type = EValueType::Unknown;                  // 端口类型
     EPinDataDirection direction = EPinDataDirection::Input; // 端口方向
     UUID ownerNodeId = UUID::Invalid();                     // 所在节点ID
-    std::string defaultValue;                               // 未连接时的默认值，字符串格式如 "0.5", "(0,0,1)", "(1,0,0,1)"
+    nlohmann::json defaultValue;                           // 未连接时的默认值（json：0.5 / [0,0,1] / [1,0,0,1]）
 
     // 连接信息 —— 这个引脚连到了对端的哪个引脚
     // 注意：字段名叫 otherPinId/otherNodeId（"对端引脚/对端节点"），

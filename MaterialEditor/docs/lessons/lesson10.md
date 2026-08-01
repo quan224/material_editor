@@ -27,6 +27,8 @@ UE5 的材质编辑器布局：
 
 UE5 用 Slate 的 `SDockSplitter` 实现可停靠布局。Qt 有等价的 `QDockWidget`，行为一致：面板可以拖拽、浮动、堆叠为标签页。
 
+> **节点添加约定**（影响课13 调色板）：所有节点类型都注册在 `NodeFactory`，`Graph::AddNode(typeName, pos)` 是**唯一**添加入口（内部经工厂构造，不手动 new Node）。其中 `MaterialOutput`（材质输出节点）注册时带 `hidden=true`，由 `Graph` 自动创建一个、**不进调色板**——课13 调色板遍历 `GetAllTypes()` 时按 `hidden` 过滤掉它。
+
 ---
 
 ## 操作步骤

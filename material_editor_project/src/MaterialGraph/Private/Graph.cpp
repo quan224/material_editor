@@ -1,5 +1,6 @@
 #include "MaterialGraph/Public/Graph.h"
 #include "MaterialGraph/Public/NodeFactory.h"
+#include <nlohmann/json.hpp>
 #include <algorithm>  // std::remove_if（Disconnect 中使用 erase-remove 惯用法）
 #include <vector>
 
@@ -13,53 +14,18 @@ void Graph::EnsureOutputNode()
     if (outputNodeId_.IsValid() && FindNode(outputNodeId_))
         return;
 
-    auto node = MakeRef<Node>();
-    node->id = UUID::Generate();
-    node->typeName = "MaterialOutput";
-    node->title = "Material Output";
-    node->position = QPointF(600, 300);
-
-    // 材质输出节点只有输入引脚
-    auto makeInput = [&](const char *name, EValueType type, const std::string &def = "0.0")
-    {
-        Pin p;
-        p.id = UUID::Generate();
-        p.name = name;
-        p.type = type;
-        p.direction = EPinDataDirection::Input;
-        p.ownerNodeId = node->id;
-        p.defaultValue = def;
-        return p;
-    };
-
-    node->inputPins = {
-        makeInput("BaseColor", EValueType::Float3, "(0,0,0)"),
-        makeInput("Metallic", EValueType::Float1, "0.0"),
-        makeInput("Specular", EValueType::Float1, "0.5"),
-        makeInput("Roughness", EValueType::Float1, "0.5"),
-        makeInput("Normal", EValueType::Float3, "(0,0,1)"),
-        makeInput("EmissiveColor", EValueType::Float3, "(0,0,0)"),
-        makeInput("Opacity", EValueType::Float1, "1.0"),
-        makeInput("AmbientOcclusion", EValueType::Float1, "1.0"),
-        makeInput("WorldPositionOffset", EValueType::Float3, "(0,0,0)"),
-    };
-
-    outputNodeId_ = node->id;
-    nodes_[node->id] = node;
+    // MaterialOutput 注册在 NodeFactory（hidden=true），统一走 AddNode 构造，不再手搓
+    Node* n = AddNode("MaterialOutput", QPointF(600, 300));
+    if (n) outputNodeId_ = n->id;
 }
 
 Node *Graph::AddNode(const std::string &typeName, const QPointF &position)
 {
-
+    // 唯一入口：按 typeName 经 NodeFactory 构造（含引脚 + 默认值），再加入图。
     Ref<Node> node = NodeFactory::GetInstance().Create(typeName, position);
     if (!node) return nullptr;
-    return AddNode(node);  // 复用下面的重载
-}
 
-Node *Graph::AddNode(const Ref<Node> &node)
-{
-    // 防御性检查：空指针 / 无效 id / 已存在都不允许
-    if (!node || !node->id.IsValid()) return nullptr;
+    // 防御性检查：Create 保证 id 有效，但重复 id 不允许
     if (nodes_.count(node->id)) return nullptr;
 
     nodes_[node->id] = node;

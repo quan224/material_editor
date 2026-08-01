@@ -15,7 +15,7 @@ struct ExpressionPinDesc
 {
     std::string name;
     EValueType type;
-    std::string default_value;
+    nlohmann::json default_value;
 };
 
 class Expression

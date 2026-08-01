@@ -15,12 +15,9 @@ public:
     explicit Graph(QObject *parent = nullptr);
 
     // 节点管理
-    // 两种 AddNode 方式：
-    //   1. 传入 typeName + position：内部通过 NodeFactory::Create 构造带引脚的节点
-    //   2. 传入 Ref<Node>：接收外部已构造好的节点（用于测试 / 反射版 Expression
-    //      创建的节点 / EnsureOutputNode 这种不走工厂的特例），不依赖工厂单例
+    // 唯一的添加节点入口：按 typeName 经 NodeFactory 构造（含引脚 + 默认值）再加入图。
+    // 所有节点（含 MaterialOutput）都注册在工厂里，统一走这条路径，不手动构造 Node。
     Node *AddNode(const std::string &typeName, const QPointF &position);
-    Node *AddNode(const Ref<Node> &node);
     void RemoveNode(const UUID &nodeId);
     Node *FindNode(const UUID &nodeId);
     const Node *FindNode(const UUID &nodeId) const;

@@ -4,10 +4,35 @@
 void NodeFactory::Register(const std::string &typeName,
                            const std::string &displayName,
                            const std::string &category,
-                           const std::vector<PinTemplate> &pins)
+                           const std::vector<PinTemplate> &pins,
+                           bool hidden)
 {
     nameToIndex_[typeName] = registry_.size();
-    registry_.push_back({typeName, displayName, category, pins});
+    registry_.push_back({typeName, displayName, category, pins, hidden});
+}
+
+// 内置类型注册：MaterialOutput（每图唯一，由 Graph::EnsureOutputNode 自动创建，hidden 不进调色板）
+void NodeFactory::RegisterBuiltins()
+{
+    using Dir = EPinDataDirection;
+    Register("MaterialOutput", "Material Output", "Output",
+        {
+            {"BaseColor",           EValueType::Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 0.0})},
+            {"Metallic",            EValueType::Float1, Dir::Input, 0.0},
+            {"Specular",            EValueType::Float1, Dir::Input, 0.5},
+            {"Roughness",           EValueType::Float1, Dir::Input, 0.5},
+            {"Normal",              EValueType::Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 1.0})},
+            {"EmissiveColor",       EValueType::Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 0.0})},
+            {"Opacity",             EValueType::Float1, Dir::Input, 1.0},
+            {"AmbientOcclusion",    EValueType::Float1, Dir::Input, 1.0},
+            {"WorldPositionOffset", EValueType::Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 0.0})},
+        },
+        /*hidden=*/true);
+}
+
+NodeFactory::NodeFactory()
+{
+    RegisterBuiltins();
 }
 
 Ref<Node> NodeFactory::Create(const std::string &typeName, const QPointF &position) const

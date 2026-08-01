@@ -5,6 +5,7 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <nlohmann/json.hpp>
 #include "Core/Public/Singleton.h"
 
 class NodeFactory:public Singleton<NodeFactory>
@@ -19,7 +20,7 @@ public:
         std::string name;
         EValueType type;
         EPinDataDirection direction;
-        std::string defaultValue;
+        nlohmann::json defaultValue;
     };
 
     // 节点类型信息
@@ -29,13 +30,15 @@ public:
         std::string displayName; // Add
         std::string category;    // Math
         std::vector<PinTemplate> pins;
+        bool hidden = false;   // hidden=true 的类型不进调色板（如 MaterialOutput，自动创建、每图唯一）
     };
 
     // 注册一个表达式类型
     void Register(const std::string &typeName,
                   const std::string &displayName,
                   const std::string &category,
-                  const std::vector<PinTemplate> &pins);
+                  const std::vector<PinTemplate> &pins,
+                  bool hidden = false);
 
     // 创建节点
     Ref<Node> Create(const std::string &typeName, const QPointF &position) const;
@@ -47,7 +50,8 @@ public:
     const NodeTypeInfo *FindType(const std::string &typeName) const;
 
 private:
-    NodeFactory()=default;
+    NodeFactory();              // 构造时 RegisterBuiltins() 注册内置类型
+    void RegisterBuiltins();    // 注册 MaterialOutput 等（hidden，自动创建、不进调色板）
 
     // 直接索引找vector下表，要比找map更快。且内存连续
     std::vector<NodeTypeInfo> registry_;

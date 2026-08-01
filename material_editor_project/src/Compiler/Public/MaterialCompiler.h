@@ -6,6 +6,7 @@
 #include <map>
 #include <string>
 #include <set>
+#include <nlohmann/json.hpp>
 
 class Graph;
 class Node;
@@ -84,8 +85,8 @@ public:
     int32_t AddConstantChunk(EValueType type, float value);
     std::string MakeSymbolName();
 
-    // 解析字符串形式的默认值（如 "0.5" 或 "(1,0,0)"）为代码块索引
-    int32_t ParseDefaultValue(const std::string& val, EValueType type);
+    // 解析 json 形式的默认值（如 0.5 或 [1,0,0]）为代码块索引
+    int32_t ParseDefaultValue(const nlohmann::json& val, EValueType type);
 
     // 编译单个表达式节点
     std::vector<int32_t> CompileExpression(Node* node);
