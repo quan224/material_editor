@@ -19,6 +19,12 @@ file(GLOB_RECURSE SOURCES src/*.cpp)
 file(GLOB_RECURSE HEADERS src/*.h)
 
 add_executable(MaterialEditor ${SOURCES} ${HEADERS})
+
+# === 保留源码目录结构到 IDE 视图 ===
+# VS 默认会把所有 .h 塞进 "Header Files"、.cpp 塞进 "Source Files"，丢失模块划分。
+# source_group(TREE ...) 让 IDE 解决方案按真实目录树展示（Core/MaterialGraph/Reflection/...）。
+# 跨 IDE 通用：VS / VSCode CMake Tools / Xcode 都吃这个。
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "" FILES ${SOURCES} ${HEADERS})
 target_link_libraries(MaterialEditor PRIVATE
     Qt6::Core Qt6::Widgets
     glm::glm nlohmann_json::nlohmann_json
@@ -45,15 +51,41 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/resources")
     file(COPY resources/ DESTINATION ${CMAKE_BINARY_DIR}/resources)
 endif()
 
+# === 部署 Qt 平台插件（开发期）===
+# Qt 程序运行时必须能找到 platforms/qwindows[d].dll，否则启动直接报错。
+# vcpkg 装的 Qt6 不带 windeployqt，没法自动收集依赖，所以这里手动拷一个最关键的。
+# 跨机器通用：Qt6::QWindowsIntegrationPlugin 这个 target 由 Qt6Gui 包暴露，
+#             vcpkg / MSYS2 / 官方 Qt 安装包都有，路径自动适配。
+if(TARGET Qt6::QWindowsIntegrationPlugin)
+    add_custom_command(TARGET MaterialEditor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                $<TARGET_FILE_DIR:MaterialEditor>/platforms
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:Qt6::QWindowsIntegrationPlugin>
+                $<TARGET_FILE_DIR:MaterialEditor>/platforms/
+        COMMENT "Copying Qt Windows platform plugin"
+    )
+else()
+    message(WARNING "Qt6::QWindowsIntegrationPlugin target not found — exe will need QT_QPA_PLATFORM_PLUGIN_PATH set to run")
+endif()
+
 # === 打包目标：用 windeployqt 收集 Qt 运行时依赖到构建目录 ===
-# 日常开发：cmake --build build-mingw                  （快，不跑 windeployqt）
-# 发布打包：cmake --build build-mingw --target deploy  （先 build，再自动收集 Qt dll + 平台插件）
-# 注意：windeployqt 运行需要 PATH 里有 Qt 的 bin 目录（MSYS2 下是 C:\msys64\mingw64\bin）
-add_custom_target(deploy
-    COMMAND $<TARGET_FILE:Qt6::windeployqt>
-            $<TARGET_FILE:MaterialEditor>
-            --no-translations
-    DEPENDS MaterialEditor
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Collecting Qt runtime dependencies (windeployqt)"
-)
+# 日常开发：cmake --build --preset debug                  （快，不跑 windeployqt）
+# 发布打包：cmake --build --preset debug --target deploy  （先 build，再自动收集 Qt dll + 平台插件）
+#
+# 跨机器兼容：
+#   MSYS2 Qt6：windeployqt.exe 在 mingw64/bin，find_program 能从 PATH 找到
+#   vcpkg Qt6：根本不带 windeployqt.exe，find_program 返回空 → 不创建 deploy target
+find_program(WINDEPLOYQT_EXE windeployqt)
+if(WINDEPLOYQT_EXE)
+    add_custom_target(deploy
+        COMMAND ${WINDEPLOYQT_EXE}
+                $<TARGET_FILE:MaterialEditor>
+                --no-translations
+        DEPENDS MaterialEditor
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Collecting Qt runtime dependencies (windeployqt)"
+    )
+else()
+    message(STATUS "windeployqt.exe not found — 'deploy' target disabled (vcpkg Qt6 doesn't ship it)")
+endif()
