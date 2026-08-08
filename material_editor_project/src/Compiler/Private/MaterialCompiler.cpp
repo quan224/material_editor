@@ -1,79 +1,80 @@
 #include "Compiler/Public/MaterialCompiler.h"
-#include "Compiler/Public/TypeSystem.h"
-#include "MaterialGraph/Public/Graph.h"
-#include "MaterialGraph/Public/NodeFactory.h"
-#include "Expression/Public/Expression.h"
-#include "Core/Public/Hash.h"
-#include "Core/Public/Logger.h"
-#include <sstream>
-#include <cstdarg>
 
-// ===================== 主编译入口 =====================
-
-MaterialCompiler::MaterialCompiler(){}
-
-
-// ===================== 代码块管理 =====================
-
+// 生成局部变量名 Local0,Local1...
 std::string MaterialCompiler::MakeSymbolName(){
-    return "Local" + std::to_string(next_symbo_index_++);
+    return "Local" + std::to_string(next_symbol_index_++);
 }
 
+// 通用代码块: 产生真实指令的表达式用（函数调用、纹理采样、复杂算数）
+// 非内嵌时产生 “float3 Local0 = ...;” 声明；内嵌时不生命，直接嵌入使用处
 
 int32_t MaterialCompiler::AddCodeChunk(EValueType type, const std::string& code, bool is_inline){
     uint64_t hash = HashString(code);
     auto it = hash_to_chunk_.find(hash);
-    if(it != hash_to_chunk_.end()) return it->second;  // 去重
+    if(it != hash_to_chunk_.end()) return it->second;
 
     CodeChunk chunk;
     chunk.hash = hash;
     chunk.code = code;
-    chunk.type = type;
+    chunk.type = type;                                    // ← 原来漏了，导致 chunk 类型全是 Unknown
     chunk.is_inline = is_inline;
-    if (! is_inline){
-        chunk.symbol_name = MakeSymbolName();
-    }
-
-    chunks_.push_back(chunk);
+    if (!is_inline) chunk.symbol_name = MakeSymbolName(); // ← 非内联才需符号（声明 LocalN）；内联直接嵌入
+    chunks_.emplace_back(chunk);
     int32_t index = chunks_.size() - 1;
     hash_to_chunk_[hash] = index;
     return index;
-
 }
 
-int32_t MaterialCompiler::AddConstantChunk(EValueType type, float value)
-{
-    std::string code;
-    if (value == 0.0f)
-        code = "0.0";
-    else if (value == 1.0f)
-        code = "1.0";
-    else
-        code = std::to_string(value);
-    uint64_t hash = HashString("const_" + code);
+int32_t MaterialCompiler::AddInlineCodeChunk(EValueType type, const std::string& code){
+    return AddCodeChunk(type, code, /*is_inline*/true);
+}
+
+int32_t MaterialCompiler::AddConstantChunk(EValueType type, const ConstValue& value){
+    std::string const_code = FormatConstantCode(value);
+    
+    uint64_t hash = HashString("const_" + const_code);
     auto it = hash_to_chunk_.find(hash);
-    if (it != hash_to_chunk_.end())
-        return it->second;
+    if (it != hash_to_chunk_.end()) return it->second;
+
     CodeChunk chunk;
     chunk.hash = hash;
-    chunk.code = code;
+    chunk.code = const_code;
     chunk.type = type;
     chunk.is_inline = true;
     chunk.is_constant = true;
     chunk.constant_value = value;
-    chunks_.push_back(chunk);
+    chunks_.emplace_back(chunk);
     int32_t index = chunks_.size() - 1;
     hash_to_chunk_[hash] = index;
     return index;
 }
 
-// ===================== 常量 =====================
 
-int32_t MaterialCompiler::Constant(float value){
-    return AddConstantChunk(EValueType::Float1, value);
+std::string MaterialCompiler::FormatConstantCode(const ConstValue& value){
+    if (std::holds_alternative<float>(value)){
+        if (ConstFolding::IsScalarZero(value)) return "0.0";
+        else if (ConstFolding::IsScalarOne(value)) return "1.0";
+        else return std::to_string(std::get<float>(value)); 
+    }
+    else if (std::holds_alternative<Vec2>(value)){
+        Vec2 _v = std::get<Vec2>(value);
+        return "float2(" + std::to_string(_v.x) + "," + std::to_string(_v.y) + ")";
+    }
+    else if (std::holds_alternative<Vec3>(value)){
+        Vec3 _v = std::get<Vec3>(value);
+        return "float3(" + std::to_string(_v.x) + "," + std::to_string(_v.y) + "," + std::to_string(_v.z) + ")";
+    }
+    else if (std::holds_alternative<Vec4>(value)){
+        Vec4 _v = std::get<Vec4>(value);
+        return "float4(" + std::to_string(_v.x) + "," + std::to_string(_v.y) + "," + std::to_string(_v.z) + "," + std::to_string(_v.w) + ")";
+    }
+    else{
+        ME_LOG_ERROR("FormatConstantCode unvalid");
+        assert(false);
+        return "0.0";
+    }
 }
 
-int32_t MaterialCompiler::Constant2(float x, float y)
-{
-    return AddCodeChunk(EValueType::Float2, "float2(" + std::to_string(x) + "," + std::to_string(y) + ")", false);
-}
+
+
+

@@ -27,6 +27,6 @@ nlohmann::json Expression::GetParameter(const std::string& name)const{
     const Property* field_desc = class_desc->FindItem(name);
     if (!field_desc)   return {};
     nlohmann::json out;
-    field_desc->ToJson(static_cast<void*>(const_cast<Expression*>(this)), field_desc->offset, out);
+    field_desc->ToJson(this, field_desc->offset, out);
     return out;
 }

@@ -104,6 +104,22 @@ enum class EValueType {
 - `Matrix3x3/4x4`：变换矩阵（如 `Transform` 节点）
 - `Texture2D / SamplerState`：纹理对象 + 采样器状态，是"对象类型"，**不能算术运算**，只供 `TextureSample` 使用
 
+**类型查询（free function，留在这层）**：
+
+```cpp
+// 分量数：纯类型属性查询，零编译器知识 → 放 Types.h（不放 TypeSystem）
+inline int GetComponentCount(EValueType t) {
+    switch (t) {
+        case EValueType::Float1: case EValueType::Int1: return 1;
+        case EValueType::Float2: case EValueType::Int2: return 2;
+        case EValueType::Float3: case EValueType::Int3: return 3;
+        case EValueType::Float4: case EValueType::Int4: return 4;
+        default: return 0;   // Matrix/Texture/Unknown 不走分量逻辑
+    }
+}
+```
+> `GetComponentCount` 是"类型本身的属性"，留 Types.h；TypeSystem（编译器层）**不重复定义**，需要时调 `::GetComponentCount(t)`。分层原则：HLSL/组合规则才进 TypeSystem。
+
 ### 文件：`src/Compiler/Public/TypeSystem.h`（推导规则）
 
 算术运算的结果类型推导（对照 UE `GetArithmeticResultType`）：
@@ -123,16 +139,9 @@ public:
         if (b == Int1) return a;
         return Unknown;  // Float2 + Float3 这种不兼容
     }
+    // GetComponentCount 不在这里——它是纯类型属性查询，留在 Types.h（free function），
+    // 本类不重复定义，需要时调 ::GetComponentCount(t)。分层：HLSL/组合规则才进 TypeSystem。
 
-    static int GetComponentCount(EValueType t) {
-        switch (t) {
-            case EValueType::Float1: case EValueType::Int1: return 1;
-            case EValueType::Float2: case EValueType::Int2: return 2;
-            case EValueType::Float3: case EValueType::Int3: return 3;
-            case EValueType::Float4: case EValueType::Int4: return 4;
-            default: return 0;   // Matrix/Texture/Unknown 不走分量逻辑
-        }
-    }
     static const char* ToHLSLType(EValueType t) {
         switch (t) {
             case EValueType::Float1:   return "float";

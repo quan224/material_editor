@@ -18,23 +18,29 @@ public:
         if (a==b) return a;
         if (a==EValueType::Float1) return b;
         if (b==EValueType::Float1) return a;
+        if (a == EValueType::Int1) return b;
+        if (b == EValueType::Int1) return a;
         return EValueType::Unknown;
     }
+
+    // GetComponentCount 不在这里——它是纯类型属性查询，在 Types.h（free function）。
+    // 需要"类型有几个分量"时直接调 ::GetComponentCount(t)。
 
     // 类型到 HLSL 类型名
     static const char* ToHLSLType(EValueType type){
         switch (type)
         {
-        case EValueType::Float1:
-            return "float";
-        case EValueType::Float2:
-            return "float2";
-        case EValueType::Float3:
-            return "float3";
-        case EValueType::Float4:
-            return "float4";
-        default:
-            return nullptr;
+        case EValueType::Float1: return "float";
+        case EValueType::Float2: return "float2";
+        case EValueType::Float3: return "float3";
+        case EValueType::Float4: return "float4";
+        case EValueType::Int1: return "int";
+        case EValueType::Int2: return "int2";
+        case EValueType::Int3: return "int3";
+        case EValueType::Int4: return "int4";
+        case EValueType::Matrix3x3: return "float3x3";
+        case EValueType::Matrix4x4: return "float4x4";
+        default: return "float";
         }
     }
 
