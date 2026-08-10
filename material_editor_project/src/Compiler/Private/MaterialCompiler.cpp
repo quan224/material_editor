@@ -75,6 +75,44 @@ std::string MaterialCompiler::FormatConstantCode(const ConstValue& value){
     }
 }
 
+std::string MaterialCompiler::GetParameterCode(int32_t index) const {
+    if (index < 0 || index >= chunks_.size()) {
+        ME_LOG_ERROR("GetParameterCode错误,index超出限制 %d", index);
+        assert(false);
+        return "0.0";
+    }
+    return chunks_[index].is_inline ? chunks_[index].code : chunks_[index].symbol_name;
+}
+EValueType MaterialCompiler::GetType(int32_t index)const {
+    if (index < 0 || index >= chunks_.size()) {
+        ME_LOG_ERROR("GetType错误,index超出限制 %d", index);
+        assert(false);
+        return EValueType::Unknown;
+    }
+    return chunks_[index].type;
+}
+bool MaterialCompiler::IsConstant(int32_t index) const {
+    if (index < 0 || index >= chunks_.size()) {
+        ME_LOG_ERROR("IsConstant错误,index超出限制 %d", index);
+        assert(false);
+        return false;
+    }
+    return chunks_[index].is_constant;
+}
+ConstValue MaterialCompiler::GetConstantValue(int32_t index) const {
+    if (index < 0 || index >= chunks_.size()) {
+        ME_LOG_ERROR("GetConstantValue错误,index超出限制 %d", index);
+        assert(false);
+        return 0.0f;
+    }
+    if (!chunks_[index].is_constant) {
+        ME_LOG_ERROR("GetConstantValue错误,index并非常量 %d", index);
+        assert(false);
+        return 0.0f;
+    }
+    return chunks_[index].constant_value;
+}
+
 
 
 

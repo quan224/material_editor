@@ -613,7 +613,7 @@ private:
     int32_t AddConstantChunk(EValueType type, const ConstValue& value);     // ← 接收 variant
     std::string MakeSymbolName();
 
-    int32_t ParseDefaultValue(const std::string& val, EValueType type);
+    int32_t ParseDefaultValue(const nlohmann::json& val, EValueType type);
     std::vector<int32_t> CompileExpression(Node* node);
     std::string GenerateCode(const std::map<std::string, int32_t>& outputs);
 
@@ -856,7 +856,7 @@ std::vector<int32_t> MaterialCompiler::CompileExpression(Node* node) {
 }
 ```
 
-> **`ParseDefaultValue`**（未连接引脚的默认值解析，如 `"0.5"` → `Constant(0.5)`、`"(1,0,0)"` → `Constant3`）实现见初版课6，逻辑是按 `EValueType` 用 `sscanf` 解析字符串再调对应的 `Constant/2/3/4`，扩展版直接复用。
+> **`ParseDefaultValue`**（未连接引脚的默认值解析，如 `0.5` → `Constant(0.5)`、`[1,0,0]` → `Constant3`）实现按 `EValueType` 用 `nlohmann::json` 的 `is_number()` / `is_array()` 分发到对应的 `Constant/2/3/4`。Pin 的 `defaultValue` 字段本身是 json 类型，直接传进来即可。
 
 > **课6 端到端的限制**：`CompileExpression` 里的 TODO 意味着**课6 还不能从 Graph 端到端编译**（缺表达式注册，那是课7）。课6 用 `compiler_test.cpp` 直接调算子 API（`Constant`/`Add`/...）+ `GenerateCode` 验证编译器核心。等课7 接上表达式注册，才能 `Compile(graph)` 跑通整条管线。
 

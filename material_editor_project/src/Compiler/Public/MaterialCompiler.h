@@ -53,6 +53,13 @@ public:
     // 向量操作/
 
 
+    // === 查询（常量值返回variant）===
+    std::string GetParameterCode(int32_t index) const;
+    EValueType GetType(int32_t index) const;
+    bool IsConstant(int32_t index) const;
+    ConstValue GetConstantValue(int32_t index) const;
+
+
 private:
     int32_t AddCodeChunk(EValueType type, const std::string& code, bool is_inline = false);
     int32_t AddInlineCodeChunk(EValueType type, const std::string& code);
@@ -62,7 +69,7 @@ private:
     // 接收variant
     std::string MakeSymbolName();
     int32_t ParseDefaultValue(const nlohmann::json& default_value, EValueType type);
-    std::vector<int32_t> CompilerNode(Node* node);
+    std::vector<int32_t> CompilerExpression(Node* node);
     std::string GenerateCode(const std::map<std::string, int32_t>& outputs);
 
 
