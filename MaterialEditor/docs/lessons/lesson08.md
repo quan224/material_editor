@@ -768,7 +768,7 @@ std::string MaterialCompiler::GenerateCode(const std::map<std::string, int32_t>&
     HLSLGenerator::Params params;
     params.materialOutputs = outputs;
     params.chunks = &chunks_;
-    // uniforms 留给课18 参数系统填
+    // uniforms 留给课20 参数系统填
     auto result = HLSLGenerator::Generate(params);
     if (!result.error.empty()) {
         error_message_ = result.error;   // 拓扑失败等错误冒泡
@@ -850,7 +850,7 @@ std::string MaterialCompiler::GenerateCode(const std::map<std::string, int32_t>&
 | **课9** | 端到端：图 → 编译 → GenerateCode → 把 HLSL 写文件，肉眼/工具验证 |
 | **课14–15** | DX12 接入：根签名绑定 b0/b1/t0/s0、input layout 匹配 `VS_INPUT`、CBV 上传 |
 | **课17（3D 预览）** | 真正用生成的 shader 渲染一个 PBR 球/模型，验证视觉效果 |
-| **课18（参数系统，块4）** | `UniformCollector` 接材质参数节点，cbuffer 真正被填充 |
+| **课20（参数系统）** | `UniformCollector` 接材质参数节点，cbuffer 真正被填充 |
 
 课8 阶段的核心成果：**编译器吐出的 HLSL 文本本身是合法、可编译、结构完整**——视觉验证留给 DX12 上下文就绪后。
 

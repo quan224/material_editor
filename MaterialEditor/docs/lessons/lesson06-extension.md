@@ -12,7 +12,7 @@
 |------|--------|---------|
 | **完整 HLSL 代码生成** | [课8](lesson08.md) | 完整着色器模板（cbuffer/VS/PS）、UniformCollector、拓扑排序声明顺序、占位符 vs 拼接取舍、DX12 衔接 |
 | **参数系统** | [课20](lesson20.md) | Scalar/Vector/TextureParameter 节点、UniformTable 编译期收集、StaticSwitch 变体（key/缓存/爆炸）、反射集成 |
-| **错误诊断** | [课6](lesson06.md) | CompileError{nodeId,pin,severity}、4 类检查（类型/环/缺引脚/除零）、UI 多错误高亮+点击跳转 |
+| **错误诊断** | [课6](lesson06.md) 编译器层 + [课19](lesson19.md) UI 层 | 课6：CompileError{nodeId,pin,severity} + EmitError 收集器 + 算子内检查（类型不匹配/除零）。课19：错误面板 Dock + 节点染色 + 引脚标红 + 点击跳转 |
 | **材质域 / 混合模式** | [课15](lesson15.md) | EMaterialDomain/EBlendMode 枚举、5 种 blend 的 D3D12_BLEND_DESC 配置表、domain×blend 合法组合矩阵 |
 | **多进程 Shader 编译** | [课16](lesson16.md) | 为什么多进程、ShaderCompileWorker 架构、IPC 协议、任务调度、shader 缓存、错误回传+SourceMap |
 
@@ -23,7 +23,7 @@
 这 5 块**都不在核心课程（课1-21）的最小实现路径上**——核心课程先教骨架，这 5 块是骨架长成准工业级编译器的**进阶深度内容**，按各自的前置依赖嵌入对应的课：
 - **完整 HLSL 生成 / 材质域 / 多进程编译**：依赖课14-17 的 DX12 上下文，在那些课里教。
 - **参数系统**：编译器内部 + 反射，在课20（扩展功能）里教。
-- **错误诊断**：编译器内部，在课6（编译器核心）里教。
+- **错误诊断**：编译器内部（CompileError/EmitError/算子内检查）在课6（编译器核心）里教；UI 层（错误面板 + 节点染色 + 点击跳转）在课19 里教。
 
 ## UE5 参考
 

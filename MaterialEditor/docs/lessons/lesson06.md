@@ -1,14 +1,23 @@
-# 课6：编译器核心（扩展版，对照 UE5）
+# 课6：编译器核心（完整版，对照 UE5）
 
 ## 目标
 
-实现 `MaterialCompiler` 主类 + `CodeChunk` 数据结构，把材质图（Graph）翻译成 HLSL 代码。对标 UE5 的 `FHLSLMaterialTranslator`——这是整个项目**最核心最复杂**的部分。
+实现 `MaterialCompiler` 主类 + `CodeChunk` 数据结构 + 常数折叠 + 编译期错误收集，把材质图（Graph）的算子调用翻译成 HLSL 代码片段。对标 UE5 的 `FHLSLMaterialTranslator`——这是整个项目**最核心最复杂**的部分。
 
-**扩展版相比初版的关键升级**（一步到位，不做简化中间态）：
-- **类型系统**：从只有 `Float1-4` 扩展到 `Int1-4` / `Matrix3x3` / `Matrix4x4` / `Texture2D` / `SamplerState`
-- **CodeChunk**：常量值从单个 `float` 改为 `std::variant<float, Vec2, Vec3, Vec4>`，**向量也能编译期折叠**
-- **常数折叠**：从标量扩展到向量/矩阵；`Constant2/3/4` 走常量路径（不再只是 code 字符串）
-- **MaterialCompiler**：区分 `AddCodeChunk` / `AddInlinedCodeChunk`；`Add/Sub/Mul/Div` 采用 UE 风格的**三段判定**
+**本课范围（自给自足，不挖坑）**：
+- 类型系统扩展（Float/Int/Matrix/Texture/Sampler）+ 推导规则
+- `CodeChunk` 数据结构，常量值用 `std::variant<float, Vec2, Vec3, Vec4>` 支持向量折叠
+- 常数折叠（标量 + 向量）+ 代数化简（`x*1`→`x` 等）
+- `MaterialCompiler` 算子 API：算术 / 三角 / 向量 / 标量常量 / 类型转换（共 ~20 个算子）
+- `chunks_` 数组管理 + hash 去重 + 查询函数（带边界保护）
+- **错误诊断编译器层**：`CompileError` 结构 + `EmitError` 收集器 + 类型不匹配/除零两类检查（贯穿算子）
+
+**本课不做、留给后续课第一次实现的部分**（明确边界，不在正文挖坑）：
+- **端到端编译** `Compile(Graph*)` + `CompileInputPin` + `CompileExpression` → **课 7** 接 `ExpressionRegistry` 后第一次实现
+- **图层级错误检查**：循环依赖 / 必需引脚未连 → **课 7**（依赖 `Compile(Graph*)` 主流程）
+- **HLSL 完整生成** `GenerateCode` → **课 8**（接 cbuffer / VS / PS 完整着色器模板）
+- **纹理 / 控制流算子** `TextureCoordinate` / `TextureSample` / `If` → **课 14/15**（接 DX12 上下文）
+- **错误诊断 UI 层**（节点高亮 / 引脚标红 / 错误面板 / 点击跳转）→ **课 19**
 
 每个设计点都对照 UE5 真实实现（相对 `Engine/` 路径），讲清楚"UE 怎么做、教学版为什么这样简化"。
 
@@ -20,30 +29,35 @@
 
 接收一个 `Graph`，从输出节点反向遍历，对每个节点调用其 `Expression::Compile()`，生成一系列"代码块"（`CodeChunk`），最后组装成 HLSL 着色器。
 
-### 编译流程
+### 完整编译流程（标出本课实现的部分）
 
 ```
-MaterialCompiler::Compile(Graph*)
+MaterialCompiler::Compile(Graph*)               ← 课7 实现
+  │
+  ├─ 0. 环检测（DFS 三色标记）                    ← 课7 实现
+  │     有环 → EmitError("Cycle: A → B → C → A")
   │
   ├─ 1. 获取输出节点（材质根）
-  ├─ 2. 对输出节点的每个输入引脚（BaseColor, Metallic, ...）
-  │     调用 CompileInputPin(outputNode, "BaseColor")
+  ├─ 2. 必需引脚检查                              ← 课7 实现
+  │     MaterialOutput.BaseColor 未连 → EmitError
+  │
+  ├─ 3. 对每个输入引脚 CompileInputPin             ← 课7 实现
+  │     CompileInputPin(outputNode, "BaseColor")
   │       │
-  │       ├─ 找到该引脚连接的上游节点
-  │       ├─ 递归编译上游 → CompileExpression(upstreamNode)
+  │       ├─ 找到上游节点
+  │       ├─ CompileExpression(upstreamNode)      ← 课7 实现（接 ExpressionRegistry）
   │       │     │
   │       │     ├─ 上游 Expression::Compile(this)
-  │       │     │    ├─ 又调 CompileInputPin() 编译自己的输入 ← 递归
-  │       │     │    ├─ 调 compiler->Add(a, b) 等生成代码块
+  │       │     │    ├─ CompileInputPin() ← 递归
+  │       │     │    ├─ compiler->Add(a, b) ← ★ 本课实现
   │       │     │    └─ 返回输出引脚的代码块索引
   │       │     │
-  │       │     └─ 缓存结果（同一节点不重复编译）
-  │       │
-  │       └─ 返回代码块索引
+  │       │     └─ 缓存结果
   │
-  ├─ 3. 收集所有材质属性的代码块索引
-  └─ 4. GenerateCode() 组装最终 HLSL
+  └─ 4. GenerateCode() 组装 HLSL                 ← 课8 实现
 ```
+
+**本课（课6）只实现★标注的算子 API 层**——`compiler->Add/Sub/Mul/Div/Constant/...` + 支撑它们的数据结构（`chunks_`、`CompileError`、`EmitError`）。课 6 的测试 `compiler_test.cpp` **直接调算子 API**，不走 `Compile(Graph*)`。
 
 ### 关键设计：双向递归（对照 UE）
 
@@ -58,7 +72,7 @@ MaterialCompiler::Compile(Graph*)
 Expression::Compile(compiler, node):
     int a = compiler->CompileInputPin(node, "A");   // ← 递归编译 A 引脚（上游）
     int b = compiler->CompileInputPin(node, "B");   // ← 递归编译 B 引脚（上游）
-    return compiler->Add(a, b);                      // 组合
+    return compiler->Add(a, b);                      // 组合（本课实现的算子）
 ```
 
 > **UE 对照**：UE 也是这套——`FHLSLMaterialTranslator` 只提供算子，`UMaterialExpression` 子类的 `Compile()` 驱动递归。见 `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp` 的 `CompilePropertyAndSetMaterialProperty`，它触发具体节点的 `Compile`，节点又调 `Compiler->Add/Sub/...`。
@@ -73,15 +87,13 @@ float Local1 = 0.5;              // CodeChunk 1: 常量
 float Local2 = Local0 + Local1;  // CodeChunk 2: Add 的结果，引用 0 和 1
 ```
 
-`Add(0, 1)` 返回 `2`（索引），下游用 `2` 引用结果。**`int32_t` 是 `chunks_` 数组的下标，不是数值**（负数段 `-1` 等留给"错误/无效"哨兵）。
+`Add(0, 1)` 返回 `2`（索引），下游用 `2` 引用结果。**`int32_t` 是 `chunks_` 数组的下标，不是数值**。负数段（`-1` 等）作为 **`INDEX_NONE` 哨兵**——上游算子出错（类型不匹配等）时返回 -1，下游算子的 `if (a < 0 || b < 0) return -1;` 会**沿依赖链传播错误**，但**不重复 EmitError**（同一个错误只报一次，靠 `SameAs` 去重）。
 
 ---
 
 ## 第一部分：类型系统（对照 UE `EMaterialValueType`）
 
 ### 文件：`src/MaterialGraph/Public/Types.h`（扩展 `EValueType`）
-
-初版只有 `Float1-4`。扩展版加 int / matrix / texture / sampler：
 
 ```cpp
 enum class EValueType {
@@ -186,7 +198,7 @@ enum EMaterialValueType : uint64 {
 
 ## 第二部分：CodeChunk（对照 UE `FShaderCodeChunk`）
 
-### 文件：`src/Compiler/Public/CodeChunk.h`（扩展版）
+### 文件：`src/Compiler/Public/CodeChunk.h`
 
 ```cpp
 #pragma once
@@ -205,7 +217,7 @@ struct CodeChunk {
     bool is_inline = false;         // ⑤ 短表达式直接嵌入，不声明变量
     bool is_constant = false;       // ⑥ 是否编译时常量（折叠标记）
 
-    // ⑦ 常量值——扩展版核心升级：variant 支持向量
+    // ⑦ 常量值——核心：variant 支持向量
     std::variant<float, Vec2, Vec3, Vec4> constant_value;
 
     std::vector<int32_t> references; // ⑧ 依赖哪些其他 chunk（确定声明顺序）
@@ -222,17 +234,17 @@ struct CodeChunk {
 | ④ `type` | 值类型 | 决定生成 `float` / `float3` / `int` / 等声明；算术推导用 |
 | ⑤ `is_inline` | 是否内联 | 短表达式（如 `1.0`）直接嵌入使用处，不生成变量声明——减少无谓局部变量 |
 | ⑥ `is_constant` | 是否常量 | 折叠判定根：`Add` 里 `if (IsConstant(a) && IsConstant(b))` 走折叠 |
-| ⑦ `constant_value` | **常量值（variant）** | 折叠时存实际数值，**升级点：能装 Vec2/3/4，向量也能折叠** |
+| ⑦ `constant_value` | **常量值（variant）** | 折叠时存实际数值，**能装 Vec2/3/4，向量也能折叠** |
 | ⑧ `references` | 依赖追踪 | 记录依赖哪些 chunk，生成代码时按依赖顺序声明 |
 
-### 为什么 `constant_value` 用 `std::variant`（扩展版核心）
+### 为什么 `constant_value` 用 `std::variant`
 
-**初版问题**：`constant_value` 是单个 `float`，**存不下向量**——所以 `Constant3(1,0,0)` 只能走 `AddCodeChunk` 存成 `"float3(1,0,0)"` 字符串、`is_constant=false`、**不参与折叠**。两个颜色常量相加 `Add(Constant3(1,0,0), Constant3(0,1,0))` 无法编译期算。
+如果 `constant_value` 是单个 `float`，**存不下向量**——所以 `Constant3(1,0,0)` 只能走 `AddCodeChunk` 存成 `"float3(1,0,0)"` 字符串、`is_constant=false`、**不参与折叠**。两个颜色常量相加 `Add(Constant3(1,0,0), Constant3(0,1,0))` 无法编译期算。
 
-**扩展版方案**：改成 `std::variant<float, Vec2, Vec3, Vec4>`，向量也能存、能折叠：
+改成 `std::variant<float, Vec2, Vec3, Vec4>`，向量也能存、能折叠：
 
 ```cpp
-// 现在能这样折叠（初版做不到）：
+// 能这样折叠：
 int a = c.Constant3(1,0,0);          // constant_value = Vec3(1,0,0)
 int b = c.Constant3(0,1,0);          // constant_value = Vec3(0,1,0)
 int s = c.Add(a, b);                 // 折叠！constant_value = Vec3(1,1,0)
@@ -272,9 +284,156 @@ struct FShaderCodeChunk {
 
 ---
 
-## 第三部分：常数折叠（对照 UE `Add/Sub/Mul/Div` 三段判定）
+## 第三部分：错误诊断基础设施（编译器层）
 
-### 文件：`src/Compiler/Public/ConstantFolding.h`（扩展版：支持向量）
+> 错误诊断分两层：**编译器层**（错误生成 + 收集）留本课；**UI 层**（节点高亮 + 错误面板 + 点击跳转）→ 课 19。本课只做编译器层。
+>
+> 错误检查分两类：**算子内检查**（类型不匹配 / 除零）留本课，**图层级检查**（循环依赖 / 必需引脚未连）→ 课 7（依赖 `Compile(Graph*)` 主流程）。
+
+### 为什么错误要带节点/pin 定位
+
+**问题**：如果 `CompileResult` 只有一个 `error_message`（一句话），用户看到 "Type mismatch: Float3 vs Float1" 不知道是图里**哪个 Add 节点**的**哪个引脚**出错——只能眼睛挨个扫图。一个稍大的材质图可能有十几个 Add，这种错误信息几乎没有可操作性。
+
+**正确做法**：每个错误携带 `{nodeId, pinName}`，编辑器（课 19）据此：
+- 把对应节点的标题栏按严重级别着色（Error=红 / Warning=黄 / Info=蓝）
+- 把具体出错的引脚单独标红（不是整个节点一片红——多个引脚时只标出错的那一个）
+- 错误列表里点击一条 → 跳到对应节点 + 选中引脚
+
+**为什么必须支持多错误**：一个图可能同时有多个错误（`MaterialOutput.BaseColor` 没连 + 某个 `Add` 类型不匹配 + 另一个 `Divide` 除零）。一次编译把所有错误都报出来，用户一轮修复，不用"改一个 → 重编译 → 发现下一个"反复横跳。
+
+**对照 UE**：UE 编译错误带 line + node 信息，`HandleMaterialCompilationErrors`（`Engine/Source/Runtime/Engine/Private/Materials/Material.cpp`）把编译器收集的错误回填到 `UMaterialExpression::LastErrorText`，再触发节点 redraw。
+
+### 文件：`src/Compiler/Public/CompileError.h`
+
+```cpp
+#pragma once
+#include "Core/Public/UUID.h"
+#include <string>
+
+// 错误严重级别（决定 UI 着色 + 是否中断编译）
+enum class EErrorSeverity {
+    Error,    // 编译失败：类型不匹配、循环依赖、必需引脚未连接
+    Warning,  // 编译继续：除零保护、隐式窄化（Float3→Float1）
+    Info,     // 提示：未使用节点、冗余算子
+};
+
+struct CompileError {
+    UUID            nodeId   = UUID::Invalid();  // 出错节点（必需——UI 按它高亮、点击跳节点）
+    std::string     pinName;                     // 出错引脚名（可空——节点级错误如环检测）
+    std::string     message;                     // 用户可读描述（要带上下文）
+    EErrorSeverity  severity = EErrorSeverity::Error;
+
+    // 去重 key：同 node + 同 pin + 同 message 视为同一个错误。
+    // 递归编译可能多次触发同一检查（同一个节点经多条路径被访问），需去重。
+    // 用方法而不是 operator==，避免被误用到别处的相等比较
+    bool SameAs(const CompileError& other) const {
+        return nodeId == other.nodeId
+            && pinName == other.pinName
+            && message == other.message;
+    }
+};
+```
+
+**字段说明**：
+
+| 字段 | 为什么需要 |
+|------|----------|
+| `nodeId` | 编辑器按节点高亮（标题栏染色）、错误列表点击跳节点，都要 nodeId |
+| `pinName` | 区分节点级 vs 引脚级错误。环检测是节点级（pinName 空）；类型不匹配是引脚级（pinName="A"/"B"）。引脚级高亮只标出错的那个 pin，不是整节点一片红 |
+| `message` | 用户可读描述。要带足够上下文，如 `"Type mismatch on pin 'A': expects Float1 but upstream provides Float3"` |
+| `severity` | UI 着色（红/黄/蓝）+ 决定是否中断编译。Error 中断当前分支，Warning/Info 继续 |
+
+**为什么用 enum 而不是 `bool is_warning`**：将来要加 Info（未使用节点提示）、Fatal（编译器内部错误），enum 扩展性更好；debug 时打印枚举名也比看 bool 直观。
+
+### `CompileResult`（直接定义最终版）
+
+```cpp
+struct CompileResult {
+    bool                        success = false;       // = !HasErrors()
+    std::string                 hlsl_code;
+    std::string                 error_message;         // 兼容字段：第一个 Error 级错误的 message
+    std::vector<CompileError>   errors;                // 所有错误（含 Warning/Info）
+
+    // 便捷查询：是否有 Error 级错误（Warning/Info 不算）
+    bool HasErrors() const {
+        for (const auto& e : errors)
+            if (e.severity == EErrorSeverity::Error) return true;
+        return false;
+    }
+};
+```
+
+**`error_message` 保留作为兼容字段**：`Compile()`（课 7 实现）末尾把第一个 Error 的 message 复制到 `error_message`，简化只想知道"出错没、错是什么"的调用方代码。
+
+> **`hlsl_code` 在失败时也填**：即使有 Error，编译器仍可能生成部分 HLSL（错误分支被短路，其他分支正常）。课 8 实现的代码面板可以继续显示这部分代码（红色标错），帮用户对照定位——不要清空。
+
+### 错误收集策略：贯穿编译路径一次加全
+
+**原则**：错误检查**贯穿所有编译路径**，在出错点立即 `EmitError(...)`——不要"先标记、编译结束后回扫补错误"。
+
+**为什么**：
+
+1. **递归编译天然带上下文**：`CompileInputPin(node, "A")`（课 7）入口知道当前在编译哪个节点的哪个引脚。失败时直接拿 `node`/`"A"` emit，**事后回扫反而要在两个地方维护同一套上下文**（编译时一份 + 回扫时一份），极易不一致。
+
+2. **避免遗漏路径**：编译器有十几个算子，每个都有类型检查、除零检查……如果在算子里发错误，每加一个算子自动获得错误报告；如果"事后扫"，每加一个算子都要记得在回扫函数里加对应检查。
+
+3. **多错误一次报全**：每个算子的错误检查独立运行，编译完一轮 `errors_` 自然收集了所有错误。
+
+### 错误短路 vs 继续的策略
+
+| 严重度 | 行为 | 例子 |
+|--------|------|------|
+| Error（当前算子）| 当前算子**不生成新 chunk**（返回 `INDEX_NONE=-1`），但**不立即停止整个编译** | 类型不匹配：`Add` 返回 -1，下游算子的 `if (a < 0) return -1;` 哨兵会传播 |
+| Error（致命）| 立即 return，不继续编译 | 循环依赖（课 7）：无法继续拓扑遍历，整个 `Compile()` 提前结束 |
+| Warning | 编译继续（生成兜底 chunk），同时进 `errors_` | 除零：返回 `Constant(0)`，但发一条 Warning |
+| Info | 编译继续，无副作用 | 未使用节点提示 |
+
+这套"短路当前算子但继续其他分支"的策略对照 UE 的 `INDEX_NONE` 哨兵传播（`HLSLMaterialTranslator.cpp` 所有算子开头都检查 `if (A < 0 || B < 0) return INDEX_NONE;`）。**关键点**：上游 Error 让下游也"染上"`INDEX_NONE`，但下游**不要重复 EmitError**同一个错误（去重靠 `SameAs`）。
+
+### `EmitError` 收集器 + 上下文成员（MaterialCompiler 私有成员）
+
+```cpp
+// MaterialCompiler.h private 段（在第四部分完整定义类时整合进去）
+std::vector<CompileError> errors_;        // 所有错误
+Node*         current_node_ = nullptr;    // 当前正在编译的节点（EmitError 默认 nodeId 用它）
+std::string   current_pin_;               // 当前正在编译的引脚（EmitError 默认 pinName 用它）
+
+void EmitError(const std::string& msg,
+               EErrorSeverity sev = EErrorSeverity::Error,
+               const UUID& overrideNodeId = UUID::Invalid(),
+               const std::string& overridePinName = "");
+```
+
+```cpp
+// MaterialCompiler.cpp
+void MaterialCompiler::EmitError(const std::string& msg, EErrorSeverity sev,
+                                  const UUID& overrideNodeId,
+                                  const std::string& overridePinName) {
+    CompileError err;
+    err.message  = msg;
+    err.severity = sev;
+    // 优先用 override（检查项显式指定），否则用 current_* 上下文
+    err.nodeId   = overrideNodeId.IsValid() ? overrideNodeId
+                  : (current_node_ ? current_node_->id : UUID::Invalid());
+    err.pinName  = !overridePinName.empty() ? overridePinName : current_pin_;
+
+    // 去重：同 node + 同 pin + 同 message 只存一份
+    // （递归编译可能多次触发同一检查，如环路上的节点被多条路径访问）
+    for (const auto& existing : errors_)
+        if (existing.SameAs(err)) return;
+    errors_.push_back(err);
+}
+```
+
+**`current_node_` / `current_pin_` 谁来设**：课 7 实现的 `CompileInputPin` 入口会设 `current_node_ = node; current_pin_ = pin_name;`——这是"贯穿编译路径一次加全"策略的核心机制，让所有下游算子的 EmitError 都能拿到正确的定位上下文，不需要每个算子自己手动传 nodeId。**课 6 阶段**还没接 `CompileInputPin`，所以 `current_node_` 默认为 `nullptr`，算子里 EmitError 时 `nodeId` 会落到 `UUID::Invalid()`——这是正常的，等课 7 接上 `CompileInputPin` 后自动有上下文。`compiler_test.cpp` 测试错误收集时，可以**手动 `compiler.current_node_ = &someNode`**（友元测试）或**显式 overrideNodeId 参数**绕过。
+
+> **调试用 helper**：错误信息里要展示类型名，建议加个 `TypeName(EValueType)` 函数（返回 `"Float1"`/`"Float3"`/...）。可以基于 `TypeSystem::ToHLSLType` 包一层去 `"float"` 前缀，或单独写个 switch。错误信息里的类型名要让人看得懂。
+
+---
+
+## 第四部分：常数折叠 + 算术算子（含 EmitError 集成）
+
+### 文件：`src/Compiler/Public/ConstantFolding.h`
 
 ```cpp
 #pragma once
@@ -302,7 +461,7 @@ public:
         FillArray(a, dim, pa);   // 标量(float)广播到 dim 个分量；向量按自身分量填
         FillArray(b, dim, pb);
 
-        // 除零检查：任意分量 b==0 则不能折叠
+        // 除零检查：任意分量 b==0 则不能折叠（交由 Divide 算子处理 EmitError）
         if (op == "/") {
             for (int i = 0; i < dim; ++i)
                 if (pb[i] == 0.0f) return std::nullopt;
@@ -383,7 +542,7 @@ private:
 };
 ```
 
-**关键**：折叠函数现在接收/返回 `ConstValue`（variant），能处理向量。例如 `FoldBinary("+", Vec3(1,0,0), Vec3(0,1,0))` 逐分量相加得 `Vec3(1,1,0)`。
+**关键**：折叠函数接收/返回 `ConstValue`（variant），能处理向量。例如 `FoldBinary("+", Vec3(1,0,0), Vec3(0,1,0))` 逐分量相加得 `Vec3(1,1,0)`。
 
 实现要点：用 `std::visit` 或检查 `variant.index()` 分发——两个 float 直接算、两个 Vec3 逐分量算、float × Vec3 标量广播（`Float1 + Float3` 情况）。
 
@@ -402,17 +561,24 @@ private:
 | `pow(x, 1)` | `x` | |
 | `pow(x, 0)` | `1` | |
 
-### Add/Sub/Mul/Div 的三段判定（对照 UE，黄金模板）
+### Add/Sub/Mul/Div 的三段判定（对照 UE，含 EmitError）
 
-UE 的 `FHLSLMaterialTranslator::Add`（`.cpp:9849-9883`）有一套清晰的判定顺序，教学版照搬这个骨架：
+UE 的 `FHLSLMaterialTranslator::Add`（`.cpp:9849-9883`）有一套清晰的判定顺序，教学版照搬这个骨架，**段 1 直接带 EmitError**（不是返回 -1 让用户看不到原因）：
 
 ```cpp
-// === Add：三段判定的模板 ===
+// === Add：三段判定的模板（带 EmitError）===
 int32_t MaterialCompiler::Add(int32_t a, int32_t b) {
-    // 段 1：错误检查（INDEX_NONE 哨兵传播）
-    if (a < 0 || b < 0) return -1;
+    // 段 1：哨兵传播 + 类型检查（带 EmitError）
+    if (a < 0 || b < 0) return -1;   // 上游 Error 已发过错误，不重复
     auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) return -1;   // 类型不兼容
+    if (resultType == EValueType::Unknown) {
+        EmitError("Add inputs incompatible: A=" + TypeName(GetType(a))
+                  + ", B=" + TypeName(GetType(b)),
+                  EErrorSeverity::Error,
+                  /*overrideNodeId=*/current_node_ ? current_node_->id : UUID::Invalid(),
+                  /*overridePinName=*/"A/B");   // ← 显式 override，算子不知是 A 还是 B 出错
+        return -1;
+    }
 
     // 段 2：常数折叠（两边都是常量 → 编译期算出 variant）
     if (IsConstant(a) && IsConstant(b)) {
@@ -429,7 +595,13 @@ int32_t MaterialCompiler::Add(int32_t a, int32_t b) {
 int32_t MaterialCompiler::Subtract(int32_t a, int32_t b) {
     if (a < 0 || b < 0) return -1;
     auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) return -1;
+    if (resultType == EValueType::Unknown) {
+        EmitError("Subtract inputs incompatible: A=" + TypeName(GetType(a))
+                  + ", B=" + TypeName(GetType(b)),
+                  EErrorSeverity::Error,
+                  current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
+        return -1;
+    }
 
     if (IsConstant(a) && IsConstant(b)) {
         auto folded = ConstantFolding::FoldBinary("-", GetConstantValue(a), GetConstantValue(b));
@@ -446,7 +618,13 @@ int32_t MaterialCompiler::Subtract(int32_t a, int32_t b) {
 int32_t MaterialCompiler::Multiply(int32_t a, int32_t b) {
     if (a < 0 || b < 0) return -1;
     auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) return -1;
+    if (resultType == EValueType::Unknown) {
+        EmitError("Multiply inputs incompatible: A=" + TypeName(GetType(a))
+                  + ", B=" + TypeName(GetType(b)),
+                  EErrorSeverity::Error,
+                  current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
+        return -1;
+    }
 
     if (IsConstant(a) && IsConstant(b)) {
         auto folded = ConstantFolding::FoldBinary("*", GetConstantValue(a), GetConstantValue(b));
@@ -462,17 +640,27 @@ int32_t MaterialCompiler::Multiply(int32_t a, int32_t b) {
         GetParameterCode(a) + " * " + GetParameterCode(b));
 }
 
-// === Divide：含除零保护、x/1→x 化简 ===
+// === Divide：含除零保护（Warning）+ x/1→x 化简 ===
 int32_t MaterialCompiler::Divide(int32_t a, int32_t b) {
     if (a < 0 || b < 0) return -1;
     auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) return -1;
+    if (resultType == EValueType::Unknown) {
+        EmitError("Divide inputs incompatible: A=" + TypeName(GetType(a))
+                  + ", B=" + TypeName(GetType(b)),
+                  EErrorSeverity::Error,
+                  current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
+        return -1;
+    }
 
-    // 除零保护：b 是标量常量 0 → 返回 0，不崩
+    // 除零保护：b 是常量 0 → 编译继续，但发 Warning（UI 才能高亮除数引脚）
     if (IsConstant(b) && ConstantFolding::IsScalarZero(GetConstantValue(b))) {
-        ME_LOG_WARNING("Division by zero in material compile");
+        EmitError("Division by zero: divisor (pin 'B') is constant 0",
+                  EErrorSeverity::Warning,
+                  current_node_ ? current_node_->id : UUID::Invalid(),
+                  /*overridePinName=*/"B");   // ← 精确到除数引脚
         return Constant(0.0f);
     }
+
     if (IsConstant(a) && IsConstant(b)) {
         auto folded = ConstantFolding::FoldBinary("/", GetConstantValue(a), GetConstantValue(b));
         if (folded) return AddConstantChunk(resultType, *folded);
@@ -486,9 +674,11 @@ int32_t MaterialCompiler::Divide(int32_t a, int32_t b) {
 ```
 
 三段的职责：
-1. **错误检查**：`INDEX_NONE`（负数）传播——上游失败不继续算
+1. **错误检查**：`INDEX_NONE`（负数）传播 + 类型推导失败 → `EmitError`——上游失败不继续算，类型不匹配发错误带定位
 2. **常数折叠**：两边都常量 → 编译期算，生成扁平常量 chunk
 3. **HLSL 发射**：非常量 → 生成代码串 chunk
+
+**为什么除零是 Warning 不是 Error**：除零在 HLSL 里行为未定义，但我们用 `Constant(0)` 兜底，shader 仍能编译运行——用户应该修但不应阻塞编译。这是"软错误"策略，对照 UE 也有很多 Warning 级编译问题不阻塞（如未使用的输入、隐式转换）。
 
 ### 对照 UE：preshader 双轨
 
@@ -542,30 +732,54 @@ int32_t MaterialCompiler::Power(int32_t base, int32_t exp) {
 
 ---
 
-## 第四部分：MaterialCompiler（对照 UE `FHLSLMaterialTranslator`）
+## 第五部分：MaterialCompiler 主类（完整定义）
 
-### 文件：`src/Compiler/Public/MaterialCompiler.h`（扩展版 API）
+### 文件：`src/Compiler/Public/MaterialCompiler.h`
 
-完整 API（对照 UE `FHLSLMaterialTranslator` 的算子集）。关键扩展点：
+完整 API（对照 UE `FHLSLMaterialTranslator` 的算子集）：
 - `AddCodeChunk` vs `AddInlinedCodeChunk` 分离（对照 UE）
-- `Constant2/3/4` 改走 `AddConstantChunk`（向量也折叠）
+- `Constant2/3/4` 走 `AddConstantChunk`（向量也折叠）
 - 常量查询返回 `ConstValue`（variant）
+- **`CompileResult` 直接定义带 errors 数组的最终版**
+- **`errors_` / `current_node_` / `current_pin_` / `EmitError` 直接定义**（错误收集是算子的标配基础设施，不是后插补丁）
+
+> **本课 API 列表不含** `Compile(Graph*)` / `CompileInputPin` / `CompileExpression` / `GenerateCode` / `TextureCoordinate` / `TextureSample` / `If`——这些分别在课 7/8/14 实现，本课完全不做（不在正文挖"占位"）。
 
 ```cpp
+#pragma once
+#include <map>
+#include <vector>
+#include <string>
+#include "MaterialGraph/Public/Graph.h"
+#include "Compiler/Public/CodeChunk.h"
+#include "Compiler/Public/ConstantFolding.h"
+#include "Compiler/Public/CompileError.h"
+#include "Compiler/Public/TypeSystem.h"
+#include "MaterialGraph/Public/Types.h"
+#include "Core/Public/Hash.h"
+
 class MaterialCompiler {
 public:
+    // === 编译结果（带 errors 数组的最终版）===
     struct CompileResult {
-        bool success = false;
-        std::string hlsl_code;
-        std::string error_message;
+        bool                        success = false;       // = !HasErrors()
+        std::string                 hlsl_code;
+        std::string                 error_message;         // 兼容字段：第一个 Error 的 message
+        std::vector<CompileError>   errors;                // 所有错误（含 Warning/Info）
+
+        bool HasErrors() const {
+            for (const auto& e : errors)
+                if (e.severity == EErrorSeverity::Error) return true;
+            return false;
+        }
     };
 
-    CompileResult Compile(Graph* graph);
+    // Compile(Graph*) / CompileInputPin / CompileExpression → 课7 实现
+    // GenerateCode → 课8 实现
 
-    // === 算子 API（图节点 Compile 里调用）===
-    int32_t CompileInputPin(Node* node, const std::string& pin_name);
+    // === 算子 API（图节点 Compile 里调用；本课测试直接调）===
 
-    // 算术（三段判定 + 向量折叠）
+    // 算术（三段判定 + 向量折叠 + EmitError）
     int32_t Add(int32_t a, int32_t b);
     int32_t Subtract(int32_t a, int32_t b);
     int32_t Multiply(int32_t a, int32_t b);
@@ -586,44 +800,54 @@ public:
     int32_t Normalize(int32_t x);
     int32_t Length(int32_t x);
 
-    // 常量——全部走常量路径（扩展版：Constant3 也折叠）
+    // 常量——全部走常量路径（向量也折叠）
     int32_t Constant(float v);                    // Float1 常量
     int32_t Constant2(float x, float y);          // Float2 常量（走 AddConstantChunk）
     int32_t Constant3(float x, float y, float z); // Float3 常量（走 AddConstantChunk）
     int32_t Constant4(float x, float y, float z, float w);
 
-    // 向量操作 / 纹理 / 控制 / 类型转换（同初版）
+    // 向量操作 / 类型转换
     int32_t ComponentMask(int32_t input, bool r, bool g, bool b, bool a);
     int32_t AppendVector(int32_t a, int32_t b);
-    int32_t TextureCoordinate();
-    int32_t TextureSample(int32_t texture, int32_t coordinate);
-    int32_t If(int32_t condition, int32_t trueVal, int32_t falseVal);
     int32_t Cast(int32_t code, EValueType target_type);
 
-    // === 查询（常量值返回 variant）===
+    // TextureCoordinate / TextureSample / If → 课14/15 实现
+
+    // === 查询（常量值返回 variant；带边界保护）===
     std::string GetParameterCode(int32_t index) const;
     EValueType  GetType(int32_t index) const;
     bool        IsConstant(int32_t index) const;
-    ConstValue  GetConstantValue(int32_t index) const;   // ← 返回 variant（不再是 float）
+    ConstValue  GetConstantValue(int32_t index) const;   // ← 返回 variant
+
+    // === 错误访问（供测试 + 课19 UI 层读取）===
+    const std::vector<CompileError>& GetErrors() const { return errors_; }
 
 private:
-    // 代码块管理——区分内联 vs 非内联（对照 UE AddCodeChunk/AddInlinedCodeChunk）
+    // === 代码块管理 ===
     int32_t AddCodeChunk(EValueType type, const std::string& code, bool is_inline = false);
     int32_t AddInlinedCodeChunk(EValueType type, const std::string& code);  // 零成本操作专用
     int32_t AddConstantChunk(EValueType type, const ConstValue& value);     // ← 接收 variant
+    std::string FormatConstantCode(const ConstValue& value);
     std::string MakeSymbolName();
 
-    int32_t ParseDefaultValue(const nlohmann::json& val, EValueType type);
-    std::vector<int32_t> CompileExpression(Node* node);
-    std::string GenerateCode(const std::map<std::string, int32_t>& outputs);
+    // ParseDefaultValue → 课7 在 CompileInputPin 里实现（解析未连接引脚的默认值）
 
-    // 状态
+    // === 错误收集 ===
+    std::vector<CompileError> errors_;
+    Node*         current_node_ = nullptr;    // 当前正在编译的节点（课7 的 CompileInputPin 设置）
+    std::string   current_pin_;               // 当前正在编译的引脚（课7 的 CompileInputPin 设置）
+
+    void EmitError(const std::string& msg,
+                   EErrorSeverity sev = EErrorSeverity::Error,
+                   const UUID& overrideNodeId = UUID::Invalid(),
+                   const std::string& overridePinName = "");
+
+    // === 状态 ===
     std::vector<CodeChunk> chunks_;
     std::map<uint64_t, int32_t> hash_to_chunk_;     // hash 去重
-    std::map<std::string, std::vector<int32_t>> node_cache_;
+    // node_cache_ → 课7 在 CompileExpression 里用
     int32_t next_symbol_index_ = 0;
     Graph* current_graph_ = nullptr;
-    std::string error_message_;
 };
 ```
 
@@ -640,13 +864,13 @@ UE 严格区分这两个（`HLSLMaterialTranslator.h:806-811`）：
 
 > UE 注释原话（`.h:795-800`）："Creating local variables instead of inlining simplifies the generated code... Making compiles faster and enabling the shader optimizer to do a better job."（复杂表达式声明局部变量，让生成代码清晰、shader 编译快、优化器效果好）
 
-教学版照搬这个区分——`Add`/`Sub` 等简单算术用 `AddInlinedCodeChunk`（生成 `a + b` 嵌入），`TextureSample`/`Power` 等用 `AddCodeChunk`（生成局部变量）。
+教学版照搬这个区分——`Add`/`Sub` 等简单算术用 `AddInlinedCodeChunk`（生成 `a + b` 嵌入），`Power` 等用 `AddCodeChunk`（生成局部变量）。`TextureSample` 同样会用 `AddCodeChunk`（课 14 实现）。
 
-#### 2. `Constant2/3/4` 走常量路径（扩展版核心）
+#### 2. `Constant2/3/4` 走常量路径（核心）
 
-初版 `Constant3` 用 `AddCodeChunk(... "float3(x,y,z)" ...)`——只是 code 字符串，`is_constant=false`，不能折叠。
+如果 `Constant3` 用 `AddCodeChunk(... "float3(x,y,z)" ...)`——只是 code 字符串，`is_constant=false`，不能折叠。
 
-扩展版改走 `AddConstantChunk`，存 variant 常量值：
+走 `AddConstantChunk` 存 variant 常量值：
 
 ```cpp
 int32_t Constant3(float x, float y, float z) {
@@ -664,7 +888,7 @@ std::string MaterialCompiler::MakeSymbolName() {
     return "Local" + std::to_string(next_symbol_index_++);
 }
 
-// 通用代码块：产生真实指令的表达式用（函数调用、纹理采样、复杂算术）。
+// 通用代码块：产生真实指令的表达式用（函数调用、复杂算术）。
 // 非内联时生成 "float3 Local0 = ...;" 声明；内联时不声明，直接嵌入使用处
 int32_t MaterialCompiler::AddCodeChunk(EValueType type, const std::string& code, bool is_inline) {
     uint64_t hash = HashString(code);
@@ -732,187 +956,118 @@ std::string MaterialCompiler::FormatConstantCode(const ConstValue& value) {
 }
 ```
 
-> `FormatConstantCode` 是 `MaterialCompiler` 的私有 helper，要在 `MaterialCompiler.h` 的 private 段声明：`std::string FormatConstantCode(const ConstValue& value);`
-
 #### 4. hash 去重（对照 UE 双层去重）
 
 教学版用**单层 hash 去重**（`hash_to_chunk_` map）：相同 code 的 chunk 复用索引。
 
 > **UE 是双层**（`HLSLMaterialTranslator.cpp:4187-4265`）：① HLSL 串 hash 去重（减少局部变量）；② `UniformExpression::IsIdentical()` 去重（让多个材质属性共享同一 preshader）。教学版只做①，因为没 preshader。
 
-#### 5. `GenerateCode`（简化版，课8 完善为完整着色器）
+#### 5. 查询方法（完整实现，带边界保护）
 
-把 `chunks_` 拼成 HLSL 文本。简化版只输出**变量声明 + 材质属性赋值注释**；课8 扩展为完整着色器（cbuffer / VS / PS）。
-
-```cpp
-std::string MaterialCompiler::GenerateCode(const std::map<std::string, int32_t>& outputs) {
-    std::string out;
-
-    // 1. 非内联 chunk 生成局部变量声明：float3 Local0 = ...;
-    for (const auto& chunk : chunks_) {
-        if (chunk.is_inline) continue;   // 内联的不声明
-        out += "    " + std::string(TypeSystem::ToHLSLType(chunk.type)) + " " + chunk.symbol_name
-             + " = " + chunk.code + ";\n";
-    }
-
-    // 2. 材质属性赋值（注释形式，课8 接真实 PS 输出）
-    out += "\n    // Material outputs\n";
-    for (const auto& [name, idx] : outputs) {
-        out += "    // " + name + " = " + GetParameterCode(idx) + "\n";
-    }
-    return out;
-}
-```
-
-> **注意**：`GenerateCode` 在 `MaterialCompiler.h` 里是 **private**（它是 `Compile` 的内部步骤）。课6 测试要直接调它看 HLSL，需**临时把它挪到 public 段**（或加一个 public 测试入口），等课9 用 `Compile(Graph)` 端到端后改回 private。
-
-#### 6. 查询方法（完整实现）
-
-算子和折叠都依赖这四个查询：
+算子和折叠都依赖这四个查询。**`assert` 在 Debug 下捕获调用方越界 bug**，越界返回安全的兜底值（不让一条坏索引导致连续崩溃）：
 
 ```cpp
 std::string MaterialCompiler::GetParameterCode(int32_t index) const {
+    assert(index >= 0 && index < (int32_t)chunks_.size());
     if (index < 0 || index >= (int32_t)chunks_.size()) return "0.0";
     const auto& c = chunks_[index];
     return c.is_inline ? c.code : c.symbol_name;   // 内联返回代码串，非内联返回变量名
 }
 EValueType MaterialCompiler::GetType(int32_t index) const {
+    assert(index >= 0 && index < (int32_t)chunks_.size());
     if (index < 0 || index >= (int32_t)chunks_.size()) return EValueType::Unknown;
     return chunks_[index].type;
 }
 bool MaterialCompiler::IsConstant(int32_t index) const {
+    assert(index >= 0 && index < (int32_t)chunks_.size());
     if (index < 0 || index >= (int32_t)chunks_.size()) return false;
     return chunks_[index].is_constant;
 }
 ConstValue MaterialCompiler::GetConstantValue(int32_t index) const {
+    assert(index >= 0 && index < (int32_t)chunks_.size());
     if (index < 0 || index >= (int32_t)chunks_.size()) return 0.0f;   // 越界返回 float 0
     return chunks_[index].constant_value;   // ← 返回 variant
 }
 ```
 
-#### 7. 递归编译（`Compile` / `CompileInputPin` / `CompileExpression`）
-
-这是把 Graph 翻译成 HLSL 的主流程。`Compile` 入口 → 遍历输出节点的引脚 → `CompileInputPin` 递归编译上游 → `CompileExpression` 调用节点的 `Expression::Compile`。
-
-```cpp
-MaterialCompiler::CompileResult MaterialCompiler::Compile(Graph* graph) {
-    CompileResult result;
-    current_graph_ = graph;
-    chunks_.clear();
-    hash_to_chunk_.clear();
-    node_cache_.clear();
-    next_symbol_index_ = 0;
-    error_message_.clear();
-
-    Node* output = graph->GetOutputNode();
-    if (!output) { result.success = false; result.error_message = "No output node"; return result; }
-
-    std::map<std::string, int32_t> outputs;
-    for (const auto& pin : output->inputPins) {
-        if (pin.IsConnected()) {
-            int32_t idx = CompileInputPin(output, pin.name);
-            if (idx < 0) { result.success = false; result.error_message = error_message_; return result; }
-            outputs[pin.name] = idx;
-        }
-    }
-    result.hlsl_code = GenerateCode(outputs);
-    result.success = true;
-    return result;
-}
-
-int32_t MaterialCompiler::CompileInputPin(Node* node, const std::string& pin_name) {
-    const Pin* pin = node->FindInputPin(pin_name);
-    if (!pin) return Constant(0.0f);                          // 引脚不存在 → 默认 0
-    if (!pin->IsConnected()) return ParseDefaultValue(pin->defaultValue, pin->type);  // 未连接 → 用默认值
-
-    const auto& conn = pin->connections[0];                   // 输入引脚最多一个连接
-    Node* upstream = current_graph_->FindNode(conn.otherNodeId);
-    if (!upstream) return Constant(0.0f);
-
-    auto outputs = CompileExpression(upstream);               // 递归编译上游
-    const Pin* src = upstream->FindPin(conn.otherPinId);      // 找上游输出引脚
-    if (!src) return Constant(0.0f);
-    int pinIdx = 0;
-    for (int i = 0; i < (int)upstream->outputPins.size(); ++i)
-        if (upstream->outputPins[i].id == src->id) { pinIdx = i; break; }
-    if (pinIdx < (int)outputs.size()) return outputs[pinIdx];
-    return Constant(0.0f);
-}
-
-std::vector<int32_t> MaterialCompiler::CompileExpression(Node* node) {
-    // 缓存：同一节点不重复编译
-    std::string key = node->id.ToString();
-    auto it = node_cache_.find(key);
-    if (it != node_cache_.end()) return it->second;
-
-    std::vector<int32_t> outputs;
-    // TODO(课7)：通过 ExpressionRegistry 按 node->typeName 获取 Expression 实例，
-    //            调用 expr->Compile(this, node)，把返回的索引填进 outputs。
-    // 课6 阶段还没接表达式注册，先报错：
-    error_message_ = "Expression not registered: " + node->typeName;
-
-    node_cache_[key] = outputs;
-    return outputs;
-}
-```
-
-> **`ParseDefaultValue`**（未连接引脚的默认值解析，如 `0.5` → `Constant(0.5)`、`[1,0,0]` → `Constant3`）实现按 `EValueType` 用 `nlohmann::json` 的 `is_number()` / `is_array()` 分发到对应的 `Constant/2/3/4`。Pin 的 `defaultValue` 字段本身是 json 类型，直接传进来即可。
-
-> **课6 端到端的限制**：`CompileExpression` 里的 TODO 意味着**课6 还不能从 Graph 端到端编译**（缺表达式注册，那是课7）。课6 用 `compiler_test.cpp` 直接调算子 API（`Constant`/`Add`/...）+ `GenerateCode` 验证编译器核心。等课7 接上表达式注册，才能 `Compile(graph)` 跑通整条管线。
+> 为什么 `assert` + `if` 双保险：`assert` 是开发期断言（捕获调用方 bug，触发调试器中断）；`if` 是 Release 期的兜底（避免一条坏索引让整个编译崩溃。下游算子拿到兜底值还能继续编译，错误集中报告而不是连环崩溃）。
 
 ---
 
-## 第五部分：实现步骤（按依赖顺序）
+## 第六部分：实现步骤（按依赖顺序）
 
 边写边用 `compiler_test.cpp` 验证，每实现一块放开对应测试：
 
 1. **类型系统**：`Types.h` 扩展 `EValueType`；`TypeSystem.h` 推导规则
-2. **CodeChunk**：variant `constant_value` + 各字段
-3. **代码块管理**：`MakeSymbolName` / `AddCodeChunk` / `AddInlinedCodeChunk` / `AddConstantChunk`（variant 版）/ hash 去重
-4. **常量**：`Constant/2/3/4` 全走 `AddConstantChunk`
-5. **查询**：`GetType` / `IsConstant` / `GetConstantValue`（返回 variant）/ `GetParameterCode`
-6. **算术**：`Add/Sub/Mul/Div` 三段判定 + 向量折叠 + 代数化简
-7. **其他算子**：`Power/Lerp/Clamp/Abs/Sine/Cosine/Dot/Cross/Normalize/Length/ComponentMask/AppendVector/Cast`
-8. **纹理/控制**：`TextureCoordinate/TextureSample/If`（占位，课14 接 DX12）
-9. **递归编译**：`Compile` / `CompileInputPin` / `CompileExpression`（`CompileExpression` 的 TODO 课7 接表达式注册后才能端到端）
-10. **代码生成**：`GenerateCode`（简化版，课8 完善为完整着色器）
+2. **CompileError**：`CompileError.h` 定义 `CompileError` / `EErrorSeverity` 结构（无实现，纯数据）
+3. **CodeChunk**：variant `constant_value` + 各字段
+4. **MaterialCompiler 类骨架**：状态成员 + `errors_` / `current_node_` / `current_pin_` + `EmitError`（带 `SameAs` 去重）+ `CompileResult`（带 errors 数组 + `HasErrors`）
+5. **代码块管理**：`MakeSymbolName` / `AddCodeChunk` / `AddInlinedCodeChunk` / `AddConstantChunk`（variant 版）/ hash 去重 / `FormatConstantCode`
+6. **查询**：`GetType` / `IsConstant` / `GetConstantValue`（返回 variant）/ `GetParameterCode`（带 assert + 边界保护）
+7. **常量**：`Constant/2/3/4` 全走 `AddConstantChunk`
+8. **ConstantFolding**：`FoldBinary` / `FoldUnary` / `IsScalarZero` / `IsScalarOne`（variant 版）
+9. **算术（带 EmitError）**：`Add/Sub/Mul/Div` 三段判定 + 向量折叠 + 代数化简 + 类型不匹配 EmitError + 除零 Warning
+10. **其他算子**：`Power/Lerp/Clamp/Abs/Negate/Sine/Cosine/Dot/Cross/Normalize/Length/ComponentMask/AppendVector/Cast`
 
 ---
 
-## 第六部分：测试（`compiler_test.cpp`）
+## 第七部分：测试（`compiler_test.cpp`）
 
-测试覆盖扩展版的关键能力（特别是向量折叠，这是初版做不到的）：
+测试覆盖完整版的关键能力（特别是向量折叠 + 错误收集）：
 
 ```cpp
-// 1. 标量折叠（初版就有）
+// 1. 标量折叠
 int s = c.Add(c.Constant(1.0f), c.Constant(2.0f));
-assert(c.GetConstantValue(s) == ConstValue(3.0f));
+assert(c.IsConstant(s));
+assert(std::get<float>(c.GetConstantValue(s)) == 3.0f);
 
-// 2. 向量折叠（扩展版新增，初版做不到）
+// 2. 向量折叠（完整版核心）
 int a = c.Constant3(1,0,0);
 int b = c.Constant3(0,1,0);
 int v = c.Add(a, b);
 assert(std::get<Vec3>(c.GetConstantValue(v)) == Vec3(1,1,0));
 
 // 3. Multiply 优化（乘1直通、乘0归零）
-assert(c.Multiply(x, c.Constant(1.0f)) == x);   // 直通
-assert(std::get<float>(c.GetConstantValue(c.Multiply(x, c.Constant(0.0f)))) == 0.0f);
+int x = c.Constant3(1,2,3);    // 非常量
+assert(c.Multiply(x, c.Constant(1.0f)) == x);   // 直通，返回原索引
+assert(std::get<float>(c.GetConstantValue(c.Multiply(c.Constant(2.0f), c.Constant(0.0f)))) == 0.0f);
 
-// 4. 除零保护
-assert(/* Divide(x, Constant(0)) 安全返回 0，不崩 */);
+// 4. 除零保护（不崩 + Warning 进 errors）
+c.GetErrors().clear();   // 测试前清空
+int dz = c.Divide(c.Constant(1.0f), c.Constant(0.0f));
+assert(std::get<float>(c.GetConstantValue(dz)) == 0.0f);   // 兜底返回 0
+assert(!c.GetErrors().empty());                            // 有错误
+assert(c.GetErrors().back().severity == EErrorSeverity::Warning);
+assert(c.GetErrors().back().pinName == "B");               // 精确到除数引脚
 
 // 5. 嵌套运算（2*3+4 → 10）
 int n = c.Add(c.Multiply(c.Constant(2.0f), c.Constant(3.0f)), c.Constant(4.0f));
 assert(std::get<float>(c.GetConstantValue(n)) == 10.0f);
 
-// 6. HLSL 生成（GenerateCode 输出，需临时改 public）
-std::map<std::string,int32_t> outputs = {{"BaseColor", c.Constant3(1,0.5,0)}};
-std::cout << c.GenerateCode(outputs);
+// 6. 类型不匹配 EmitError（Float2 + Float3 不兼容）
+c.GetErrors().clear();
+int bad = c.Add(c.Constant2(1,2), c.Constant3(1,2,3));
+assert(bad < 0);   // 哨兵传播
+assert(!c.GetErrors().empty());
+assert(c.GetErrors().back().severity == EErrorSeverity::Error);
+
+// 7. 错误去重（同一个错误多次触发只存一份）
+c.GetErrors().clear();
+for (int i = 0; i < 5; ++i) {
+    c.Add(c.Constant2(1,2), c.Constant3(1,2,3));   // 同一个类型不匹配
+}
+// 因为 Add 返回 -1，第二次循环时 a<0 短路，不会重复 emit
+// 如果是不同路径触发同一检查，靠 SameAs 去重
+assert(c.GetErrors().size() <= 2);   // 一次 emit + 可能的传播
+
+// 8. 查询边界保护
+assert(c.GetType(9999) == EValueType::Unknown);   // 越界不崩，返回 Unknown
+assert(c.GetParameterCode(-1) == "0.0");          // 负索引返回 "0.0"
 ```
 
 ---
 
-## 第七部分：UE 5.7 参考（相对 `Engine/` 路径）
+## 第八部分：UE 5.7 参考（相对 `Engine/` 路径）
 
 | 本课概念 | UE 对应 | 位置 |
 |---------|---------|------|
@@ -922,475 +1077,64 @@ std::cout << c.GenerateCode(outputs);
 | `Constant/2/3/4` | `FHLSLMaterialTranslator::Constant/2/3/4` | 同上 `.cpp:5598-5630` |
 | `AddCodeChunk`/`AddInlinedCodeChunk` | 同名（UE 也是这两个）| 同上 `.cpp:3880-4280` |
 | 常量折叠 variant（教学版简化）| `FMaterialUniformExpression` 表达式树 + preshader | `Source/Runtime/Engine/Private/Materials/MaterialUniformExpressions.h` |
-| 双向递归 | `CompilePropertyAndSetMaterialProperty` + `UMaterialExpression::Compile` | `Source/Runtime/Engine/Private/Materials/Material.cpp:186` |
 | 类型推导 | `GetArithmeticResultType` | `HLSLMaterialTranslator.cpp:4612-4663` |
+| `CompileError{nodeId, pinName, message, severity}` | `FMaterialCompilerError` + `UMaterialExpression::LastErrorText` | `Engine/Source/Runtime/Engine/Public/MaterialShared.h` |
+| `EmitError`（贯穿编译路径一次加全）| `Compiler->Errorf` + 各 expression `Compile` 失败时记录 | `HLSLMaterialTranslator.cpp` 各算子开头 |
+| 算子类型检查 + INDEX_NONE 哨兵传播 | 同（UE 也是 `if (A < 0) return INDEX_NONE;`）| `HLSLMaterialTranslator.cpp` 全部分发器 |
 
-**搜索关键词**（在 UE 源码里）：`FShaderCodeChunk`、`FHLSLMaterialTranslator::Add`、`AddCodeChunkInner`、`IsExpressionConstantValue`、`EMaterialValueType`。
+**搜索关键词**（在 UE 源码里）：`FShaderCodeChunk`、`FHLSLMaterialTranslator::Add`、`AddCodeChunkInner`、`IsExpressionConstantValue`、`EMaterialValueType`、`HandleMaterialCompilationErrors`、`FMaterialCompilerError`、`LastErrorText`。
 
 ---
 
-## 错误诊断（编译期错误检测）
-
-> 本节是 `MaterialCompiler` 的核心能力之一——在编译过程中检测错误并产出结构化的 `CompileError` 列表。错误检查和 chunk 生成、算子类型检查、递归编译是一体的：**贯穿所有编译路径，在出错点立即收集**。
-
-### 为什么错误要带节点/pin 定位
-
-**问题**：如果 `CompileResult` 只有一个 `error_message`（一句话），用户看到 "Type mismatch: Float3 vs Float1" 不知道是图里**哪个 Add 节点**的**哪个引脚**出错——只能眼睛挨个扫图。一个稍大的材质图可能有十几个 Add，这种错误信息几乎没有可操作性。
-
-**正确做法**：每个错误携带 `{nodeId, pinName}`，编辑器据此：
-- 把对应节点的标题栏按严重级别着色（Error=红 / Warning=黄 / Info=蓝）
-- 把具体出错的引脚单独标红（不是整个节点一片红——多个引脚时只标出错的那一个）
-- 错误列表里点击一条 → 跳到对应节点 + 选中引脚
-
-**为什么必须支持多错误**：一个图可能同时有多个错误（`MaterialOutput.BaseColor` 没连 + 某个 `Add` 类型不匹配 + 另一个 `Divide` 除零）。一次编译把所有错误都报出来，用户一轮修复，不用"改一个 → 重编译 → 发现下一个"反复横跳。
-
-**对照 UE**：UE 编译错误带 line + node 信息，`HandleMaterialCompilationErrors`（`Engine/Source/Runtime/Engine/Private/Materials/Material.cpp`）把编译器收集的错误回填到 `UMaterialExpression::LastErrorText`，再触发节点 redraw。
-
-### CompileError 结构
-
-**新文件**：`src/Compiler/Public/CompileError.h`
-
-```cpp
-#pragma once
-#include "Core/Public/UUID.h"
-#include <string>
-
-// 错误严重级别（决定 UI 着色 + 是否中断编译）
-enum class EErrorSeverity {
-    Error,    // 编译失败：类型不匹配、循环依赖、必需引脚未连接
-    Warning,  // 编译继续：除零保护、隐式窄化（Float3→Float1）
-    Info,     // 提示：未使用节点、冗余算子
-};
-
-struct CompileError {
-    UUID            nodeId   = UUID::Invalid();  // 出错节点（必需——UI 按它高亮、点击跳节点）
-    std::string     pinName;                     // 出错引脚名（可空——节点级错误如环检测）
-    std::string     message;                     // 用户可读描述（要带上下文）
-    EErrorSeverity  severity = EErrorSeverity::Error;
-
-    // 去重 key：同 node + 同 pin + 同 message 视为同一个错误。
-    // 递归编译可能多次触发同一检查（同一个节点经多条路径被访问），需去重。
-    // 用方法而不是 operator==，避免被误用到别处的相等比较
-    bool SameAs(const CompileError& other) const {
-        return nodeId == other.nodeId
-            && pinName == other.pinName
-            && message == other.message;
-    }
-};
-```
-
-**字段说明**：
-
-| 字段 | 为什么需要 |
-|------|----------|
-| `nodeId` | 编辑器按节点高亮（标题栏染色）、错误列表点击跳节点，都要 nodeId |
-| `pinName` | 区分节点级 vs 引脚级错误。环检测是节点级（pinName 空）；类型不匹配是引脚级（pinName="A"/"B"）。引脚级高亮只标出错的那个 pin，不是整节点一片红 |
-| `message` | 用户可读描述。要带足够上下文，如 `"Type mismatch on pin 'A': expects Float1 but upstream provides Float3"` |
-| `severity` | UI 着色（红/黄/蓝）+ 决定是否中断编译。Error 中断当前分支，Warning/Info 继续 |
-
-**为什么用 enum 而不是 `bool is_warning`**：将来要加 Info（未使用节点提示）、Fatal（编译器内部错误），enum 扩展性更好；debug 时打印枚举名也比看 bool 直观。
-
-### CompileResult 升级
-
-第四部分定义的 `MaterialCompiler::CompileResult`（`src/Compiler/Public/MaterialCompiler.h`）从 `{success, hlsl_code, error_message}` 升级为带 errors 数组：
-
-```cpp
-struct CompileResult {
-    bool                        success = false;       // = !HasErrors()
-    std::string                 hlsl_code;
-    std::string                 error_message;         // 兼容字段：第一个 Error 级错误的 message
-    std::vector<CompileError>   errors;                // ← 新增：所有错误（含 Warning/Info）
-
-    // 便捷查询：是否有 Error 级错误（Warning/Info 不算）
-    bool HasErrors() const {
-        for (const auto& e : errors)
-            if (e.severity == EErrorSeverity::Error) return true;
-        return false;
-    }
-};
-```
-
-**`error_message` 保留 vs 弃用**：
-- **保留**：作为兼容字段，`Compile()` 末尾把第一个 Error 的 message 复制到 `error_message`，简化调用方代码
-- `Compile()` 末尾：`result.success = !result.HasErrors()`
-
-> **`hlsl_code` 在失败时也填**：即使有 Error，编译器仍可能生成部分 HLSL（错误分支被短路，其他分支正常）。代码面板可以继续显示这部分代码（红色标错），帮用户对照定位——不要清空。
-
-### 错误收集策略：贯穿编译路径一次加全
-
-**原则**：错误检查**贯穿所有编译路径**，在出错点立即 `EmitError(...)`——不要"先标记、编译结束后回扫补错误"。
-
-**为什么**：
-
-1. **递归编译天然带上下文**：`CompileInputPin(node, "A")` 入口知道当前在编译哪个节点的哪个引脚。失败时直接拿 `node`/`"A"` emit，**事后回扫反而要在两个地方维护同一套上下文**（编译时一份 + 回扫时一份），极易不一致。
-
-2. **避免遗漏路径**：编译器有十几个算子，每个都有类型检查、除零检查……如果在算子里发错误，每加一个算子自动获得错误报告；如果"事后扫"，每加一个算子都要记得在回扫函数里加对应检查。
-
-3. **多错误一次报全**：每个算子的错误检查独立运行，编译完一轮 `errors_` 自然收集了所有错误。
-
-**错误收集器（`MaterialCompiler` 成员）**：
-
-```cpp
-// MaterialCompiler.h private 段新增
-std::vector<CompileError> errors_;        // 所有错误
-Node*         current_node_ = nullptr;    // 当前正在编译的节点（EmitError 默认 nodeId 用它）
-std::string   current_pin_;               // 当前正在编译的引脚（EmitError 默认 pinName 用它）
-
-void EmitError(const std::string& msg,
-               EErrorSeverity sev = EErrorSeverity::Error,
-               const UUID& overrideNodeId = UUID::Invalid(),
-               const std::string& overridePinName = "");
-```
-
-```cpp
-// MaterialCompiler.cpp
-void MaterialCompiler::EmitError(const std::string& msg, EErrorSeverity sev,
-                                  const UUID& overrideNodeId,
-                                  const std::string& overridePinName) {
-    CompileError err;
-    err.message  = msg;
-    err.severity = sev;
-    // 优先用 override（检查项显式指定），否则用 current_* 上下文
-    err.nodeId   = overrideNodeId.IsValid() ? overrideNodeId
-                  : (current_node_ ? current_node_->id : UUID::Invalid());
-    err.pinName  = !overridePinName.empty() ? overridePinName : current_pin_;
-
-    // 去重：同 node + 同 pin + 同 message 只存一份
-    // （递归编译可能多次触发同一检查，如环路上的节点被多条路径访问）
-    for (const auto& existing : errors_)
-        if (existing.SameAs(err)) return;
-    errors_.push_back(err);
-}
-```
-
-**短路 vs 继续**（关键策略）：
-
-| 严重度 | 行为 | 例子 |
-|--------|------|------|
-| Error（当前算子）| 当前算子**不生成新 chunk**（返回 `INDEX_NONE=-1`），但**不立即停止整个编译** | 类型不匹配：`Add` 返回 -1，下游算子的 `if (a < 0) return -1;` 哨兵会传播 |
-| Error（致命）| 立即 return，不继续编译 | 循环依赖：无法继续拓扑遍历，整个 `Compile()` 提前结束 |
-| Warning | 编译继续（生成兜底 chunk），同时进 `errors_` | 除零：返回 `Constant(0)`，但发一条 Warning |
-| Info | 编译继续，无副作用 | 未使用节点提示 |
-
-这套"短路当前算子但继续其他分支"的策略对照 UE 的 `INDEX_NONE` 哨兵传播（`HLSLMaterialTranslator.cpp` 所有算子开头都检查 `if (A < 0 || B < 0) return INDEX_NONE;`）。**关键点**：上游 Error 让下游也"染上"INDEX_NONE，但下游**不要重复 EmitError**同一个错误（去重靠 `SameAs`）。
-
-### 检查项 1：类型不匹配
-
-**在哪查**：算术算子入口（`Add`/`Subtract`/`Multiply`/`Divide`/...）的类型推导失败时 + `CompileInputPin` 末尾的连接处类型检查。
-
-第三部分的 `Add` 在类型推导失败时 `return -1`，**没有错误信息**——用户看不到为什么失败。
-
-**升级 `Add`（其他算术算子同模板）**：
-
-```cpp
-int32_t MaterialCompiler::Add(int32_t a, int32_t b) {
-    // 段 1：哨兵传播（上游 Error 已经发过错误，这里不重复）
-    if (a < 0 || b < 0) return -1;
-
-    auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) {
-        // ← 类型推导失败，EmitError（带节点上下文）
-        // current_node_/current_pin_ 已被 CompileInputPin 设置
-        EmitError("Add inputs incompatible: A=" + TypeName(GetType(a))
-                  + ", B=" + TypeName(GetType(b)),
-                  EErrorSeverity::Error,
-                  /*overrideNodeId=*/current_node_ ? current_node_->id : UUID::Invalid(),
-                  /*overridePinName=*/"A/B");   // ← 显式 override pinName，因为算子不知道是 A 还是 B 出错
-        return -1;
-    }
-
-    // 段 2/3：折叠 + HLSL 发射（同第三部分，不变）
-    ...
-}
-```
-
-> **`TypeName(EValueType)`** 是个调试用 helper（返回 `"Float1"`/`"Float3"`/...），可以基于 `TypeSystem::ToHLSLType` 包一层去 `"float"` 前缀，或单独写个 switch。错误信息里的类型名要让人看得懂。
-
-**`CompileInputPin` 末尾的连接处检查**（更精确的定位——精确到"哪个引脚接错了"）：
-
-```cpp
-int32_t MaterialCompiler::CompileInputPin(Node* node, const std::string& pin_name) {
-    // ← 新增：设置当前上下文，下游 EmitError 自动带这个 nodeId/pinName
-    current_node_ = node;
-    current_pin_  = pin_name;
-
-    const Pin* pin = node->FindInputPin(pin_name);
-    if (!pin) {
-        EmitError("Pin '" + pin_name + "' does not exist on node '" + node->title + "'");
-        return Constant(0.0f);
-    }
-    if (!pin->IsConnected()) {
-        return ParseDefaultValue(pin->defaultValue, pin->type);
-    }
-
-    // ...同第四部分：找上游、CompileExpression(upstream)、取输出索引 upstreamIdx...
-
-    // ← 新增：连接处类型匹配检查
-    EValueType srcType = GetType(upstreamIdx);
-    EValueType dstType = pin->type;
-    if (!CanImplicitConvert(srcType, dstType)) {
-        EmitError("Pin '" + pin_name + "' expects " + TypeName(dstType)
-                  + " but upstream provides " + TypeName(srcType));
-        return -1;
-    }
-    // 隐式窄化（Float3 → Float1，丢分量）—— Warning，编译继续
-    if (GetComponentCount(srcType) > GetComponentCount(dstType)
-        && GetComponentCount(dstType) > 0) {
-        EmitError("Implicit narrowing on pin '" + pin_name + "': "
-                  + TypeName(srcType) + " → " + TypeName(dstType),
-                  EErrorSeverity::Warning);
-    }
-    return upstreamIdx;
-}
-```
-
-**关键**：`current_node_` / `current_pin_` 在 `CompileInputPin` 入口设置——这是"贯穿编译路径一次加全"策略的核心机制，让所有下游算子的 EmitError 都能拿到正确的定位上下文，不需要每个算子自己手动传 nodeId。
-
-### 检查项 2：循环依赖（图里有环）
-
-课4 的 `GraphCompiler::HasCycles()` 只返回 bool，`TopologicalSort` 通过 `hasCycle` 出参通知调用方。**问题**：用户看到 "Cycle detected" 不知道哪条边断。
-
-**升级**：返回**环路节点列表**。
-
-**原理**：DFS 三色标记法，灰色栈 = 当前正在访问的路径。遇到灰色节点 = 找到环——当前 DFS 路径从那个节点开始到当前位置就是环路。
-
-**`GraphCompiler` 升级**：
-
-```cpp
-// GraphCompiler.h 新增
-struct CycleReport {
-    bool                hasCycle = false;
-    std::vector<UUID>   cycleNodes;   // 环路上的所有节点（按访问顺序）
-};
-CycleReport DetectCycle();
-```
-
-```cpp
-// GraphCompiler.cpp
-CycleReport GraphCompiler::DetectCycle() {
-    CycleReport report;
-    std::set<UUID>    visited, inStack;
-    std::vector<UUID> path;    // 当前 DFS 路径，用于回溯切出环路
-
-    // DFS（同课4 的 Visit 思路，但 path 用于回溯）
-    std::function<void(Node*)> dfs = [&](Node* node) {
-        if (!node || report.hasCycle) return;
-        if (inStack.count(node->id)) {
-            // 找到环：从 path 中切出环路段
-            report.hasCycle = true;
-            auto it = std::find(path.begin(), path.end(), node->id);
-            report.cycleNodes.assign(it, path.end());
-            return;
-        }
-        if (visited.count(node->id)) return;
-
-        visited.insert(node->id);
-        inStack.insert(node->id);
-        path.push_back(node->id);
-
-        // 沿输入引脚走上游（编译方向：output → inputs → upstream）
-        for (const auto& pin : node->inputPins) {
-            for (const auto& conn : pin.connections) {
-                if (Node* upstream = graph_->FindNode(conn.otherNodeId)) {
-                    dfs(upstream);
-                    if (report.hasCycle) return;
-                }
-            }
-        }
-
-        path.pop_back();
-        inStack.erase(node->id);
-    };
-
-    if (Node* out = graph_->GetOutputNode()) dfs(out);
-    return report;
-}
-```
-
-**`MaterialCompiler::Compile` 入口检查环**（必须先于递归编译——否则无限循环）：
-
-```cpp
-MaterialCompiler::CompileResult MaterialCompiler::Compile(Graph* graph) {
-    CompileResult result;
-    current_graph_ = graph;
-    chunks_.clear();
-    hash_to_chunk_.clear();
-    node_cache_.clear();
-    next_symbol_index_ = 0;
-    errors_.clear();    // ← 每次编译清空
-
-    // ← 新增：先查环（环存在则不能继续递归，否则无限循环）
-    GraphCompiler gc(graph);
-    auto cycle = gc.DetectCycle();
-    if (cycle.hasCycle) {
-        // 拼环路节点名（用节点的 title，比 UUID 友好）
-        std::string pathStr;
-        for (const auto& id : cycle.cycleNodes) {
-            if (Node* n = graph->FindNode(id))
-                pathStr += n->title + " → ";
-            else
-                pathStr += id.ToString().substr(0, 8) + " → ";
-        }
-        pathStr += "...(back to start)";   // 表明这是环
-
-        // 环检测是节点级错误（pinName 空），环路每个节点都标红
-        for (const auto& id : cycle.cycleNodes) {
-            EmitError("Cycle detected: " + pathStr,
-                      EErrorSeverity::Error, id, /*pinName=*/"");
-        }
-
-        result.errors = errors_;
-        result.success = false;
-        result.error_message = "Cycle detected in graph";
-        return result;   // ← 致命错误，立即短路，不继续 GenerateCode
-    }
-
-    // ...第四部分的正常编译流程...
-    // 末尾：
-    result.errors = errors_;
-    result.success = !result.HasErrors();
-    if (!result.success && !errors_.empty()) {
-        // 兼容字段：第一个 Error 的 message
-        for (const auto& e : errors_)
-            if (e.severity == EErrorSeverity::Error) { result.error_message = e.message; break; }
-    }
-    return result;
-}
-```
-
-**关键**：环检测错误信息必须给出**环路节点列表**（`A → B → C → A`），用户才知道断哪条边——只说 "Cycle detected" 等于没说。
-
-### 检查项 3：未连接的必需引脚
-
-两类必需性：
-
-1. **`MaterialOutput` 的必需属性**：`BaseColor` 必需（缺了 PBR 算不出颜色）；`Metallic`/`Roughness`/`Normal` 等有合理默认值（可选）。
-2. **算子节点的输入引脚**：默认走 `ParseDefaultValue`（合法，0 向量），**不报错**——但有时用户期望"报错而不是悄悄用 0"。教学版取前者（宽松），UE 取后者（严格）。
-
-**实现**：`Pin` 加 `isRequired` 字段，`MaterialOutput` 在 `NodeFactory` 注册时把 `BaseColor` 设为必需：
-
-```cpp
-// Pin.h 新增字段
-bool isRequired = false;   // 是否必需连接（未连时编译报 Error）
-```
-
-```cpp
-// MaterialCompiler::Compile 中，遍历输出节点输入引脚
-Node* output = graph->GetOutputNode();
-if (output) {
-    for (const auto& pin : output->inputPins) {
-        if (pin.isRequired && !pin.IsConnected()) {
-            EmitError("Required pin '" + pin.name
-                      + "' of MaterialOutput is not connected",
-                      EErrorSeverity::Error,
-                      output->id, pin.name);
-        }
-    }
-}
-// 即使有必需引脚未连，仍可继续编译（用 ParseDefaultValue 的兜底），
-// 但 success 会因 HasErrors() 为 true 而失败——用户看到错误列表知道要补哪些连线
-```
-
-> **设计取舍**：教学版只在 `MaterialOutput` 这一层强制必需性（用户一眼能看出材质缺什么），算子层宽松（默认 0 不报错，避免教学示例被一堆"引脚未连"错误淹没）。UE 更严格，每个 `FExpressionInput` 没连都报错——因为 UE 假设用户是有意连过来才编辑的。
-
-### 检查项 4：除零（Warning 升级）
-
-第三部分的 `Divide` 在除数为常量 0 时 `ME_LOG_WARNING("Division by zero")` + 返回 `Constant(0)`。**问题**：日志只到控制台，**UI 完全看不到**。
-
-**升级**：改成 `EmitError(Warning)`——编译继续（仍返回 `Constant(0)` 兜底），但错误进 `errors_`，UI 高亮除数引脚：
-
-```cpp
-int32_t MaterialCompiler::Divide(int32_t a, int32_t b) {
-    if (a < 0 || b < 0) return -1;
-    auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) {
-        EmitError("Divide inputs incompatible: A=" + TypeName(GetType(a))
-                  + ", B=" + TypeName(GetType(b)),
-                  EErrorSeverity::Error,
-                  current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
-        return -1;
-    }
-
-    // 除零保护：b 是常量 0 → 编译继续，但发 Warning
-    if (IsConstant(b) && ConstantFolding::IsScalarZero(GetConstantValue(b))) {
-        EmitError("Division by zero: divisor (pin 'B') is constant 0",
-                  EErrorSeverity::Warning,
-                  current_node_ ? current_node_->id : UUID::Invalid(),
-                  /*overridePinName=*/"B");   // ← 精确到除数引脚
-        return Constant(0.0f);
-    }
-
-    // ...第三部分的折叠 + HLSL 发射不变...
-}
-```
-
-**为什么是 Warning 不是 Error**：除零在 HLSL 里行为未定义，但我们用 `Constant(0)` 兜底，shader 仍能编译运行——用户应该修但不应阻塞编译。这是"软错误"策略，对照 UE 也有很多 Warning 级编译问题不阻塞（如未使用的输入、隐式转换）。
-
-> **去重的副作用**：如果同一个 `Divide` 节点被多条路径访问（如扇出），`EmitError` 第一次会 push，第二次 `SameAs` 命中被丢弃——结果只有一个除零 Warning，不会刷屏。
-
-### UE5 对照（错误诊断部分）
-
-| 我们的 | UE 对应 | Engine 路径 |
-|--------|---------|------------|
-| `CompileError{nodeId, pinName, message, severity}` | `FMaterialCompilerError` + `UMaterialExpression::LastErrorText` | `Engine/Source/Runtime/Engine/Public/MaterialShared.h` |
-| `CompileResult::errors` 数组 | `UMaterial::CompileErrors` 数组 + `FMaterialCompileTarget` | `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp` |
-| `EmitError`（贯穿编译路径一次加全）| `Compiler->Errorf` + 各 expression `Compile` 失败时记录 | `HLSLMaterialTranslator.cpp` 各算子开头 |
-| 环检测（DFS + inStack + 路径回溯）| `IsMaterialInputLooping`（编辑时查，连线就拒）| `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp` |
-| 算子类型检查 + INDEX_NONE 哨兵传播 | 同（UE 也是 `if (A < 0) return INDEX_NONE;`）| `HLSLMaterialTranslator.cpp` 全部分发器 |
-| 编译完把错误回填 UI | `HandleMaterialCompilationErrors` 回填 `LastErrorText` + 触发 redraw | `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp:HandleMaterialCompilationErrors` |
-| 节点高亮（按 severity 着色）| `SGraphNodeMaterial` 根据 `LastErrorText` 颜色 | `Engine/Source/Editor/MaterialEditor/Private/SGraphNodeMaterial.cpp` |
-
-**三个关键差异**：
-
-1. **UE 的错误回填是后处理**：编译完后 `HandleMaterialCompilationErrors` 遍历编译器收集的错误，回填到 `UMaterialExpression::LastErrorText`，再触发节点 redraw。**我们是编译时直接带 nodeId**——`CompileInputPin` 入口设置 `current_node_`，EmitError 直接定位，省了"编译器错误 → 表达式对象"的回填层。代价：我们的错误检查和编译耦合在 `MaterialCompiler` 里，UE 是分离的（编译器只生成错误，回填由 `UMaterial` 做）。
-
-2. **UE 的环检测在编辑时**：用户连线时就调 `IsMaterialInputLooping` 拒绝循环连接，编译时不会有环——我们是编辑时允许（`Pin::CanConnectTo` 不查环），编译时查。教学版简化（编辑时每条连线都要 DFS 对教学过重），代价是用户能连出环（编译才发现）。
-
-3. **UE 错误没 pin 概念**：UE 的 `UMaterialExpression` 是类，输入是命名成员（`FExpressionInput A`），错误格式是 "line N: expression ClassName: error text"——没明确"哪个 pin"。**我们 pin 一等公民**（`Pin::name`），错误能精确到引脚，UI 引脚级高亮更直接。
-
-> **搜索关键词**（UE 源码）：`HandleMaterialCompilationErrors`、`FMaterialCompilerError`、`LastErrorText`、`IsMaterialInputLooping`、`CompileErrors`。
-
-### 已踩坑 / 注意
+## 第九部分：错误诊断（已踩坑 / 注意）
 
 | 坑 | 现象 | 教训 |
 |----|------|------|
 | 递归编译中途出错不短路 | 类型错误后仍生成残缺 HLSL，错上加错 | Error 级哨兵传播（算子返 -1），**当前分支**不展开，但**其他分支继续**（让多错误一轮报全）|
 | 错误不去重 | 同一类型不匹配因递归多次访问被报 N 次，错误列表刷屏 | `EmitError` 里 `SameAs` 判定，相同 node+pin+message 只存一份 |
-| 环检测错误信息太短 | 只写 "Cycle detected"，用户不知道断哪条边 | 错误信息必须含**环路节点列表**：`Add → Multiply → Subtract → Add` |
-| 节点高亮覆盖 severity | 同一节点多个错误，Warning 把 Error 盖掉（一片黄）| 按节点聚合时取**最严重**的 severity（enum 顺序 Error=0 < Warning=1 < Info=2，越小越严重，用 `std::min`）|
-| 除零只用 `ME_LOG_WARNING` | 用户在 UI 看不到（日志只到控制台）| 升级为 `EmitError(Warning)` 进 errors 列表，UI 才能高亮 |
+| 除零只用 `ME_LOG_WARNING` | 用户在 UI 看不到（日志只到控制台）| 改为 `EmitError(Warning)` 进 errors 列表，UI 才能高亮（课 19）|
 | 算子内 pinName 不准 | `Add` 里不知道是 A 还是 B 出错（`current_pin_` 是上游设的）| 算子内 EmitError 时**显式 override pinName**（如 `"A/B"`），不要依赖 `current_pin_` |
-| `current_node_` 未设置 | 算子里 EmitError 拿到 nodeId 为 Invalid（找不到归属节点）| `CompileInputPin` 入口必须设 `current_node_ = node`；递归回溯出栈时清空（避免下游误用上游上下文）|
-| `hlsl_code` 在失败时被清空 | 用户改不到代码面板对照 | 即使编译失败也保留部分 HLSL（错误分支被短路，其他分支正常），UI 显示残缺代码 + 错误信息 |
-| 错误带 UUID 不带 title | 用户看不懂 `deadbeef-...` 是哪个节点 | UI 显示前查 `GetNodeTitle(nodeId)` 转成节点标题；找不到才回落 UUID |
+| `current_node_` 未设置 | 课 6 阶段没接 CompileInputPin，`current_node_` 是 nullptr，EmitError 拿到 nodeId 为 Invalid | 课 6 测试时用 overrideNodeId 显式指定，或友元测试设置 `current_node_`；课 7 接 CompileInputPin 后自动有上下文 |
+| `hlsl_code` 在失败时被清空 | 用户改不到代码面板对照 | 即使编译失败也保留部分 HLSL（错误分支被短路，其他分支正常）；课 8 UI 显示残缺代码 + 错误信息 |
 
 > **核心设计取舍**：错误检查**贯穿编译路径一次加全**（不要"先标记后补"），因为递归编译天然带 node/pin 上下文，事后回扫反而要在两处维护同一检查。
 
----
+**对照 UE 错误诊断的三个差异**：
 
+1. **UE 的错误回填是后处理**：编译完后 `HandleMaterialCompilationErrors` 遍历编译器收集的错误，回填到 `UMaterialExpression::LastErrorText`，再触发节点 redraw。**我们是编译时直接带 nodeId**——课 7 实现的 `CompileInputPin` 入口设置 `current_node_`，EmitError 直接定位，省了"编译器错误 → 表达式对象"的回填层。代价：我们的错误检查和编译耦合在 `MaterialCompiler` 里，UE 是分离的（编译器只生成错误，回填由 `UMaterial` 做）。
+
+2. **UE 的环检测在编辑时**：用户连线时就调 `IsMaterialInputLooping` 拒绝循环连接，编译时不会有环——我们是编辑时允许（`Pin::CanConnectTo` 不查环），编译时查（课 7）。教学版简化（编辑时每条连线都要 DFS 对教学过重），代价是用户能连出环（编译才发现）。
+
+3. **UE 错误没 pin 概念**：UE 的 `UMaterialExpression` 是类，输入是命名成员（`FExpressionInput A`），错误格式是 "line N: expression ClassName: error text"——没明确"哪个 pin"。**我们 pin 一等公民**（`Pin::name`），错误能精确到引脚，UI 引脚级高亮更直接（课 19）。
+
+---
 
 ## 完成标志
 
-- [ ] `EValueType` 扩展（Float/Int/Matrix/Texture/Sampler）+ `TypeSystem` 推导
-- [ ] `CodeChunk` 用 variant `constant_value`
-- [ ] `AddConstantChunk` 接收 variant，`Constant2/3/4` 走常量路径
-- [ ] `Add/Sub/Mul/Div` 三段判定 + 向量折叠 + 代数化简
-- [ ] `AddCodeChunk` vs `AddInlinedCodeChunk` 区分
-- [ ] `compiler_test.cpp` 向量折叠断言通过（`Add(Constant3(...), Constant3(...))` 编译期算）
-- [ ] 编译通过（`CompileExpression` 的 TODO 课7 接表达式注册后端到端）
-- [ ] `CompileError` 结构定义（nodeId / pinName / message / severity）+ `EErrorSeverity` 三级
-- [ ] `CompileResult::errors` 数组 + `HasErrors()` 查询；`error_message` 作为兼容字段保留
-- [ ] `MaterialCompiler::EmitError` 收集器 + `current_node_`/`current_pin_` 上下文 + `SameAs` 去重
-- [ ] 类型不匹配检查：算子入口（Add/Sub/Mul/Div）+ `CompileInputPin` 末尾（含 Warning 级隐式窄化）
-- [ ] 环检测升级：`GraphCompiler::DetectCycle` 返回 `CycleReport{cycleNodes}`，错误信息含环路节点列表
-- [ ] 必需引脚检查：`Pin::isRequired` 字段，`MaterialOutput.BaseColor` 未连报 Error
-- [ ] 除零升级：从 `ME_LOG_WARNING` 改为 `EmitError(Warning)`，UI 可见
-- [ ] 多错误一次报全（同时构造多种错误 → 一次编译全部列出）
+本课真正实现的（每一条都能本课勾选）：
+
+- [ ] `EValueType` 扩展（Float/Int/Matrix/Texture/Sampler）+ `TypeSystem::GetArithmeticResultType` / `ToHLSLType` 推导
+- [ ] `GetComponentCount` 留 Types.h（free function），`TypeSystem` 不重复定义
+- [ ] `CodeChunk` 用 variant `constant_value`（支持 Vec2/3/4 折叠）
+- [ ] `CompileError` 结构（`nodeId` / `pinName` / `message` / `severity`）+ `EErrorSeverity` 三级 + `SameAs` 去重
+- [ ] `CompileResult` 直接定义带 `errors` 数组的最终版 + `HasErrors()` 查询 + `error_message` 兼容字段
+- [ ] `MaterialCompiler::EmitError` 收集器 + `errors_` / `current_node_` / `current_pin_` 上下文成员
+- [ ] 4 个查询函数（`GetType` / `IsConstant` / `GetConstantValue` / `GetParameterCode`）+ assert + 边界保护
+- [ ] `AddCodeChunk` / `AddInlinedCodeChunk` / `AddConstantChunk`（接收 variant）+ hash 去重 + `FormatConstantCode`
+- [ ] `Constant` / `Constant2` / `Constant3` / `Constant4` 全走常量路径（`is_constant=true`）
+- [ ] `ConstantFolding::FoldBinary` / `FoldUnary` / `IsScalarZero` / `IsScalarOne`（variant 版，含标量广播）
+- [ ] `Add` / `Subtract` / `Multiply` / `Divide` 三段判定 + 向量折叠 + 代数化简 + 类型不匹配 `EmitError(Error)` + 除零 `EmitError(Warning)`
+- [ ] `Abs` / `Negate` / `Sine` / `Cosine`（一元 + 折叠）
+- [ ] `Lerp` / `Clamp` / `Power`（多元，含 `pow(x,0)→1` / `pow(x,1)→x` 化简）
+- [ ] `Dot` / `Cross` / `Normalize` / `Length`（向量运算）
+- [ ] `ComponentMask` / `AppendVector` / `Cast`
+- [ ] `compiler_test.cpp` 全部断言通过：标量折叠、向量折叠、乘 1/0 化简、除零 Warning + errors 收集、类型不匹配 Error + 哨兵传播、嵌套运算、查询边界保护、错误去重
 
 ---
 
 ## 核心原则回顾
 
-1. **一步到位**：variant CodeChunk + 完整类型 + 向量折叠，直接做扩展版，不做"先标量后向量"的中间态
-2. **对照 UE**：每个设计点知道 UE 怎么做、教学版为什么简化（variant vs 表达式树、enum vs bitmask、单层 vs 双层去重）
+1. **一步到位**：variant CodeChunk + 完整类型 + 向量折叠 + 错误收集，直接做完整版，不做"先标量后向量"、"先无错误后有错误"的中间态
+2. **对照 UE**：每个设计点知道 UE 怎么做、教学版为什么简化（variant vs 表达式树、enum vs bitmask、单层 vs 双层去重、错误编译时直接带 nodeId vs UE 后处理回填）
 3. **保留核心语义**：hash 去重、"是否常量"判定、双向递归——这些和 UE 一致，简化的是"实现手段"不是"设计思想"
+4. **本课边界清晰**：算子 API + chunks 数据结构 + 编译器层错误收集做完；`Compile(Graph*)` 留课 7、`GenerateCode` 留课 8、纹理算子留课 14/15、错误 UI 留课 19。**不挖坑、不留 TODO 占位、不写"课 X 再做"**
