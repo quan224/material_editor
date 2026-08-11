@@ -7,6 +7,7 @@
 #include "Compiler/Public/ConstantFolding.h"
 #include "MaterialGraph/Public/Types.h"
 #include "Core/Public/Hash.h"
+#include "Compiler/Public/TypeSystem.h"
 
 
 class MaterialCompiler{
@@ -50,7 +51,13 @@ public:
     int32_t Constant3(float x, float y, float z);
     int32_t Constant4(float x, float y, float z, float w);
 
-    // 向量操作/
+    // 向量操作/ 纹理 / 控制 / 类型转换
+    int32_t ComponentMask(int32_t input, bool r, bool g, bool b, bool a);
+    int32_t AppendVector(int32_t a, int32_t b);
+    int32_t TextureCoordinate();
+    int32_t TextureSample(int32_t texture, int32_t coordinate);
+    int32_t If(int32_t condition, int32_t true_val, int32_t false_val);
+    int32_t Cast(int32_t code, EValueType target_type);
 
 
     // === 查询（常量值返回variant）===

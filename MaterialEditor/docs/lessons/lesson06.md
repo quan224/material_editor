@@ -929,6 +929,446 @@ std::cout << c.GenerateCode(outputs);
 
 ---
 
+## 错误诊断（编译期错误检测）
+
+> 本节是 `MaterialCompiler` 的核心能力之一——在编译过程中检测错误并产出结构化的 `CompileError` 列表。错误检查和 chunk 生成、算子类型检查、递归编译是一体的：**贯穿所有编译路径，在出错点立即收集**。
+
+### 为什么错误要带节点/pin 定位
+
+**问题**：如果 `CompileResult` 只有一个 `error_message`（一句话），用户看到 "Type mismatch: Float3 vs Float1" 不知道是图里**哪个 Add 节点**的**哪个引脚**出错——只能眼睛挨个扫图。一个稍大的材质图可能有十几个 Add，这种错误信息几乎没有可操作性。
+
+**正确做法**：每个错误携带 `{nodeId, pinName}`，编辑器据此：
+- 把对应节点的标题栏按严重级别着色（Error=红 / Warning=黄 / Info=蓝）
+- 把具体出错的引脚单独标红（不是整个节点一片红——多个引脚时只标出错的那一个）
+- 错误列表里点击一条 → 跳到对应节点 + 选中引脚
+
+**为什么必须支持多错误**：一个图可能同时有多个错误（`MaterialOutput.BaseColor` 没连 + 某个 `Add` 类型不匹配 + 另一个 `Divide` 除零）。一次编译把所有错误都报出来，用户一轮修复，不用"改一个 → 重编译 → 发现下一个"反复横跳。
+
+**对照 UE**：UE 编译错误带 line + node 信息，`HandleMaterialCompilationErrors`（`Engine/Source/Runtime/Engine/Private/Materials/Material.cpp`）把编译器收集的错误回填到 `UMaterialExpression::LastErrorText`，再触发节点 redraw。
+
+### CompileError 结构
+
+**新文件**：`src/Compiler/Public/CompileError.h`
+
+```cpp
+#pragma once
+#include "Core/Public/UUID.h"
+#include <string>
+
+// 错误严重级别（决定 UI 着色 + 是否中断编译）
+enum class EErrorSeverity {
+    Error,    // 编译失败：类型不匹配、循环依赖、必需引脚未连接
+    Warning,  // 编译继续：除零保护、隐式窄化（Float3→Float1）
+    Info,     // 提示：未使用节点、冗余算子
+};
+
+struct CompileError {
+    UUID            nodeId   = UUID::Invalid();  // 出错节点（必需——UI 按它高亮、点击跳节点）
+    std::string     pinName;                     // 出错引脚名（可空——节点级错误如环检测）
+    std::string     message;                     // 用户可读描述（要带上下文）
+    EErrorSeverity  severity = EErrorSeverity::Error;
+
+    // 去重 key：同 node + 同 pin + 同 message 视为同一个错误。
+    // 递归编译可能多次触发同一检查（同一个节点经多条路径被访问），需去重。
+    // 用方法而不是 operator==，避免被误用到别处的相等比较
+    bool SameAs(const CompileError& other) const {
+        return nodeId == other.nodeId
+            && pinName == other.pinName
+            && message == other.message;
+    }
+};
+```
+
+**字段说明**：
+
+| 字段 | 为什么需要 |
+|------|----------|
+| `nodeId` | 编辑器按节点高亮（标题栏染色）、错误列表点击跳节点，都要 nodeId |
+| `pinName` | 区分节点级 vs 引脚级错误。环检测是节点级（pinName 空）；类型不匹配是引脚级（pinName="A"/"B"）。引脚级高亮只标出错的那个 pin，不是整节点一片红 |
+| `message` | 用户可读描述。要带足够上下文，如 `"Type mismatch on pin 'A': expects Float1 but upstream provides Float3"` |
+| `severity` | UI 着色（红/黄/蓝）+ 决定是否中断编译。Error 中断当前分支，Warning/Info 继续 |
+
+**为什么用 enum 而不是 `bool is_warning`**：将来要加 Info（未使用节点提示）、Fatal（编译器内部错误），enum 扩展性更好；debug 时打印枚举名也比看 bool 直观。
+
+### CompileResult 升级
+
+第四部分定义的 `MaterialCompiler::CompileResult`（`src/Compiler/Public/MaterialCompiler.h`）从 `{success, hlsl_code, error_message}` 升级为带 errors 数组：
+
+```cpp
+struct CompileResult {
+    bool                        success = false;       // = !HasErrors()
+    std::string                 hlsl_code;
+    std::string                 error_message;         // 兼容字段：第一个 Error 级错误的 message
+    std::vector<CompileError>   errors;                // ← 新增：所有错误（含 Warning/Info）
+
+    // 便捷查询：是否有 Error 级错误（Warning/Info 不算）
+    bool HasErrors() const {
+        for (const auto& e : errors)
+            if (e.severity == EErrorSeverity::Error) return true;
+        return false;
+    }
+};
+```
+
+**`error_message` 保留 vs 弃用**：
+- **保留**：作为兼容字段，`Compile()` 末尾把第一个 Error 的 message 复制到 `error_message`，简化调用方代码
+- `Compile()` 末尾：`result.success = !result.HasErrors()`
+
+> **`hlsl_code` 在失败时也填**：即使有 Error，编译器仍可能生成部分 HLSL（错误分支被短路，其他分支正常）。代码面板可以继续显示这部分代码（红色标错），帮用户对照定位——不要清空。
+
+### 错误收集策略：贯穿编译路径一次加全
+
+**原则**：错误检查**贯穿所有编译路径**，在出错点立即 `EmitError(...)`——不要"先标记、编译结束后回扫补错误"。
+
+**为什么**：
+
+1. **递归编译天然带上下文**：`CompileInputPin(node, "A")` 入口知道当前在编译哪个节点的哪个引脚。失败时直接拿 `node`/`"A"` emit，**事后回扫反而要在两个地方维护同一套上下文**（编译时一份 + 回扫时一份），极易不一致。
+
+2. **避免遗漏路径**：编译器有十几个算子，每个都有类型检查、除零检查……如果在算子里发错误，每加一个算子自动获得错误报告；如果"事后扫"，每加一个算子都要记得在回扫函数里加对应检查。
+
+3. **多错误一次报全**：每个算子的错误检查独立运行，编译完一轮 `errors_` 自然收集了所有错误。
+
+**错误收集器（`MaterialCompiler` 成员）**：
+
+```cpp
+// MaterialCompiler.h private 段新增
+std::vector<CompileError> errors_;        // 所有错误
+Node*         current_node_ = nullptr;    // 当前正在编译的节点（EmitError 默认 nodeId 用它）
+std::string   current_pin_;               // 当前正在编译的引脚（EmitError 默认 pinName 用它）
+
+void EmitError(const std::string& msg,
+               EErrorSeverity sev = EErrorSeverity::Error,
+               const UUID& overrideNodeId = UUID::Invalid(),
+               const std::string& overridePinName = "");
+```
+
+```cpp
+// MaterialCompiler.cpp
+void MaterialCompiler::EmitError(const std::string& msg, EErrorSeverity sev,
+                                  const UUID& overrideNodeId,
+                                  const std::string& overridePinName) {
+    CompileError err;
+    err.message  = msg;
+    err.severity = sev;
+    // 优先用 override（检查项显式指定），否则用 current_* 上下文
+    err.nodeId   = overrideNodeId.IsValid() ? overrideNodeId
+                  : (current_node_ ? current_node_->id : UUID::Invalid());
+    err.pinName  = !overridePinName.empty() ? overridePinName : current_pin_;
+
+    // 去重：同 node + 同 pin + 同 message 只存一份
+    // （递归编译可能多次触发同一检查，如环路上的节点被多条路径访问）
+    for (const auto& existing : errors_)
+        if (existing.SameAs(err)) return;
+    errors_.push_back(err);
+}
+```
+
+**短路 vs 继续**（关键策略）：
+
+| 严重度 | 行为 | 例子 |
+|--------|------|------|
+| Error（当前算子）| 当前算子**不生成新 chunk**（返回 `INDEX_NONE=-1`），但**不立即停止整个编译** | 类型不匹配：`Add` 返回 -1，下游算子的 `if (a < 0) return -1;` 哨兵会传播 |
+| Error（致命）| 立即 return，不继续编译 | 循环依赖：无法继续拓扑遍历，整个 `Compile()` 提前结束 |
+| Warning | 编译继续（生成兜底 chunk），同时进 `errors_` | 除零：返回 `Constant(0)`，但发一条 Warning |
+| Info | 编译继续，无副作用 | 未使用节点提示 |
+
+这套"短路当前算子但继续其他分支"的策略对照 UE 的 `INDEX_NONE` 哨兵传播（`HLSLMaterialTranslator.cpp` 所有算子开头都检查 `if (A < 0 || B < 0) return INDEX_NONE;`）。**关键点**：上游 Error 让下游也"染上"INDEX_NONE，但下游**不要重复 EmitError**同一个错误（去重靠 `SameAs`）。
+
+### 检查项 1：类型不匹配
+
+**在哪查**：算术算子入口（`Add`/`Subtract`/`Multiply`/`Divide`/...）的类型推导失败时 + `CompileInputPin` 末尾的连接处类型检查。
+
+第三部分的 `Add` 在类型推导失败时 `return -1`，**没有错误信息**——用户看不到为什么失败。
+
+**升级 `Add`（其他算术算子同模板）**：
+
+```cpp
+int32_t MaterialCompiler::Add(int32_t a, int32_t b) {
+    // 段 1：哨兵传播（上游 Error 已经发过错误，这里不重复）
+    if (a < 0 || b < 0) return -1;
+
+    auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
+    if (resultType == EValueType::Unknown) {
+        // ← 类型推导失败，EmitError（带节点上下文）
+        // current_node_/current_pin_ 已被 CompileInputPin 设置
+        EmitError("Add inputs incompatible: A=" + TypeName(GetType(a))
+                  + ", B=" + TypeName(GetType(b)),
+                  EErrorSeverity::Error,
+                  /*overrideNodeId=*/current_node_ ? current_node_->id : UUID::Invalid(),
+                  /*overridePinName=*/"A/B");   // ← 显式 override pinName，因为算子不知道是 A 还是 B 出错
+        return -1;
+    }
+
+    // 段 2/3：折叠 + HLSL 发射（同第三部分，不变）
+    ...
+}
+```
+
+> **`TypeName(EValueType)`** 是个调试用 helper（返回 `"Float1"`/`"Float3"`/...），可以基于 `TypeSystem::ToHLSLType` 包一层去 `"float"` 前缀，或单独写个 switch。错误信息里的类型名要让人看得懂。
+
+**`CompileInputPin` 末尾的连接处检查**（更精确的定位——精确到"哪个引脚接错了"）：
+
+```cpp
+int32_t MaterialCompiler::CompileInputPin(Node* node, const std::string& pin_name) {
+    // ← 新增：设置当前上下文，下游 EmitError 自动带这个 nodeId/pinName
+    current_node_ = node;
+    current_pin_  = pin_name;
+
+    const Pin* pin = node->FindInputPin(pin_name);
+    if (!pin) {
+        EmitError("Pin '" + pin_name + "' does not exist on node '" + node->title + "'");
+        return Constant(0.0f);
+    }
+    if (!pin->IsConnected()) {
+        return ParseDefaultValue(pin->defaultValue, pin->type);
+    }
+
+    // ...同第四部分：找上游、CompileExpression(upstream)、取输出索引 upstreamIdx...
+
+    // ← 新增：连接处类型匹配检查
+    EValueType srcType = GetType(upstreamIdx);
+    EValueType dstType = pin->type;
+    if (!CanImplicitConvert(srcType, dstType)) {
+        EmitError("Pin '" + pin_name + "' expects " + TypeName(dstType)
+                  + " but upstream provides " + TypeName(srcType));
+        return -1;
+    }
+    // 隐式窄化（Float3 → Float1，丢分量）—— Warning，编译继续
+    if (GetComponentCount(srcType) > GetComponentCount(dstType)
+        && GetComponentCount(dstType) > 0) {
+        EmitError("Implicit narrowing on pin '" + pin_name + "': "
+                  + TypeName(srcType) + " → " + TypeName(dstType),
+                  EErrorSeverity::Warning);
+    }
+    return upstreamIdx;
+}
+```
+
+**关键**：`current_node_` / `current_pin_` 在 `CompileInputPin` 入口设置——这是"贯穿编译路径一次加全"策略的核心机制，让所有下游算子的 EmitError 都能拿到正确的定位上下文，不需要每个算子自己手动传 nodeId。
+
+### 检查项 2：循环依赖（图里有环）
+
+课4 的 `GraphCompiler::HasCycles()` 只返回 bool，`TopologicalSort` 通过 `hasCycle` 出参通知调用方。**问题**：用户看到 "Cycle detected" 不知道哪条边断。
+
+**升级**：返回**环路节点列表**。
+
+**原理**：DFS 三色标记法，灰色栈 = 当前正在访问的路径。遇到灰色节点 = 找到环——当前 DFS 路径从那个节点开始到当前位置就是环路。
+
+**`GraphCompiler` 升级**：
+
+```cpp
+// GraphCompiler.h 新增
+struct CycleReport {
+    bool                hasCycle = false;
+    std::vector<UUID>   cycleNodes;   // 环路上的所有节点（按访问顺序）
+};
+CycleReport DetectCycle();
+```
+
+```cpp
+// GraphCompiler.cpp
+CycleReport GraphCompiler::DetectCycle() {
+    CycleReport report;
+    std::set<UUID>    visited, inStack;
+    std::vector<UUID> path;    // 当前 DFS 路径，用于回溯切出环路
+
+    // DFS（同课4 的 Visit 思路，但 path 用于回溯）
+    std::function<void(Node*)> dfs = [&](Node* node) {
+        if (!node || report.hasCycle) return;
+        if (inStack.count(node->id)) {
+            // 找到环：从 path 中切出环路段
+            report.hasCycle = true;
+            auto it = std::find(path.begin(), path.end(), node->id);
+            report.cycleNodes.assign(it, path.end());
+            return;
+        }
+        if (visited.count(node->id)) return;
+
+        visited.insert(node->id);
+        inStack.insert(node->id);
+        path.push_back(node->id);
+
+        // 沿输入引脚走上游（编译方向：output → inputs → upstream）
+        for (const auto& pin : node->inputPins) {
+            for (const auto& conn : pin.connections) {
+                if (Node* upstream = graph_->FindNode(conn.otherNodeId)) {
+                    dfs(upstream);
+                    if (report.hasCycle) return;
+                }
+            }
+        }
+
+        path.pop_back();
+        inStack.erase(node->id);
+    };
+
+    if (Node* out = graph_->GetOutputNode()) dfs(out);
+    return report;
+}
+```
+
+**`MaterialCompiler::Compile` 入口检查环**（必须先于递归编译——否则无限循环）：
+
+```cpp
+MaterialCompiler::CompileResult MaterialCompiler::Compile(Graph* graph) {
+    CompileResult result;
+    current_graph_ = graph;
+    chunks_.clear();
+    hash_to_chunk_.clear();
+    node_cache_.clear();
+    next_symbol_index_ = 0;
+    errors_.clear();    // ← 每次编译清空
+
+    // ← 新增：先查环（环存在则不能继续递归，否则无限循环）
+    GraphCompiler gc(graph);
+    auto cycle = gc.DetectCycle();
+    if (cycle.hasCycle) {
+        // 拼环路节点名（用节点的 title，比 UUID 友好）
+        std::string pathStr;
+        for (const auto& id : cycle.cycleNodes) {
+            if (Node* n = graph->FindNode(id))
+                pathStr += n->title + " → ";
+            else
+                pathStr += id.ToString().substr(0, 8) + " → ";
+        }
+        pathStr += "...(back to start)";   // 表明这是环
+
+        // 环检测是节点级错误（pinName 空），环路每个节点都标红
+        for (const auto& id : cycle.cycleNodes) {
+            EmitError("Cycle detected: " + pathStr,
+                      EErrorSeverity::Error, id, /*pinName=*/"");
+        }
+
+        result.errors = errors_;
+        result.success = false;
+        result.error_message = "Cycle detected in graph";
+        return result;   // ← 致命错误，立即短路，不继续 GenerateCode
+    }
+
+    // ...第四部分的正常编译流程...
+    // 末尾：
+    result.errors = errors_;
+    result.success = !result.HasErrors();
+    if (!result.success && !errors_.empty()) {
+        // 兼容字段：第一个 Error 的 message
+        for (const auto& e : errors_)
+            if (e.severity == EErrorSeverity::Error) { result.error_message = e.message; break; }
+    }
+    return result;
+}
+```
+
+**关键**：环检测错误信息必须给出**环路节点列表**（`A → B → C → A`），用户才知道断哪条边——只说 "Cycle detected" 等于没说。
+
+### 检查项 3：未连接的必需引脚
+
+两类必需性：
+
+1. **`MaterialOutput` 的必需属性**：`BaseColor` 必需（缺了 PBR 算不出颜色）；`Metallic`/`Roughness`/`Normal` 等有合理默认值（可选）。
+2. **算子节点的输入引脚**：默认走 `ParseDefaultValue`（合法，0 向量），**不报错**——但有时用户期望"报错而不是悄悄用 0"。教学版取前者（宽松），UE 取后者（严格）。
+
+**实现**：`Pin` 加 `isRequired` 字段，`MaterialOutput` 在 `NodeFactory` 注册时把 `BaseColor` 设为必需：
+
+```cpp
+// Pin.h 新增字段
+bool isRequired = false;   // 是否必需连接（未连时编译报 Error）
+```
+
+```cpp
+// MaterialCompiler::Compile 中，遍历输出节点输入引脚
+Node* output = graph->GetOutputNode();
+if (output) {
+    for (const auto& pin : output->inputPins) {
+        if (pin.isRequired && !pin.IsConnected()) {
+            EmitError("Required pin '" + pin.name
+                      + "' of MaterialOutput is not connected",
+                      EErrorSeverity::Error,
+                      output->id, pin.name);
+        }
+    }
+}
+// 即使有必需引脚未连，仍可继续编译（用 ParseDefaultValue 的兜底），
+// 但 success 会因 HasErrors() 为 true 而失败——用户看到错误列表知道要补哪些连线
+```
+
+> **设计取舍**：教学版只在 `MaterialOutput` 这一层强制必需性（用户一眼能看出材质缺什么），算子层宽松（默认 0 不报错，避免教学示例被一堆"引脚未连"错误淹没）。UE 更严格，每个 `FExpressionInput` 没连都报错——因为 UE 假设用户是有意连过来才编辑的。
+
+### 检查项 4：除零（Warning 升级）
+
+第三部分的 `Divide` 在除数为常量 0 时 `ME_LOG_WARNING("Division by zero")` + 返回 `Constant(0)`。**问题**：日志只到控制台，**UI 完全看不到**。
+
+**升级**：改成 `EmitError(Warning)`——编译继续（仍返回 `Constant(0)` 兜底），但错误进 `errors_`，UI 高亮除数引脚：
+
+```cpp
+int32_t MaterialCompiler::Divide(int32_t a, int32_t b) {
+    if (a < 0 || b < 0) return -1;
+    auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
+    if (resultType == EValueType::Unknown) {
+        EmitError("Divide inputs incompatible: A=" + TypeName(GetType(a))
+                  + ", B=" + TypeName(GetType(b)),
+                  EErrorSeverity::Error,
+                  current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
+        return -1;
+    }
+
+    // 除零保护：b 是常量 0 → 编译继续，但发 Warning
+    if (IsConstant(b) && ConstantFolding::IsScalarZero(GetConstantValue(b))) {
+        EmitError("Division by zero: divisor (pin 'B') is constant 0",
+                  EErrorSeverity::Warning,
+                  current_node_ ? current_node_->id : UUID::Invalid(),
+                  /*overridePinName=*/"B");   // ← 精确到除数引脚
+        return Constant(0.0f);
+    }
+
+    // ...第三部分的折叠 + HLSL 发射不变...
+}
+```
+
+**为什么是 Warning 不是 Error**：除零在 HLSL 里行为未定义，但我们用 `Constant(0)` 兜底，shader 仍能编译运行——用户应该修但不应阻塞编译。这是"软错误"策略，对照 UE 也有很多 Warning 级编译问题不阻塞（如未使用的输入、隐式转换）。
+
+> **去重的副作用**：如果同一个 `Divide` 节点被多条路径访问（如扇出），`EmitError` 第一次会 push，第二次 `SameAs` 命中被丢弃——结果只有一个除零 Warning，不会刷屏。
+
+### UE5 对照（错误诊断部分）
+
+| 我们的 | UE 对应 | Engine 路径 |
+|--------|---------|------------|
+| `CompileError{nodeId, pinName, message, severity}` | `FMaterialCompilerError` + `UMaterialExpression::LastErrorText` | `Engine/Source/Runtime/Engine/Public/MaterialShared.h` |
+| `CompileResult::errors` 数组 | `UMaterial::CompileErrors` 数组 + `FMaterialCompileTarget` | `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp` |
+| `EmitError`（贯穿编译路径一次加全）| `Compiler->Errorf` + 各 expression `Compile` 失败时记录 | `HLSLMaterialTranslator.cpp` 各算子开头 |
+| 环检测（DFS + inStack + 路径回溯）| `IsMaterialInputLooping`（编辑时查，连线就拒）| `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp` |
+| 算子类型检查 + INDEX_NONE 哨兵传播 | 同（UE 也是 `if (A < 0) return INDEX_NONE;`）| `HLSLMaterialTranslator.cpp` 全部分发器 |
+| 编译完把错误回填 UI | `HandleMaterialCompilationErrors` 回填 `LastErrorText` + 触发 redraw | `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp:HandleMaterialCompilationErrors` |
+| 节点高亮（按 severity 着色）| `SGraphNodeMaterial` 根据 `LastErrorText` 颜色 | `Engine/Source/Editor/MaterialEditor/Private/SGraphNodeMaterial.cpp` |
+
+**三个关键差异**：
+
+1. **UE 的错误回填是后处理**：编译完后 `HandleMaterialCompilationErrors` 遍历编译器收集的错误，回填到 `UMaterialExpression::LastErrorText`，再触发节点 redraw。**我们是编译时直接带 nodeId**——`CompileInputPin` 入口设置 `current_node_`，EmitError 直接定位，省了"编译器错误 → 表达式对象"的回填层。代价：我们的错误检查和编译耦合在 `MaterialCompiler` 里，UE 是分离的（编译器只生成错误，回填由 `UMaterial` 做）。
+
+2. **UE 的环检测在编辑时**：用户连线时就调 `IsMaterialInputLooping` 拒绝循环连接，编译时不会有环——我们是编辑时允许（`Pin::CanConnectTo` 不查环），编译时查。教学版简化（编辑时每条连线都要 DFS 对教学过重），代价是用户能连出环（编译才发现）。
+
+3. **UE 错误没 pin 概念**：UE 的 `UMaterialExpression` 是类，输入是命名成员（`FExpressionInput A`），错误格式是 "line N: expression ClassName: error text"——没明确"哪个 pin"。**我们 pin 一等公民**（`Pin::name`），错误能精确到引脚，UI 引脚级高亮更直接。
+
+> **搜索关键词**（UE 源码）：`HandleMaterialCompilationErrors`、`FMaterialCompilerError`、`LastErrorText`、`IsMaterialInputLooping`、`CompileErrors`。
+
+### 已踩坑 / 注意
+
+| 坑 | 现象 | 教训 |
+|----|------|------|
+| 递归编译中途出错不短路 | 类型错误后仍生成残缺 HLSL，错上加错 | Error 级哨兵传播（算子返 -1），**当前分支**不展开，但**其他分支继续**（让多错误一轮报全）|
+| 错误不去重 | 同一类型不匹配因递归多次访问被报 N 次，错误列表刷屏 | `EmitError` 里 `SameAs` 判定，相同 node+pin+message 只存一份 |
+| 环检测错误信息太短 | 只写 "Cycle detected"，用户不知道断哪条边 | 错误信息必须含**环路节点列表**：`Add → Multiply → Subtract → Add` |
+| 节点高亮覆盖 severity | 同一节点多个错误，Warning 把 Error 盖掉（一片黄）| 按节点聚合时取**最严重**的 severity（enum 顺序 Error=0 < Warning=1 < Info=2，越小越严重，用 `std::min`）|
+| 除零只用 `ME_LOG_WARNING` | 用户在 UI 看不到（日志只到控制台）| 升级为 `EmitError(Warning)` 进 errors 列表，UI 才能高亮 |
+| 算子内 pinName 不准 | `Add` 里不知道是 A 还是 B 出错（`current_pin_` 是上游设的）| 算子内 EmitError 时**显式 override pinName**（如 `"A/B"`），不要依赖 `current_pin_` |
+| `current_node_` 未设置 | 算子里 EmitError 拿到 nodeId 为 Invalid（找不到归属节点）| `CompileInputPin` 入口必须设 `current_node_ = node`；递归回溯出栈时清空（避免下游误用上游上下文）|
+| `hlsl_code` 在失败时被清空 | 用户改不到代码面板对照 | 即使编译失败也保留部分 HLSL（错误分支被短路，其他分支正常），UI 显示残缺代码 + 错误信息 |
+| 错误带 UUID 不带 title | 用户看不懂 `deadbeef-...` 是哪个节点 | UI 显示前查 `GetNodeTitle(nodeId)` 转成节点标题；找不到才回落 UUID |
+
+> **核心设计取舍**：错误检查**贯穿编译路径一次加全**（不要"先标记后补"），因为递归编译天然带 node/pin 上下文，事后回扫反而要在两处维护同一检查。
+
+---
+
+
 ## 完成标志
 
 - [ ] `EValueType` 扩展（Float/Int/Matrix/Texture/Sampler）+ `TypeSystem` 推导
@@ -938,6 +1378,14 @@ std::cout << c.GenerateCode(outputs);
 - [ ] `AddCodeChunk` vs `AddInlinedCodeChunk` 区分
 - [ ] `compiler_test.cpp` 向量折叠断言通过（`Add(Constant3(...), Constant3(...))` 编译期算）
 - [ ] 编译通过（`CompileExpression` 的 TODO 课7 接表达式注册后端到端）
+- [ ] `CompileError` 结构定义（nodeId / pinName / message / severity）+ `EErrorSeverity` 三级
+- [ ] `CompileResult::errors` 数组 + `HasErrors()` 查询；`error_message` 作为兼容字段保留
+- [ ] `MaterialCompiler::EmitError` 收集器 + `current_node_`/`current_pin_` 上下文 + `SameAs` 去重
+- [ ] 类型不匹配检查：算子入口（Add/Sub/Mul/Div）+ `CompileInputPin` 末尾（含 Warning 级隐式窄化）
+- [ ] 环检测升级：`GraphCompiler::DetectCycle` 返回 `CycleReport{cycleNodes}`，错误信息含环路节点列表
+- [ ] 必需引脚检查：`Pin::isRequired` 字段，`MaterialOutput.BaseColor` 未连报 Error
+- [ ] 除零升级：从 `ME_LOG_WARNING` 改为 `EmitError(Warning)`，UI 可见
+- [ ] 多错误一次报全（同时构造多种错误 → 一次编译全部列出）
 
 ---
 

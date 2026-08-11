@@ -23,9 +23,6 @@ public:
         return EValueType::Unknown;
     }
 
-    // GetComponentCount 不在这里——它是纯类型属性查询，在 Types.h（free function）。
-    // 需要"类型有几个分量"时直接调 ::GetComponentCount(t)。
-
     // 类型到 HLSL 类型名
     static const char* ToHLSLType(EValueType type){
         switch (type)

@@ -1350,6 +1350,718 @@ int main(int argc, char* argv[]) {
 
 ---
 
+## 深度扩展：材质域（Material Domain）与混合模式（Blend Mode）
+
+> 本节是 PSO/BlendState 概念的进阶。基础三角形只用了 Opaque 一种 blend 模式，
+> 实际材质编辑器要支持玻璃（半透明）、火焰（加色）、UI（覆盖）、屏幕后处理等完全不同的渲染行为。
+> 这一块讲清楚：**domain + blendMode 决定了 shader 怎么生成 + PSO 怎么配**。
+
+### 为什么需要这两个枚举？
+
+一个材质编辑器要支持很多种"材质类型"：
+
+| 用途 | 例子 | 渲染行为 |
+|------|------|----------|
+| 普通不透明表面 | 墙壁、地板 | 走完整 PBR 光照，写入渲染目标 |
+| 自发光或调试 | 调试线、纯色物体 | 不参与光照，直接输出 Emissive |
+| 半透明表面 | 玻璃、水、烟 | 走 alpha 混合，需要排序 |
+| 屏幕后处理 | bloom、tone map | 输入是场景色，PS 改写整个画面 |
+| 贴花 | 弹孔、血迹 | 投影到现有几何体上 |
+| UI | 文字、按钮 | 屏幕空间，alpha 混合，无光照 |
+
+这 6 种行为在 shader 结构、blend state、光照计算上都不同。我们用两个**正交**的枚举描述：
+
+- **EMaterialDomain（材质域）** —— 决定 shader **结构**（PS 输入输出长什么样、是否走光照）
+- **EBlendMode（混合模式）** —— 决定 OM 阶段如何把 PS 输出与渲染目标**混合**
+
+UE5 在材质编辑器里**第一件事**就是让你选这两个：Domain 下拉框 + Blend Mode 下拉框。我们也照这个分工。
+
+---
+
+### 1. 枚举定义
+
+放在 `Types.h`（L2 数据模型层，零编译器/HLSL 知识，符合分层铁律）：
+
+```cpp
+// =============================================================================
+// 材质域：决定 shader 结构和光照行为
+// =============================================================================
+enum class EMaterialDomain : uint8_t {
+    Surface,            // 表面（默认）—— 走完整 PBR 光照，输出 BaseColor/Metallic/Roughness/Normal/...
+    Unlit,              // 不参与光照 —— PS 直接输出 Emissive 颜色（调试可视化、HUD）
+    PostProcess,        // 屏幕后处理 —— 输入是场景色纹理，PS 改写整个画面（bloom、tone map）
+    Decal,              // 贴花 —— 投影到现有几何体（本课程只讲概念，不实现）
+    UserInterface,      // UI —— 屏幕空间，无透视，alpha 混合
+};
+
+// =============================================================================
+// 混合模式：决定 OM 阶段如何把 PS 输出与渲染目标混合
+// =============================================================================
+enum class EBlendMode : uint8_t {
+    Opaque,             // 不透明（默认）—— PS 输出直接覆盖渲染目标，不走混合
+    Masked,             // 遮罩 —— 二值透明（要么完全画要么完全不画），用 clip() 在 PS 里剔除
+    Translucent,        // 半透明 —— SrcAlpha/InvSrcAlpha 混合（标准玻璃/水/烟）
+    Additive,           // 加色 —— One/One 混合（火焰、光效、激光）
+    Modulate,           // 调制 —— DestColor/Zero 混合（玻璃染色、彩色阴影）
+};
+
+// =============================================================================
+// 材质开关（独立的 bool 标志，影响 PSO 的其他字段）
+// =============================================================================
+struct MaterialFlags {
+    bool twoSided            = false;  // 双面渲染（关闭背面剔除 → CullMode=None）
+    bool castShadow          = true;   // 投射阴影（影响 shadow map pass，不是本课 PSO）
+    bool useTessellation     = false;  // 开启曲面细分（HS/DS 阶段，本课程不实现）
+    bool wireframe           = false;  // 线框模式（FillMode=WIREFRAME）
+    bool separateAlphaBlend  = false;  // alpha 通道用独立混合公式（IndependentBlendEnable=TRUE）
+};
+```
+
+**为什么 enum 放 Types.h 而不放在编译器层？**
+- `EBlendMode` 本身只是**数据模型的描述**，没有 HLSL 字符串
+- 真正的"HLSL 字符串生成"和"D3D12_BLEND_DESC 映射"才属于 L5 编译器/渲染层
+- 这是课 5 期间确立的分层铁律：**HLSL 字符串和 D3D12 类型不能出现在 Types.h**
+
+---
+
+### 2. domain + blendMode 影响的三层（核心原理）
+
+材质域和混合模式不只是一个"配置"，它会同时影响**三个独立层面**：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  影响 1：shader 结构（课 8 HLSL 生成的核心输入）              │
+│  ─────────────────────────────────────────                  │
+│  - Surface domain：PS 输出 FMaterialAttributes（BaseColor/  │
+│    Metallic/Roughness/Normal/Emissive/...），走 PBR BRDF    │
+│  - Unlit domain：PS 输出 float3 Emissive，直接 return       │
+│  - PostProcess domain：PS 输入 SceneColorTexture，输出      │
+│    float3 改写后颜色（全屏三角形，不需要模型几何）           │
+│  - UserInterface domain：PS 输出 float4(RGBA)，alpha 用于混合│
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  影响 2：blend state（本课 PSO 的 D3D12_BLEND_DESC）          │
+│  ─────────────────────────────────                          │
+│  - Opaque   → BlendEnable=FALSE                            │
+│  - Masked   → BlendEnable=FALSE，但 PS 里 clip(opacity-cut) │
+│  - Translucent → SrcAlpha/InvSrcAlpha, BlendEnable=TRUE    │
+│  - Additive → One/One, BlendEnable=TRUE                    │
+│  - Modulate → DestColor/Zero, BlendEnable=TRUE             │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  影响 3：光照（编译器决定是否生成光照代码）                   │
+│  ─────────────────────────────────                          │
+│  - Surface    → 调用 CalcPBRLighting()，受多盏灯影响         │
+│  - Unlit      → 直接 Emissive * 1，不调用光照                │
+│  - PostProcess → 完全没有光照概念                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**关键认知**：domain 决定 **"shader 长什么样"**，blendMode 决定 **"PS 输出后 OM 阶段做什么"**。两者**正交**但都有约束（见第 6 节合法组合表）。
+
+---
+
+### 3. 对 shader 结构的影响（GenerateCode 分支）
+
+课 8 的 `GenerateCode()` 是把材质节点图翻译成 HLSL。**第一步就要看 domain** 来决定生成什么模板的 PS。下面是概念性参考代码（实际实现见课 8）：
+
+```cpp
+// =============================================================================
+// MaterialCodeGenerator::GeneratePixelShader
+// =============================================================================
+// 根据 domain 生成完全不同的 PS 模板
+// 注意：本课程只完整实现 Surface 和 Unlit；PostProcess/Decal/UI 只讲结构
+// =============================================================================
+std::string MaterialCodeGenerator::GeneratePixelShader(const Material& mat) {
+    std::string out;
+
+    // 重要：blendMode 不是运行时 if，而是编译期宏
+    // GenerateCode 必须把它"烤"进 shader 文本（#define），否则 PS 性能崩塌
+    out += fmt::format("#define BLEND_MODE_MASKED {}\n",
+                       mat.blendMode == EBlendMode::Masked ? 1 : 0);
+    out += fmt::format("#define OPACITY_MASK_CLIP_VALUE {:.2f}\n",
+                       mat.opacityMaskClipValue);
+
+    switch (mat.domain) {
+        case EMaterialDomain::Surface: {
+            // Surface 域：PS 输出 FMaterialAttributes 结构体
+            // 走完整 PBR 光照（见课 17）
+            out += R"hlsl(
+                struct FMaterialAttributes {
+                    float3 BaseColor;
+                    float  Metallic;
+                    float  Roughness;
+                    float3 Normal;
+                    float3 Emissive;
+                    float  Opacity;
+                    float  AO;
+                };
+
+                float4 main(VSOutput In) : SV_TARGET {
+                    FMaterialAttributes M = CalcMaterialAttributes(In);  // 采样节点图
+                    ApplyWorldPositionOffset(M, In);
+
+                    // Masked 模式：二值透明（要么画要么不画）
+                    // 关键：必须在光照计算之前 clip，否则被剔除的像素白跑 PBR
+                    #if BLEND_MODE_MASKED
+                        clip(M.Opacity - OPACITY_MASK_CLIP_VALUE);  // 默认 0.5
+                    #endif
+
+                    // 走 PBR 光照（Opaque/Masked 走完整光照；
+                    //               Translucent 也走光照但 alpha 通道输出）
+                    float3 litColor = CalcPBRLighting(M, In);
+
+                    // Opaque/Masked 输出 alpha=1.0；Translucent 输出材质 Opacity
+                    #if BLEND_MODE_MASKED
+                        float alpha = 1.0;  // Masked 已经 clip 了，剩下都是不透明的
+                    #else
+                        float alpha = M.Opacity;
+                    #endif
+
+                    return float4(litColor + M.Emissive, alpha);
+                }
+            )hlsl";
+            break;
+        }
+
+        case EMaterialDomain::Unlit: {
+            // Unlit 域：直接输出 Emissive，不走光照
+            // 用于调试可视化、HUD 元素、纯色物体
+            out += R"hlsl(
+                float4 main(VSOutput In) : SV_TARGET {
+                    float3 emissive = CalcEmissive(In);  // 用户连的 Emissive 输入
+                    return float4(emissive, 1.0);
+                }
+            )hlsl";
+            break;
+        }
+
+        case EMaterialDomain::PostProcess: {
+            // PostProcess 域：输入 SceneColor，输出改写后的颜色
+            // 关键：全屏三角形（VS 里硬编码 NDC 顶点），不需要模型几何
+            out += R"hlsl(
+                Texture2D    SceneColorTex;   // 由渲染器绑定（课 17 的场景色 RTV）
+                SamplerState LinearSampler;
+
+                float4 main(float2 uv : TEXCOORD0) : SV_TARGET {
+                    float3 sceneColor = SceneColorTex.Sample(LinearSampler, uv).rgb;
+                    float3 result = ApplyPostProcess(sceneColor, uv);  // bloom/tonemap/...
+                    return float4(result, 1.0);
+                }
+            )hlsl";
+            break;
+        }
+
+        case EMaterialDomain::UserInterface: {
+            // UI 域：屏幕空间，alpha 用于 SrcAlpha 混合
+            out += R"hlsl(
+                float4 main(VSOutput In) : SV_TARGET {
+                    float4 color = CalcUIColor(In);  // 通常采样 UI 纹理
+                    return color;  // alpha 走 OM 阶段的 SrcAlpha 混合
+                }
+            )hlsl";
+            break;
+        }
+
+        case EMaterialDomain::Decal: {
+            // Decal 域：本课程不实现（需要第二个 GBuffer 子集 + 深度 bias）
+            // UE5 用DeferredDecalDrawingPolicy + 特殊几何体投影
+            ME_LOG_WARNING("Decal domain 暂未实现，回退到 Surface");
+            return GeneratePixelShader(/* domain=Surface 同样的 mat */);
+        }
+    }
+
+    return out;
+}
+```
+
+**已踩坑**：
+- **blendMode 必须烤成 #define 宏，不能在 HLSL 里运行时判断**：`if (blendMode == Masked)` 这种代码无效，因为 shader 里没有 blendMode 变量（blendMode 是 C++ enum）。所有"模式相关"的分支都用 `#if BLEND_MODE_MASKED` 编译期宏。
+- **Masked 的 `clip()` 必须在光照之前**：被剔除的像素不应该再跑昂贵的 PBR，否则浪费 GPU。
+- **PostProcess 域不依赖模型顶点**：通常画一个全屏三角形（VS 硬编码 NDC 坐标，覆盖整个屏幕），完全不走模型 vertex buffer。
+- **Unlit 在 UE5 里不是 domain**：UE5 的 Unlit 是 ShadingModel（ shading model = Unlit），不是 MaterialDomain。我们简化为单独的 domain，教学上更清晰，但**实现上与 UE5 不对应**——这点要在文档里说清楚。
+
+---
+
+### 4. 对 DX12 BlendState 的影响（本课核心）
+
+这是 BlendState 的进阶版。基础三角形的 BlendState 是 Opaque（关闭混合）。下面给出**每种 blendMode 的完整 D3D12 配置表**。
+
+#### 4.1 D3D12_RENDER_TARGET_BLEND_DESC 配置表
+
+`D3D12_BLEND_DESC.RenderTarget[0]` 是 `D3D12_RENDER_TARGET_BLEND_DESC`，11 个字段。下表给出每种 blendMode 的标准配置：
+
+| 字段 | Opaque | Masked | Translucent | Additive | Modulate |
+|------|--------|--------|-------------|----------|----------|
+| `BlendEnable` | FALSE | FALSE | TRUE | TRUE | TRUE |
+| `LogicOpEnable` | FALSE | FALSE | FALSE | FALSE | FALSE |
+| `SrcBlend` | ONE | ONE | SRC_ALPHA | ONE | DEST_COLOR |
+| `DestBlend` | ZERO | ZERO | INV_SRC_ALPHA | ONE | ZERO |
+| `BlendOp` | ADD | ADD | ADD | ADD | ADD |
+| `SrcBlendAlpha` | ONE | ONE | ONE | ONE | ONE |
+| `DestBlendAlpha` | ZERO | ZERO | INV_SRC_ALPHA | ONE | ZERO |
+| `BlendOpAlpha` | ADD | ADD | ADD | ADD | ADD |
+| `RenderTargetWriteMask` | ALL | ALL | ALL | ALL | ALL |
+| `LogicOp` | NOOP | NOOP | NOOP | NOOP | NOOP |
+
+**说明（为什么这么配）**：
+
+- **Opaque**：`BlendEnable=FALSE`，PS 输出直接覆盖渲染目标。`SrcBlend/DestBlend` 没用（因为 BlendEnable 关了），但 DX12 要求**仍然填合理值**，否则某些驱动会报警告。约定填 `ONE/ZERO`。
+- **Masked**：本质上是不透明的（不混合），但 PS 里用 `clip(opacity - cutoff)` 二值剔除。`BlendEnable=FALSE`，blend 公式同 Opaque。**关键区别在 PS 不在 blend state**。
+- **Translucent**：经典的 alpha 混合。`FinalColor = SrcColor * SrcAlpha + DestColor * (1 - SrcAlpha)`。alpha 通道用 `ONE/INV_SRC_ALPHA`（把源的 alpha 累加到目标的 alpha）。
+- **Additive**：相加。`FinalColor = SrcColor + DestColor`。用于发光体（火焰、激光、光晕），永远不会变暗。
+- **Modulate**：乘法。`FinalColor = SrcColor * DestColor`。用于彩色玻璃、太阳镜、染色阴影。
+
+#### 4.2 参考实现：MakeBlendDesc(EBlendMode)
+
+放在 `Renderer/Public/BlendStateHelpers.h`（L5 渲染层，因为依赖 D3D12 头文件）：
+
+```cpp
+#pragma once
+#include <d3d12.h>
+#include "MaterialGraph/Types.h"  // EBlendMode / EMaterialDomain / MaterialFlags 在这里
+
+// =============================================================================
+// MakeBlendDesc —— 根据材质的 EBlendMode 生成 D3D12_BLEND_DESC
+// =============================================================================
+// 调用时机：创建 PSO 时（PSO 不可变，blendMode 一旦确定就编译进 PSO）
+// 注意：PSO 一旦创建就不能改 blendMode，要换就得新建 PSO
+// =============================================================================
+inline D3D12_BLEND_DESC MakeBlendDesc(EBlendMode mode) {
+    D3D12_BLEND_DESC desc = {};
+    desc.AlphaToCoverageEnable = FALSE;        // 不用 MSAA alpha-to-coverage
+                                                // (Masked + MSAA 时可以开，本课程不用)
+    desc.IndependentBlendEnable = FALSE;       // 所有 RTV 共用一套混合公式
+                                                // (MRT 各自配 blend 时设 TRUE)
+
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = desc.RenderTarget[0];
+    rt.LogicOpEnable      = FALSE;             // 不用逻辑运算（与 Blend 互斥）
+    rt.BlendOp            = D3D12_BLEND_OP_ADD;
+    rt.BlendOpAlpha       = D3D12_BLEND_OP_ADD;
+    rt.LogicOp            = D3D12_LOGIC_OP_NOOP;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    switch (mode) {
+        case EBlendMode::Opaque:
+            // 不混合：PS 输出直接覆盖渲染目标
+            rt.BlendEnable    = FALSE;
+            rt.SrcBlend       = D3D12_BLEND_ONE;
+            rt.DestBlend      = D3D12_BLEND_ZERO;
+            rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+            break;
+
+        case EBlendMode::Masked:
+            // 不混合（PS 内部 clip() 决定画不画），配置同 Opaque
+            rt.BlendEnable    = FALSE;
+            rt.SrcBlend       = D3D12_BLEND_ONE;
+            rt.DestBlend      = D3D12_BLEND_ZERO;
+            rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+            break;
+
+        case EBlendMode::Translucent:
+            // 经典 alpha 混合：FinalColor = Src*SrcAlpha + Dst*(1-SrcAlpha)
+            rt.BlendEnable    = TRUE;
+            rt.SrcBlend       = D3D12_BLEND_SRC_ALPHA;
+            rt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
+            rt.SrcBlendAlpha  = D3D12_BLEND_ONE;          // alpha 通道：Src.a + Dst.a*(1-Src.a)
+            rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+            break;
+
+        case EBlendMode::Additive:
+            // 加色混合：FinalColor = Src + Dst（火焰、激光、光效）
+            // 注意：SrcBlend=ONE 而非 SRC_ALPHA，这样不带 alpha 也加得很强
+            rt.BlendEnable    = TRUE;
+            rt.SrcBlend       = D3D12_BLEND_ONE;
+            rt.DestBlend      = D3D12_BLEND_ONE;
+            rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha = D3D12_BLEND_ONE;
+            break;
+
+        case EBlendMode::Modulate:
+            // 乘法混合：FinalColor = Src * Dst（染色玻璃、彩色阴影）
+            // DX12 公式：FinalColor = SrcBlend * Src + DestBlend * Dst
+            //          = DEST_COLOR * Src + ZERO * Dst = Dst * Src ✓
+            rt.BlendEnable    = TRUE;
+            rt.SrcBlend       = D3D12_BLEND_DEST_COLOR;
+            rt.DestBlend      = D3D12_BLEND_ZERO;
+            rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+            break;
+    }
+
+    return desc;
+}
+
+// =============================================================================
+// 辅助：根据材质 flags 调整 D3D12_RASTERIZER_DESC
+// =============================================================================
+inline D3D12_CULL_MODE MakeCullMode(bool twoSided) {
+    // twoSided=true → 两面都画（关闭背面剔除）
+    // twoSided=false → 默认行为（剔除背面，DX 顺时针为正面）
+    return twoSided ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK;
+}
+
+inline D3D12_FILL_MODE MakeFillMode(bool wireframe) {
+    return wireframe ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
+}
+
+// =============================================================================
+// 辅助：半透明模式必须改深度状态（不写深度，否则挡住后面的半透明物体）
+// =============================================================================
+inline D3D12_DEPTH_WRITE_MASK MakeDepthWriteMask(EBlendMode mode) {
+    // Translucent/Additive/Modulate 都不写深度（需要排序）
+    // Opaque/Masked 正常写深度
+    if (mode == EBlendMode::Opaque || mode == EBlendMode::Masked) {
+        return D3D12_DEPTH_WRITE_MASK_ALL;
+    }
+    return D3D12_DEPTH_WRITE_MASK_ZERO;
+}
+```
+
+#### 4.3 在 PSO 创建时使用
+
+把课 15 的 `Init()` 第 4 步替换为：
+
+```cpp
+// === 从材质资源读取元数据（材质编辑器的核心连接点）===
+// 假设 DX12Pipeline 持有当前材质资源的指针（由 UI 层传入）
+const Material* mat = graph_->GetMaterial();
+if (!mat) {
+    ME_LOG_ERROR("材质资源为空，无法创建 PSO");
+    return;
+}
+
+// --- 混合状态（按 blendMode 配置）---
+psoDesc.BlendState = MakeBlendDesc(mat->blendMode);
+
+// --- 光栅化状态（按 flags 配置）---
+D3D12_RASTERIZER_DESC rasterizerDesc    = {};
+rasterizerDesc.FillMode                 = MakeFillMode(mat->flags.wireframe);
+rasterizerDesc.CullMode                 = MakeCullMode(mat->flags.twoSided);
+rasterizerDesc.FrontCounterClockwise    = FALSE;
+rasterizerDesc.DepthBias                = 0;
+rasterizerDesc.DepthBiasClamp           = 0.0f;
+rasterizerDesc.SlopeScaledDepthBias     = 0.0f;
+rasterizerDesc.DepthClipEnable          = TRUE;
+rasterizerDesc.MultisampleEnable        = FALSE;
+rasterizerDesc.AntialiasedLineEnable    = FALSE;
+rasterizerDesc.ForcedSampleCount        = 0;
+rasterizerDesc.ConservativeRaster       = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+psoDesc.RasterizerState = rasterizerDesc;
+
+// --- 深度状态（半透明时不写深度）---
+D3D12_DEPTH_STENCIL_DESC depthStencilDesc   = {};
+depthStencilDesc.DepthEnable                = TRUE;   // 假设课 16 已开深度缓冲
+depthStencilDesc.DepthWriteMask             = MakeDepthWriteMask(mat->blendMode);
+depthStencilDesc.DepthFunc                  = D3D12_COMPARISON_FUNC_LESS;
+depthStencilDesc.StencilEnable              = FALSE;
+psoDesc.DepthStencilState = depthStencilDesc;
+```
+
+**重要**：PSO 是**不可变**的。每种 (domain, blendMode) 组合需要独立的 PSO。材质编辑器需要维护一个 PSO 缓存，按 `(shaderHash, blendMode, flags)` 三元组键值缓存。这是课 16+ PSO 缓存的工作，本课先打通"一个材质 → 一个 PSO"的基础流程。
+
+---
+
+### 5. 材质属性的存储与传递
+
+domain/blendMode 是材质级别的元数据，不是节点。放在哪里？
+
+#### 5.1 选择：Material 类（Graph 的元数据包装）
+
+```cpp
+// =============================================================================
+// Material —— 材质资源（Graph 的元数据包装）
+// =============================================================================
+// 这个类是"材质资产"的概念，对应 UE5 的 UMaterial。
+// 它持有节点图（Graph）和材质级元数据（domain/blendMode/flags）。
+// 编译时（GenerateCode）和 PSO 创建时（MakeBlendDesc）都读这些字段。
+// =============================================================================
+class Material {
+public:
+    // === 节点图 ===
+    Graph* graph = nullptr;     // 课 4 的节点图数据模型
+
+    // === 材质级元数据（编译 + PSO 都读）===
+    EMaterialDomain  domain    = EMaterialDomain::Surface;
+    EBlendMode       blendMode = EBlendMode::Opaque;
+    MaterialFlags    flags;
+
+    // === Masked 模式的 alpha cutoff 阈值 ===
+    float opacityMaskClipValue = 0.5f;   // UE5 默认也是 0.5
+
+    // === 序列化（JSON）===
+    // 注意：domain/blendMode 是 enum class，JSON 要先转 int
+    nlohmann::json toJson() const {
+        return {
+            {"domain",               static_cast<int>(domain)},
+            {"blendMode",            static_cast<int>(blendMode)},
+            {"twoSided",             flags.twoSided},
+            {"castShadow",           flags.castShadow},
+            {"useTessellation",      flags.useTessellation},
+            {"wireframe",            flags.wireframe},
+            {"separateAlphaBlend",   flags.separateAlphaBlend},
+            {"opacityMaskClipValue", opacityMaskClipValue},
+        };
+    }
+
+    void fromJson(const nlohmann::json& j) {
+        // 范围检查！防止用户手改 JSON 写了个 99 进来
+        int d = j.value("domain", 0);
+        int b = j.value("blendMode", 0);
+        if (d < 0 || d > 4) {
+            ME_LOG_WARNING("domain 值 %d 越界，回退到 Surface", d);
+            d = 0;
+        }
+        if (b < 0 || b > 4) {
+            ME_LOG_WARNING("blendMode 值 %d 越界，回退到 Opaque", b);
+            b = 0;
+        }
+        domain    = static_cast<EMaterialDomain>(d);
+        blendMode = static_cast<EBlendMode>(b);
+        // ... 其他字段
+    }
+};
+```
+
+#### 5.2 编译时的调用链
+
+```
+用户在 UI 里设置 domain=Surface, blendMode=Translucent
+        ↓
+存进 Material 资源（toJson 持久化到 .mat 文件）
+        ↓
+点击"编译"按钮
+        ↓
+GraphCompiler::Compile(Material&) 同时把 domain/blendMode 喂给两条管线：
+        ├── → MaterialCodeGenerator::GeneratePixelShader(material)
+        │       根据 domain 选 PS 模板，根据 blendMode 决定 clip() 分支
+        │       产出 HLSL 字符串
+        │
+        └── （等运行时）PSO 创建调用 MakeBlendDesc(material.blendMode)
+                根据 blendMode 选 D3D12_BLEND_DESC 配置
+                产出 D3D12 PSO
+```
+
+**关键点**：HLSL 生成时和 PSO 创建时**都要**读 domain/blendMode，但读不同的字段：
+- **HLSL 生成**：关心 **domain**（决定 PS 结构）+ **blendMode**（决定是否生成 `clip()` 代码）
+- **PSO 创建**：关心 **blendMode**（决定 D3D12_BLEND_DESC）+ **flags.twoSided**（决定 cull mode）+ **flags.wireframe**（决定 fill mode）
+
+---
+
+### 6. domain × blendMode 的合法组合
+
+**不是所有组合都合法**。下表对标 UE5：
+
+| domain ＼ blendMode | Opaque | Masked | Translucent | Additive | Modulate |
+|---------------------|--------|--------|-------------|----------|----------|
+| **Surface**         | OK     | OK     | OK          | OK       | OK       |
+| **Unlit**           | OK     | -      | OK          | OK       | OK       |
+| **PostProcess**     | -      | -      | OK          | OK       | OK       |
+| **Decal**           | -      | OK     | OK          | -        | OK       |
+| **UserInterface**   | -      | -      | OK          | OK       | -        |
+
+**典型用例**：
+- `Surface + Opaque` —— 默认组合（墙壁、地板）
+- `Surface + Masked` —— 树叶、铁丝网（透明部分完全不画）
+- `Surface + Translucent` —— 玻璃、水（标准 alpha 混合）
+- `Unlit + Translucent` —— 火焰的烟（颜色直接来自纹理，但需要 alpha 混合）
+- `Unlit + Additive` —— 激光束、能量场（颜色叠加，无光照）
+- `PostProcess + Translucent` —— bloom 的最终合成
+- `Decal + Masked` —— 不透明的贴花（弹孔）
+- `UserInterface + Translucent` —— UI 标准组合
+
+**编译期校验**：`GraphCompiler::Validate()` 应在编译前检查这些组合，遇到非法组合报错（"PostProcess 域不支持 Opaque blend mode"）。
+
+```cpp
+bool ValidateDomainBlendCombo(EMaterialDomain d, EBlendMode b) {
+    switch (d) {
+        case EMaterialDomain::Surface:
+            return true;  // Surface 支持所有 blendMode
+        case EMaterialDomain::Unlit:
+            return b != EBlendMode::Masked;  // Unlit 没有 opacity 概念
+        case EMaterialDomain::PostProcess:
+            return b == EBlendMode::Translucent ||
+                   b == EBlendMode::Additive  ||
+                   b == EBlendMode::Modulate;
+        case EMaterialDomain::Decal:
+            return b == EBlendMode::Masked    ||
+                   b == EBlendMode::Translucent ||
+                   b == EBlendMode::Modulate;
+        case EMaterialDomain::UserInterface:
+            return b == EBlendMode::Translucent ||
+                   b == EBlendMode::Additive;
+    }
+    return false;
+}
+```
+
+---
+
+### 7. UE5 对照
+
+UE5 的材质系统就是这套设计（我们的目标就是理解它）。
+
+#### 7.1 枚举定义位置
+
+- **EMaterialDomain**：`Engine/Source/Runtime/Engine/Public/Engine/EngineTypes.h`
+  - 搜索 `enum class EMaterialDomain` —— UE5 有 9 个值（比我们多：`DeferredDecal`、`Volume`、`LightFunction`、`VolumetricHeightFog` 等）
+  - 我们的 `Decal` ≈ UE5 的 `DeferredDecal`
+  - 我们的 `Unlit` 在 UE5 **不是 domain**，而是 ShadingModel（这点要注意，前面已说明）
+- **EBlendMode**：同文件，搜索 `enum class EBlendMode`
+  - UE5 也是 5 个值，与我们的完全对齐：`Opaque`、`Masked`、`Translucent`、`Additive`、`Modulate`
+  - 新版 UE5 还加了 `AlphaComposite`（用于 D3D11-only 的特殊混合），可忽略
+
+#### 7.2 关键 API（FMaterial）
+
+UE5 的材质 C++ 类 `FMaterial`（编辑器侧）和 `FMaterialResource`（编译后）提供查询接口，对应 `Engine/Source/Runtime/Engine/Public/MaterialShared.h`：
+
+- `FMaterial::GetBlendMode()` —— 返回 EBlendMode
+- `FMaterial::GetMaterialDomain()` —— 返回 EMaterialDomain
+- `FMaterial::IsTranslucentBlendMode()` —— 便利查询（决定是否走透明 pass、是否需要排序）
+- `FMaterial::IsMasked()` —— 便利查询（决定是否生成 clip 代码）
+- `FMaterial::NeedsGBuffer()` —— 决定是否写入 GBuffer（延迟渲染）
+- `FMaterial::NeedsUnlitViewMode()` —— 调试用（unlit 着色器替换）
+- `FMaterial::WritesEveryPixel()` —— 是否覆盖每个像素（Opaque=true，Masked/Translucent=false）
+
+**重点搜索**：`MaterialShared.cpp` 搜索 `IsTranslucentBlendMode` 实现，能看到 UE5 怎么判断（mask Out Opaque 和 Masked）。
+
+#### 7.3 shader 模板中的分支
+
+- **MaterialTemplate.ush**：`Engine/Shaders/Private/MaterialTemplate.ush`
+  - 顶部 `#define MATERIAL_DOMAIN_SURFACE` 等宏（编译时由材质资源决定值）
+  - 搜索 `MATERIAL_DOMAIN_POSTPROCESS` —— 大量 `#if` 分支
+  - 关键结构 `FMaterialPixelShaderParams`、`GetMaterialEmissive`、`GetMaterialBaseColor` 等
+  - **Masked 的 clip 代码**：搜索 `GetOpacityMask` + `clip`，UE5 在 `MaterialTemplate.ush` 里硬编码 `clip(MaterialExpressionOpacityMask - OpacityMaskClipValue)`
+
+- **HLSLMaterialTranslator.cpp**：`Engine/Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.cpp`
+  - `FHLSLMaterialTranslator::GetMaterialDomain()` —— 决定生成哪个 domain 的代码
+  - 搜索 `MaterialDomain == MD_PostProcess` 看分支
+  - 这是课 6-8 编译器的核心参考
+
+#### 7.4 D3D12 BlendState 创建
+
+- **D3D12PipelineState.cpp**：`Engine/Source/Runtime/D3D12RHI/Private/D3D12PipelineState.cpp`
+  - 搜索 `FD3D12PipelineState::Init`、`BlendDesc`、`RenderTargetsBlendState`
+  - UE5 用 `FD3D12BlendState` RHI 层封装，由 RHI 转换 EBlendMode 到 D3D12_BLEND_DESC
+- 实际转换函数：`FD3D12DynamicRHI::TranslateBlendState` 或类似（不同 UE 版本位置略异）
+- **关键观察**：UE5 把 BlendState 也做成 RHI 资源（`FRHIBlendState`），缓存复用，避免每次创建 PSO 都重新填一遍——这就是我们 MakeBlendDesc 函数的"工程化升级方向"
+
+#### 7.5 对照表
+
+| 概念 | UE5 | 我们 |
+|------|-----|------|
+| 材质域枚举 | `EMaterialDomain`（9 值） | `EMaterialDomain`（5 值，简化） |
+| 混合模式枚举 | `EBlendMode`（5 值） | `EBlendMode`（5 值，完全对齐） |
+| Unlit 表达 | ShadingModel=Unlit（不是 domain） | 单独的 domain（教学简化） |
+| 材质元数据存储 | `UMaterial::BlendMode` / `MaterialDomain` | `Material::blendMode` / `domain` |
+| 编译期查询 | `FMaterial::IsMasked()` 等 | 直接读 `mat.blendMode` |
+| shader 模板 | `MaterialTemplate.ush` 用 `#if MATERIAL_DOMAIN_*` | `GeneratePixelShader` 用 switch |
+| D3D12 blend 转换 | `FD3D12BlendState` RHI 资源 | `MakeBlendDesc` inline 函数 |
+| PSO 缓存 | `FD3D12PipelineStateCache` | （课 16+ 实现） |
+
+---
+
+### 8. 集成步骤（落地清单）
+
+按这个顺序加进项目：
+
+1. **L2 数据模型**（`Types.h`）：加 `EMaterialDomain`、`EBlendMode`、`MaterialFlags` 枚举/结构。**不引入任何 HLSL/D3D12 类型**。
+2. **L2 数据模型**（新 `Material.h` 或 `Graph.h`）：加 `Material` 类，持有 `Graph*` 和材质元数据。实现 `toJson/fromJson` 序列化（注意 enum class 范围检查）。
+3. **L5 编译器**（`GraphCompiler`）：在 `Compile(Material&)` 入口处读取 domain/blendMode，传给 code generator。加 `ValidateDomainBlendCombo()` 检查合法组合（见第 6 节）。
+4. **L5 编译器**（`MaterialCodeGenerator`，课 8）：`GeneratePixelShader` 按 domain switch，按 blendMode 决定是否生成 `clip()` 代码。把 blendMode 烤成 `#define` 宏。
+5. **L5 渲染**（新 `BlendStateHelpers.h`）：加 `MakeBlendDesc(EBlendMode)`、`MakeCullMode(bool)`、`MakeFillMode(bool)`、`MakeDepthWriteMask(EBlendMode)` 内联函数。
+6. **L5 渲染**（`DX12Pipeline::Init`）：把硬编码的 `blendDesc` 替换为 `MakeBlendDesc(mat->blendMode)`，cull mode 用 `MakeCullMode(mat->flags.twoSided)`，深度写掩码用 `MakeDepthWriteMask(mat->blendMode)`。
+7. **UI**（课 10-13）：材质编辑器属性面板加 Domain 下拉框、Blend Mode 下拉框、Two Sided 复选框、Opacity Mask Clip Value 滑块。改值后 dirty 标记，触发重编译。
+8. **PSO 缓存**（课 16+）：按 `(shaderHash, blendMode, flags)` 三元组缓存 PSO，避免重复创建。
+
+---
+
+### 9. 已踩坑与注意事项
+
+#### 9.1 Masked 的 opacity clip 阈值
+
+- **默认 0.5**：UE5 也是 0.5。材质编辑器允许用户调整（0~1 之间）。
+- **必须在光照前 clip**：否则被剔除的像素仍然跑完了昂贵的 PBR，浪费 GPU。
+- **不能在 PS 末尾才 clip**：要在采样材质属性之后立即 clip（在调用 `CalcPBRLighting` 之前）。
+- **clip 不是 discard**：DX12 HLSL 的 `clip(x)` 等价于 `if (x < 0) discard;`，是硬件指令，不会有性能损失。注意 `discard` 在 DX12 里其实叫 `clip`（GLSL 才叫 `discard`）。
+- **depth buffer 写入**：Masked 模式仍然写入深度（与 Opaque 一样），所以深度测试正常工作。**Translucent 不写深度**，需要排序。
+
+#### 9.2 Translucent 的排序问题
+
+- **半透明物体必须从后向前画**，否则深度测试会拒绝被前面物体挡住的像素。
+- UE5 的 `TranslucencyDrawingPolicy` 按（距相机距离）排序。
+- **不要在半透明物体上写深度**（`DepthWriteMask = ZERO`），否则它会挡住后面的半透明物体。
+- DX12 配置：`DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO`（半透明时）。这就是 `MakeDepthWriteMask()` 函数存在的理由。
+- **不透明物体先画**，画完关深度写，再画半透明（这是渲染管线标准顺序）。
+
+#### 9.3 Decal 需要额外的 RTV 和深度 bias
+
+- 我们的课程**不实现 Decal**，因为它需要：
+  - 第二个 RTV（GBuffer 的子集）
+  - 特殊的几何体（贴花的 AABB 盒子）
+  - 深度 bias（避免 z-fighting）
+- UE5 的 `DeferredDecal` 是个内部 hack，超出我们课程范围。如果你只是想"看上去像贴花"，可以用 `Surface + Masked` + 特殊纹理代替。
+
+#### 9.4 PSO 创建失败的 blend 相关原因
+
+- **LogicOpEnable 和 BlendEnable 互斥**：不能同时为 TRUE。
+- **IndependentBlendEnable=FALSE 时**：只读 `RenderTarget[0]`，其他 7 个被忽略。但如果你后续开 MRT，要全部正确填充。
+- **BlendOp 和 SrcBlend/DestBlend 不匹配**：某些组合虽然合法但毫无意义（如 SrcBlend=INV_SRC_ALPHA 配 BlendOp=REV_SUBTRACT），驱动会接受但效果奇怪。
+- **PostProcess 域 + MSAA**：通常关闭 MSAA（全屏三角形不需要），否则 DepthClipEnable 和 SampleDesc.Count 要对应。
+
+#### 9.5 enum class 转 JSON 的坑
+
+- `nlohmann::json` 不能直接序列化 `enum class`（不是 int 也不是 string）。
+- 必须显式 `static_cast<int>(mode)` 或写 `NLOHMANN_JSON_SERIALIZE_ENUM` 宏。
+- **反序列化时要做范围检查**（防止用户手改 JSON 写了个 99 进去）—— 见第 5.1 节 `fromJson` 的实现。
+
+#### 9.6 domain 改变 = 完全重编译
+
+- domain 是 shader 结构的根本决定因素，不能像 blendMode 那样只改 PSO。
+- 用户改 domain 时，**必须**触发完全重编译（重新跑 GraphCompiler）。
+- UI 应在改 domain 时弹"这将清空所有节点连接"的确认框（因为不同 domain 需要的输出节点不同：Surface 需要 BaseColor/Metallic 等，Unlit 只需要 Emissive，PostProcess 只需要 PostProcessInput）。
+
+#### 9.7 Additive 模式的"颜色越叠越白"
+
+- `FinalColor = Src + Dst`，多次叠加会很快饱和到 (1,1,1) 白色。
+- 这是物理正确的（光叠加就是能量叠加），但美术常抱怨"调不出柔和的发光"。
+- 解决：让 PS 输出的颜色乘以一个小系数（如 0.3），或用 HDR 渲染目标（R16G16B16A16_FLOAT）+ 后处理 tonemap。
+
+#### 9.8 blendMode 的宏定义命名冲突
+
+- 不要在 HLSL 里直接用 `MASKED`、`OPAQUE` 这种短名字做宏，会和引擎其它定义冲突。
+- 推荐 `BLEND_MODE_MASKED`、`BLEND_MODE_TRANSLUCENT` 这种带前缀的命名。
+
+---
+
+### 10. 自测问题
+
+回答这几个问题来检查理解：
+
+1. **为什么 Opaque 和 Masked 的 `D3D12_BLEND_DESC` 完全一样？** 它们的区别在哪？
+   <details><summary>提示</summary>区别在 PS（Masked 在 PS 里 clip），不在 OM 阶段。两者都 BlendEnable=FALSE。</details>
+
+2. **Additive 模式画一片黑色像素（PS 输出 (0,0,0)），渲染目标颜色会变吗？** 为什么？
+   <details><summary>提示</summary>不会。FinalColor = Src + Dst = (0,0,0) + Dst = Dst。黑色加任何颜色都不变。</details>
+
+3. **`Surface + Masked` 和 `Surface + Translucent` 都能让部分像素不显示，区别是什么？**
+   <details><summary>提示</summary>Masked 是二值（全画/全不画），有硬边；Translucent 是连续 alpha（部分混合），有柔边。Masked 写深度，Translucent 不写。</details>
+
+4. **如果一个材质的 `domain=PostProcess`，但用户连了 BaseColor 节点，应该怎么处理？**
+   <details><summary>提示</summary>编译期警告或忽略。PostProcess 域只认 PostProcessInput（场景色），BaseColor/Metallic 等是无意义的。</details>
+
+5. **UE5 的 `IsTranslucentBlendMode()` 函数会返回 true 的 blendMode 有哪些？** 为什么 Masked 不算 translucent？
+   <details><summary>提示</summary>Translucent/Additive/Modulate。Masked 本质是不透明的（写深度、不混合），只是用 clip 剔除部分像素。</details>
+
+6. **为什么 Translucent 模式必须 `DepthWriteMask=ZERO`，但 Masked 必须保持深度写入？**
+   <details><summary>提示</summary>Translucent 写深度会挡住后面的半透明物体；Masked 像素要么画要么不画，画的部分应该正常参与深度测试。</details>
+
+---
+
 ## UE5 参考
 
 UE5 的 DX12 实现分散在 `D3D12RHI` 模块中。以下文件展示了 UE5 如何处理本课涉及的概念：
@@ -1375,17 +2087,11 @@ UE5 的 DX12 实现分散在 `D3D12RHI` 模块中。以下文件展示了 UE5 �
 - UE5 不会像我们这样调用 `D3DCompileFromFile`，而是用自研的着色器编译管线（Shader Compiler）
 - 搜索 `FHLSLMaterialTranslator`、`Compile`、`GenerateCode`
 
-### 扩展预告：多进程 shader 编译（块7，见 `lesson06-extension.md`）
+### 多进程 shader 编译（见课16）
 
 本课的 `CompileShader` 是**单进程运行时编译**（`D3DCompileFromFile`），适合学习调试。但一个材质项目有**上万 shader 变体**，单进程串行编译会很慢。
 
-`lesson06-extension.md` 的**块7**规划了**多进程 shader 编译集成**（对标 UE 的 `ShaderCompileWorker`）：
-- 主进程线程池调度 + N 个 worker 进程（`CreateProcess`）+ IPC（管道/文件）
-- fxc/DXC 在 worker 进程里编译（隔离崩溃 + 规避 fxc 线程不安全）
-- shader 缓存（HLSL hash → DXBC）
-- **这块是系统学并发编程的地方**（std::thread/CreateProcess/管道/mutex/cv/future）
-
-块7 是独立大块（+2000-4000 行），在课16-17 阶段做（那时 DX12 渲染就绪、有字节码需求）。本课先用单进程 `D3DCompileFromFile` 打通基础管线，等块7 再升级多进程。
+**多进程 shader 编译集成**（对标 UE 的 `ShaderCompileWorker`）已在**课16（渲染器封装）**深度展开——主进程线程池调度 + N 个 worker 进程 + IPC + shader 缓存。课15 先用单进程 `D3DCompileFromFile` 打通基础管线，多进程升级见课16。
 
 > **UE 对照**：`Engine/Source/Runtime/RenderCore/Private/ShaderCompiler*` + `Engine/Source/Programs/ShaderCompileWorker`（worker 进程源码）。
 

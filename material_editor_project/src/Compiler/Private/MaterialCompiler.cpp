@@ -1,5 +1,31 @@
 #include "Compiler/Public/MaterialCompiler.h"
 
+// === Add:三段判定的模板 === 
+int32_t MaterialCompiler::Add(int32_t a, int32_t b){
+    if(a<0 || b<0){
+        ME_LOG_ERROR("MaterialCompiler::Add错误, a索引:%d, b索引:%d", a, b);
+        assert(false);
+        return -1;
+    }
+    EValueType result_type = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
+    if(IsConstant(a)||IsConstant(b)){
+        auto folded = ConstFolding::FoldBinary("+", GetConstantValue(a), GetConstantValue(b));
+        if (folded){
+            return AddConstantChunk(result_type, *folded);
+        }
+        else{
+            ME_LOG_ERROR("MaterialCompiler::Add折叠失败, a索引:%d, b索引:%d", a, b);
+            assert(false);
+            return -1;
+        }
+    }
+    return AddInlineCodeChunk(result_type, GetParameterCode(a)+ "+" + GetParameterCode(b));
+}
+
+
+
+
+
 // 生成局部变量名 Local0,Local1...
 std::string MaterialCompiler::MakeSymbolName(){
     return "Local" + std::to_string(next_symbol_index_++);

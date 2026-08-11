@@ -1,21 +1,12 @@
-# 课19：错误处理 + 撤销/重做
+# 课19：撤销/重做
 
 ## 目标
 
-实现编译错误反馈（可视化标注错误节点）和撤销/重做系统（命令模式）。
+实现**撤销/重做系统**（命令模式）。
 
 ---
 
 ## 背景知识
-
-### 编译错误反馈
-
-UE5 材质编辑器的错误反馈：
-1. 编译失败时，错误节点标题栏变红
-2. 错误信息显示在底部面板
-3. 点击错误信息可以定位到出错节点
-
-我们用简单方案：编译失败时在状态栏显示错误，代码面板标红，并在节点图上高亮错误节点。
 
 ### 撤销/重做（命令模式）
 
@@ -387,79 +378,6 @@ private:
 };
 ```
 
-### 10. 编译错误可视化
-
-修改 `MaterialCompiler::Compile` 或在 `MainWindow::OnCompile` 中添加错误反馈：
-
-```cpp
-// MainWindow.cpp
-void MainWindow::OnCompile() {
-    auto result = compiler_->Compile(graph_);
-
-    if (result.success) {
-        // 清除所有节点的错误状态
-        graphWidget_->ClearErrorHighlights();
-
-        compileStatus_->setText("Compiled OK");
-        compileStatus_->setStyleSheet("color: green;");
-        if (codePanel_) codePanel_->SetCode(result.hlslCode);
-        if (viewportPanel_) viewportPanel_->SetMaterialResult(result);
-    } else {
-        compileStatus_->setText("Compile Error");
-        compileStatus_->setStyleSheet("color: red;");
-
-        // 在代码面板中显示错误
-        if (codePanel_) codePanel_->SetError(result.errorMessage);
-
-        // 高亮错误节点（如果有）
-        // 注意：CompileResult 默认没有 errorNodeId 字段（课6 只定义了 success/hlslCode/errorMessage）。
-        // 如果要做这个特性，需要给 CompileResult 加上：
-        //   UUID errorNodeId = UUID::Invalid();
-        // 并让 MaterialCompiler 在错误发生时填充它。这里假定该字段已加。
-        if (!result.errorNodeId.IsValid()) {
-            // 当前 errorNodeId 是全零（未设置），跳过
-        } else {
-            graphWidget_->HighlightErrorNode(result.errorNodeId);
-        }
-
-        // 状态栏显示简短错误
-        statusLabel_->setText(
-            QString("Error: %1").arg(
-                QString::fromStdString(result.errorMessage)));
-    }
-}
-
-// MaterialGraphWidget 中添加
-void MaterialGraphWidget::HighlightErrorNode(const UUID& nodeId) {
-    auto it = nodeItems_.find(nodeId);
-    if (it != nodeItems_.end()) {
-        // 设置错误状态（节点变红）
-        it.value()->SetErrorState(true);
-    }
-}
-
-void MaterialGraphWidget::ClearErrorHighlights() {
-    for (auto* item : nodeItems_) {
-        item->SetErrorState(false);
-    }
-}
-
-// NodeGraphicsItem 中添加
-void NodeGraphicsItem::SetErrorState(bool hasError) {
-    hasError_ = hasError;
-    update();
-}
-
-// 在 paint() 中添加错误样式
-if (hasError_) {
-    painter->setPen(QPen(QColor(255, 50, 50), 2.0));
-    painter->setBrush(Qt::NoBrush);
-    painter->drawRoundedRect(0, 0, NODE_WIDTH, height_, CORNER_RADIUS, CORNER_RADIUS);
-}
-```
-
----
-
 ## 验证
 
 ### 撤销/重做
@@ -470,18 +388,11 @@ if (hasError_) {
 4. 修改参数 → Ctrl+Z → 参数恢复原值
 5. 多步操作 → 连续 Ctrl+Z → 连续 Ctrl+Y
 
-### 错误处理
-
-1. 创建循环引用 → 编译 → 错误提示
-2. 连接类型不匹配的引脚 → 编译 → 错误提示
-3. 缺少必要输入 → 编译 → 错误节点标红
-
 ---
 
 ## UE5 参考（相对 `Engine/` 路径）
 
 - `Engine/Source/Editor/MaterialEditor/Private/MaterialEditor.cpp` — 编辑器主类
-- 搜索 `CompileMaterial` / `HandleMaterialCompilationErrors` — 编译 + 错误可视化
 - UE5 撤销/重做：搜索 `FScopedTransaction` / `GEditor->UndoTransaction`
 
 ### 对照 UE 撤销重做系统
@@ -492,23 +403,20 @@ if (hasError_) {
 | `UndoStack`（命令栈）| `GEditor->UndoTransaction` / `RedoTransaction` | 撤销栈 |
 | 手写每个命令的 Do/Undo | `FScopedTransaction` + 对象 `Serialize` 快照 | 记录变更 |
 
-**三个关键差异**：
+**两个关键差异**：
 
 1. **UE 用事务 + 对象快照**（`FScopedTransaction` 开启事务 → 修改 UObject → 事务自动记录修改前/后状态 → Undo 时恢复快照）。我们用**命令模式**（每个操作一个 `ICommand`，手写 Do/Undo）——更直接易懂，但每种操作（加节点/连线/改参数）都要写专门的命令类。
 
 2. **UE 的撤销是通用的**（任何 UObject 修改都能撤销，因为反射 + 序列化自动记录）。我们的命令模式要为每种操作手写——代价是没有"通用撤销"，但好处是撤销逻辑显式、可控。
 
-3. **错误可视化**：UE 的编译错误高亮到具体节点（`HandleMaterialCompilationErrors`）。这关联块5（错误诊断，`lesson06-extension.md`）——编译错误带节点/pin 定位，编辑器据此高亮。
-
-> **搜索关键词**（UE 源码）：`FScopedTransaction`、`GEditor->Undo`、`HandleMaterialCompilationErrors`、`CompileMaterial`。
+> **搜索关键词**（UE 源码）：`FScopedTransaction`、`GEditor->Undo`。
 
 ---
 
 ## 完成标志
 
+**撤销/重做**：
 - [ ] Ctrl+Z 撤销最后操作
 - [ ] Ctrl+Y 重做
 - [ ] 撤销/重做对添加/删除/连接/移动/参数修改都有效
-- [ ] 编译错误在状态栏和代码面板中显示
-- [ ] 错误节点在图中标红
 - [ ] 命令栈在新建材质时清空
