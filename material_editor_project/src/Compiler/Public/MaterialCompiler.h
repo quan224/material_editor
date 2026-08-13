@@ -8,6 +8,7 @@
 #include "MaterialGraph/Public/Types.h"
 #include "Core/Public/Hash.h"
 #include "Compiler/Public/TypeSystem.h"
+#include "Compiler/Public/CompileError.h"
 
 
 class MaterialCompiler{
@@ -16,7 +17,15 @@ public:
     struct CompileResult {
         bool success = false;
         std::string hlsl_code;
-        std::string error_message;
+        std::string error_message;  // 兼容字段：第一个Error级错误
+        std::vector<CompilerError> errors;  // 所有错误
+
+        bool HasError() const {
+            for (const auto& e : errors) {
+                if (e.severity == EErrorSeverity::Error) return true;
+            }
+            return false;
+        }
     };
 
     CompileResult Compile(Graph* graph);
@@ -76,8 +85,15 @@ private:
     // 接收variant
     std::string MakeSymbolName();
     int32_t ParseDefaultValue(const nlohmann::json& default_value, EValueType type);
-    std::vector<int32_t> CompilerExpression(Node* node);
+    std::vector<int32_t> CompileExpression(Node* node);
     std::string GenerateCode(const std::map<std::string, int32_t>& outputs);
+
+    // 错误收集
+    void EmitError(const std::string& error_message,
+        EErrorSeverity severity = EErrorSeverity::Error,
+        const Node* override_node = nullptr,
+        const std::string& override_pin_name = ""
+    );
 
 
     // 状态
@@ -87,4 +103,8 @@ private:
     int32_t next_symbol_index_ = 0;
     Graph* current_graph_ = nullptr;
     std::string error_message_;
+
+    std::vector<CompilerError> errors_;
+    Node* current_node_ = nullptr;
+    std::string current_pin_name_;
 };

@@ -141,4 +141,24 @@ ConstValue MaterialCompiler::GetConstantValue(int32_t index) const {
 
 
 
+void MaterialCompiler::EmitError(const std::string& error_message,
+    EErrorSeverity severity,
+    const Node* override_node,
+    const std::string& override_pin_name
+){
+    CompilerError error;
+    error.error_message = error_message;
+    error.severity = severity;
+
+    error.node_id = override_node ? override_node->id : (current_node_ ? current_node_->id : UUID::Invalid());
+    error.pin_name = override_pin_name.empty() ? current_pin_name_ : override_pin_name;
+
+    for (const auto& m : errors_) {
+        if (m.SameAs(error)) return;
+    }
+    errors_.emplace_back(error);
+}
+
+
+
 
