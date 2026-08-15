@@ -7,6 +7,8 @@
 
 从零构建一个独立的材质编辑器应用程序，参考 UE5 材质系统架构（节点图 → 编译器 → HLSL 生成 → PBR 渲染），使用 Qt + DirectX 12，完全脱离 UE5 运行。
 
+**项目目标**：通过亲手实现编辑器来理解 UE5 材质编辑器是如何实现的——关键数据结构和设计决策尽量与 UE5 对齐（如 CodeChunk ↔ FShaderCodeChunk、UniformExpression ↔ FMaterialUniformExpression），教学简化只用于非核心环节。
+
 - 仓库根目录：当前目录（含 `.git/`、`.claude/`、`MaterialEditor/`、`material_editor_project/`）
 - 教案与文档：`MaterialEditor/`
 - 代码实现：`material_editor_project/`

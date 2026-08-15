@@ -7,9 +7,24 @@
                 "${workspaceFolder}/material_editor_project/src/**",
                 "C:/msys64/mingw64/include",
                 "C:/msys64/mingw64/include/qt6",
-                "C:/msys64/mingw64/include/qt6/**"
+                "C:/msys64/mingw64/include/qt6/**",
+                "${workspaceFolder}/UE5/UnrealEngine-release/Engine/Source/Runtime/Core/Public",
+                "${workspaceFolder}/UE5/UnrealEngine-release/Engine/Source/Runtime/CoreUObject/Public",
+                "${workspaceFolder}/UE5/UnrealEngine-release/Engine/Source/Runtime/Engine/Public",
+                "${workspaceFolder}/UE5/UnrealEngine-release/Engine/Source/Runtime/Engine/Classes",
+                "${workspaceFolder}/UE5/UnrealEngine-release/Engine/Source/Runtime/ApplicationCore/Public",
+                "${workspaceFolder}/UE5/UnrealEngine-release/Engine/Source/Runtime/RHI/Public",
+                "${workspaceFolder}/UE5/UnrealEngine-release/Engine/Source/Runtime/RenderCore/Public",
+                "${workspaceFolder}/UE5/UnrealEngine-release/Engine/Source/Runtime/TraceLog/Public",
+                "${workspaceFolder}/UE5/UnrealEngine-release/Engine/Source/Runtime/AutoRTFM/Public"
             ],
             "compilerPath": "C:/msys64/mingw64/bin/g++.exe",
+            "defines": [
+                "UBT_COMPILED_PLATFORM=Windows",
+                "UBT_COMPILED_TARGET=Game",
+                "UE_GAME=1",
+                "PLATFORM_WINDOWS=1"
+            ],
             "cStandard": "c17",
             "cppStandard": "c++17",
             "intelliSenseMode": "windows-gcc-x64"

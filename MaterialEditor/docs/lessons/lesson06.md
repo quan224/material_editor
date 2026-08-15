@@ -1069,6 +1069,8 @@ assert(c.GetParameterCode(-1) == "0.0");          // 负索引返回 "0.0"
 
 ## 第八部分：UE 5.7 参考（相对 `Engine/` 路径）
 
+> 注：UE 源码根目录因工作环境而异（如 `E:\UE5\` 或仓库内 `UE5/UnrealEngine-release/`），下表路径均为相对 `Engine/` 的路径，在自己的 UE 源码根目录下对应查找即可。
+
 | 本课概念 | UE 对应 | 位置 |
 |---------|---------|------|
 | `CodeChunk` | `FShaderCodeChunk` | `Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.h:83-174` |
