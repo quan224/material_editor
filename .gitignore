@@ -35,3 +35,6 @@ debug_log.txt
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# === UE5 官方源码（体积过大，仅作本地参考，不入库）===
+UE5/
