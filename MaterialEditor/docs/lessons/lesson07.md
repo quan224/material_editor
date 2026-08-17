@@ -132,17 +132,27 @@ void RegisterAllExpressions() {
 }
 ```
 
-### 3. 修改 MaterialCompiler —— 连接 Expression
+### 3. 修改 HLSLTranslator —— 连接 Expression
 
-在 `MaterialCompiler.cpp` 的 `CompileExpression` 中：
+课 6 定了双层架构：`MaterialCompiler` 是抽象基类（纯虚算子），`HLSLTranslator` 是实现。本课把图遍历的三个入口**追加**到两层上：
+
+- `MaterialCompiler` 基类追加两个纯虚（表达式通过基类指针递归调它们，对照 UE 基类的 `CallExpression`）：
+
+```cpp
+// MaterialCompiler.h 追加（对照 UE FMaterialCompiler::CallExpression）
+virtual int32_t CompileInputPin(Node* node, const std::string& pinName) = 0;
+virtual std::vector<int32_t> CompileExpression(Node* node) = 0;
+```
+
+- 在 `HLSLTranslator.cpp` 实现 `CompileExpression`：
 
 ```cpp
 #include "Expression/Public/ExpressionRegistry.h"
 
-std::vector<int32_t> MaterialCompiler::CompileExpression(Node* node) {
+std::vector<int32_t> HLSLTranslator::CompileExpression(Node* node) {
     std::string cacheKey = node->id.ToString();
-    auto it = nodeCache_.find(cacheKey);
-    if (it != nodeCache_.end()) return it->second;
+    auto it = node_cache_.find(cacheKey);
+    if (it != node_cache_.end()) return it->second;
 
     std::vector<int32_t> outputs;
 
@@ -154,13 +164,12 @@ std::vector<int32_t> MaterialCompiler::CompileExpression(Node* node) {
                 expr->SetParameter(field.name, node->parameters[field.name]);
             }
         }
-        outputs = expr->Compile(this, node);
+        outputs = expr->Compile(this, node);   // this 作为 MaterialCompiler* 抽象接口传入
     } else {
-        errorMessage_ = "Unknown expression type: " + node->typeName;
-        ME_LOG_ERROR("%s", errorMessage_.c_str());
+        EmitError("Unknown expression type: " + node->typeName);   // 进 errors_ 列表（课6 的错误收集器）
     }
 
-    nodeCache_[cacheKey] = outputs;
+    node_cache_[cacheKey] = outputs;
     return outputs;
 }
 ```
@@ -185,14 +194,17 @@ public:
     ME_END_CLASS(ExprAdd)
 
     std::vector<ExpressionPinDesc> GetInputPins() const override {
-        return {{"A", EValueType::Float1, "0.0"}, {"B", EValueType::Float1, "0.0"}};
+        // 标量引脚类型用 MCT_Float 掩码（不是 MCT_Float1）——UE 语义：
+        // "标量表达式类型用 MCT_Float，可复制提升到任意 float 向量"（MaterialValueType.h 注释）
+        return {{"A", MCT_Float, "0.0"}, {"B", MCT_Float, "0.0"}};
     }
     std::vector<ExpressionPinDesc> GetOutputPins() const override {
-        return {{"Result", EValueType::Float1, ""}};
+        return {{"Result", MCT_Float, ""}};
     }
 
     // Compile 签名：(MaterialCompiler*, Node*)
-    // - compiler 提供 Add/Multiply 等编译 API
+    // - compiler 是课6 的抽象基类指针（实际传入 HLSLTranslator——两层架构，
+    //   对照 UE 表达式只认识 FMaterialCompiler*，背后是 FHLSLMaterialTranslator）
     // - node 让表达式能调用 CompileInputPin(node, "A") 递归找上游
     std::vector<int32_t> Compile(MaterialCompiler* c, Node* node) const override {
         int32_t a = c->CompileInputPin(node, "A");
@@ -242,7 +254,7 @@ public:
 
     std::vector<ExpressionPinDesc> GetInputPins() const override { return {}; }
     std::vector<ExpressionPinDesc> GetOutputPins() const override {
-        return {{"Output", EValueType::Float1, ""}};
+        return {{"Output", MCT_Float, ""}};
     }
 
     std::vector<int32_t> Compile(MaterialCompiler* c, Node*) const override {
@@ -275,7 +287,7 @@ public:
 
     std::vector<ExpressionPinDesc> GetInputPins() const override { return {}; }
     std::vector<ExpressionPinDesc> GetOutputPins() const override {
-        return {{"Output", EValueType::Float3, ""}};
+        return {{"Output", MCT_Float3, ""}};
     }
 
     std::vector<int32_t> Compile(MaterialCompiler* c, Node*) const override {
@@ -309,7 +321,7 @@ public:
 #include "Core/Public/Logger.h"
 #include "MaterialGraph/Public/Graph.h"
 #include "MaterialGraph/Public/NodeFactory.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Compiler/Public/HLSLTranslator.h"   // 两层架构：实现类（基类 MaterialCompiler 是抽象接口）
 #include "Expression/Public/ExpressionRegistry.h"
 
 int main(int argc, char* argv[]) {
@@ -318,14 +330,14 @@ int main(int argc, char* argv[]) {
     // 1. 注册表达式
     RegisterAllExpressions();
 
-    // 2. 设置工厂
+    // 2. 设置工厂（引脚类型用课6 的 MCT_* bitmask）
     NodeFactory::GetInstance().Register("ExprConstant3Vector", "Constant3Vector", "Constants", {
-        {"Output", EValueType::Float3, EPinDataDirection::Output}
+        {"Output", MCT_Float3, EPinDataDirection::Output}
     });
     NodeFactory::GetInstance().Register("ExprAdd", "Add", "Math", {
-        {"A", EValueType::Float3, EPinDataDirection::Input},
-        {"B", EValueType::Float3, EPinDataDirection::Input},
-        {"Result", EValueType::Float3, EPinDataDirection::Output}
+        {"A", MCT_Float, EPinDataDirection::Input},
+        {"B", MCT_Float, EPinDataDirection::Input},
+        {"Result", MCT_Float, EPinDataDirection::Output}
     });
 
     // 3. 创建图
@@ -344,15 +356,15 @@ int main(int argc, char* argv[]) {
     graph.Connect(nodeAdd->outputPins[0].id,
                   graph.GetOutputNode()->FindInputPin("BaseColor")->id);
 
-    // 4. 编译
-    MaterialCompiler compiler;
+    // 4. 编译（HLSLTranslator 是 MaterialCompiler 的实现）
+    HLSLTranslator compiler;
     auto result = compiler.Compile(&graph);
 
     if (result.success) {
         ME_LOG_INFO("=== 编译成功 ===");
-        ME_LOG_INFO("%s", result.hlslCode.c_str());
+        ME_LOG_INFO("%s", result.hlsl_code.c_str());
     } else {
-        ME_LOG_ERROR("编译失败: %s", result.errorMessage.c_str());
+        ME_LOG_ERROR("编译失败: %s", result.error_message.c_str());
     }
 
     QWidget window;
@@ -366,17 +378,17 @@ int main(int argc, char* argv[]) {
 **预期输出**（HLSL）：
 ```
 [INFO] === 编译成功 ===
-    float3 Local0 = float3(1.000000, 0.000000, 0.000000);
-    float3 Local1 = Local0 + 0.0;
     // Material outputs
-    // BaseColor = Local1
+    // BaseColor = float3(1.000000, 0.000000, 0.000000)
 ```
+
+B 引脚未连接，`CompileInputPin` 走默认值 `"0.0"`（`ParseDefaultValue`）得到常量表达式；`Add` 发现两边表达式都 `IsConstant()` → 立即折叠成新的常量块（课 6 的 `ConstResultValue` 路径），**没有任何加法指令**。
 
 ---
 
-## 扩展版验证：向量折叠（课6 扩展版的核心能力）
+## 扩展验证：向量折叠（课6 表达式树的核心能力）
 
-把上面的测试改成"**两个 Constant3Vector 相加**"，验证课6 扩展版的向量常数折叠：
+把上面的测试改成"**两个 Constant3Vector 相加**"，验证课6 表达式树的向量常数折叠：
 
 ```cpp
 // 两个常量向量节点
@@ -395,14 +407,14 @@ graph.Connect(nodeAdd->outputPins[0].id, graph.GetOutputNode()->FindInputPin("Ba
 auto result = compiler.Compile(&graph);
 ```
 
-**预期：`Add((1,0,0), (0,1,0))` 编译期折叠成 `(1,1,0)`**——因为课6 扩展版的 `Constant3` 走常量路径存 `Vec3`，`Add` 发现两边都是常量就调 `ConstantFolding::FoldBinary` 逐分量算。生成的 HLSL 只有一个常量、**没有加法指令**：
+**预期：`Add((1,0,0), (0,1,0))` 编译期折叠成 `(1,1,0)`**——因为课6 的 `Constant3` 建的是 `UniformConstant(Vec4(1,0,0,0), MCT_Float3)` 表达式叶子，`Add` 发现两边表达式的树都 `IsConstant()`，就对两棵树 `GetNumberValue` 求值、逐分量相加，经 `ConstResultValue` 折成一个新的常量叶子。生成的 HLSL 只有一个常量、**没有加法指令**：
 
 ```
     // Material outputs
     // BaseColor = float3(1.000000, 1.000000, 0.000000)
 ```
 
-> 如果折叠没生效，HLSL 会是 `float3 Local0 = float3(1,0,0); float3 Local1 = float3(0,1,0); float3 Local2 = Local0 + Local1;`——说明 `Constant3` 没走常量路径（检查课6 的 `AddConstantChunk` 是否接收 variant）或 `Add` 没判断 `IsConstant`。这正是扩展版 variant 折叠要验证的。
+> 如果折叠没生效，HLSL 会是 `float3 Local0 = float3(1,0,0); float3 Local1 = float3(0,1,0); float3 Local2 = Local0 + Local1;`——说明 `Constant3` 没走表达式路径（检查课6 的 `Constant3` 是否建 `UniformConstant` 叶子并挂到 chunk 上），或 `Add` 没走"两边 `IsConstant()` → 求值折叠"的轨道（错走了 `UniformFoldedMath` 建树轨道或纯 HLSL 轨道）。这正是课6 表达式树要验证的。
 
 ---
 
@@ -445,7 +457,7 @@ int32 UMaterialExpressionAdd::Compile(FMaterialCompiler* Compiler, int32 OutputI
 - UE `Compiler->Add(A, B)` ≈ 我们 `c->Add(a, b)`——调编译器算子生成代码块
 - UE 返回 `int32`（chunk 索引）≈ 我们返回 `int32_t`
 
-**几乎一模一样**——我们的表达式设计就是 UE 的简化版。区别只在：UE 的 `CompileInput` 接收 `FExpressionInput`（带引脚对象引用），我们接收引脚名字字符串；UE 用 `INDEX_NONE`(-1) 表错误，我们也用负数哨兵。
+**几乎一模一样**——我们的表达式设计就是 UE 的教学复刻。区别只在：UE 的 `CompileInput` 接收 `FExpressionInput`（带引脚对象引用），我们接收引脚名字字符串；UE 用 `INDEX_NONE`(-1) 表错误，我们也用负数哨兵。
 
 **搜索关键词**（在 UE 源码）：`UMaterialExpressionAdd::Compile`、`UMaterialExpressionConstant::Compile`、`Compiler->Add`、`Compiler->Constant`。
 

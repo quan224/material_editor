@@ -1,25 +1,31 @@
-# 课6：编译器核心（完整版，对照 UE5）
+# 课6：编译器核心（完整版，对照 UE5.8 结构）
 
 ## 目标
 
-实现 `MaterialCompiler` 主类 + `CodeChunk` 数据结构 + 常数折叠 + 编译期错误收集，把材质图（Graph）的算子调用翻译成 HLSL 代码片段。对标 UE5 的 `FHLSLMaterialTranslator`——这是整个项目**最核心最复杂**的部分。
+实现编译器的**全部核心数据结构**——类型系统、代码块、常量/参数表达式树、双层编译器接口——再把算术算子架在这些结构上。对标 UE 的四个真实结构（本版教案逐字段、逐行对照源码，UE 版本 5.8.1，行号均为实测）：
+
+| # | 教学版 | UE 对应 | 对齐点 |
+|---|--------|---------|--------|
+| ① | `EValueType : uint64_t` bitmask + 类别掩码 | `EMaterialValueType`（`MaterialValueType.h`）| 位定义、掩码语义、"MCT_Float1 不自动提升"规则全部照搬 |
+| ② | `CodeChunk` 全字段 | `FShaderCodeChunk`（`HLSLMaterialTranslator.h:83-174`）| 每个字段逐一裁决采用/不采用并说明理由 |
+| ③ | `UniformExpression` 表达式树 | `FMaterialUniformExpression` 家族（`MaterialUniformExpressions.h`）| 常量与含参数表达式统一为一棵树，支持递归 IsConstant / IsIdentical 去重 / CPU 求值 |
+| ④ | `MaterialCompiler` 抽象基类 + `HLSLTranslator` 实现 | `FMaterialCompiler`（`MaterialCompiler.h:145`）+ `FHLSLMaterialTranslator` | 编译器拆两层，表达式只依赖抽象接口 |
 
 **本课范围（自给自足，不挖坑）**：
-- 类型系统扩展（Float/Int/Matrix/Texture/Sampler）+ 推导规则
-- `CodeChunk` 数据结构，常量值用 `std::variant<float, Vec2, Vec3, Vec4>` 支持向量折叠
-- 常数折叠（标量 + 向量）+ 代数化简（`x*1`→`x` 等）
-- `MaterialCompiler` 算子 API：算术 / 三角 / 向量 / 标量常量 / 类型转换（共 ~20 个算子）
-- `chunks_` 数组管理 + hash 去重 + 查询函数（带边界保护）
-- **错误诊断编译器层**：`CompileError` 结构 + `EmitError` 收集器 + 类型不匹配/除零两类检查（贯穿算子）
+- 类型系统 bitmask 改造（Float1-4 / 矩阵 / 纹理 + 类别掩码）+ 算术推导规则
+- `UniformExpression` 树：基类 + `UniformConstant` + `UniformFoldedMath` + `UniformFoldedUnary`
+- `CodeChunk` 全字段版 + 常量/参数表达式 chunk 的构建与**双层去重**（代码 hash + `IsIdentical`）
+- 双层编译器：`MaterialCompiler`（抽象接口）+ `HLSLTranslator`（实现）
+- 算子 API：算术 / 三角 / 向量 / 标量常量 / 类型转换（共 ~20 个），按 UE 真实的**三轨判定**实现（错误检查 → 表达式树/立即折叠 → HLSL 发射）
+- 错误诊断编译器层：`CompileError` + `EmitError` 收集器 + 类型不匹配/除零检查
 
-**本课不做、留给后续课第一次实现的部分**（明确边界，不在正文挖坑）：
-- **端到端编译** `Compile(Graph*)` + `CompileInputPin` + `CompileExpression` → **课 7** 接 `ExpressionRegistry` 后第一次实现
-- **图层级错误检查**：循环依赖 / 必需引脚未连 → **课 7**（依赖 `Compile(Graph*)` 主流程）
-- **HLSL 完整生成** `GenerateCode` → **课 8**（接 cbuffer / VS / PS 完整着色器模板）
-- **纹理 / 控制流算子** `TextureCoordinate` / `TextureSample` / `If` → **课 14/15**（接 DX12 上下文）
-- **错误诊断 UI 层**（节点高亮 / 引脚标红 / 错误面板 / 点击跳转）→ **课 19**
-
-每个设计点都对照 UE5 真实实现（相对 `Engine/` 路径），讲清楚"UE 怎么做、教学版为什么这样简化"。
+**本课不做、由后续课第一次实现的部分**（明确边界）：
+- 端到端编译 `Compile(Graph*)` + `CompileInputPin` + `CompileExpression` → **课 7**（接 `ExpressionRegistry`）
+- 图层级错误检查：循环依赖 / 必需引脚未连 → **课 7**（依赖 `Compile(Graph*)` 主流程）
+- HLSL 完整生成 `GenerateCode` → **课 8**（cbuffer / VS / PS 模板）
+- 纹理 / 控制流算子 `TextureCoordinate` / `TextureSample` / `If` → **课 14/15**
+- 错误诊断 UI 层（节点高亮 / 引脚标红 / 错误面板）→ **课 19**
+- 含参数的表达式节点（如 `UniformScalarParameter`）→ **课 20**（在树上追加子类，本课的树 API 已为它留好位置——`GetNumberValue` 带 `MaterialRenderContext` 参数）
 
 ---
 
@@ -35,273 +41,427 @@
 MaterialCompiler::Compile(Graph*)               ← 课7 实现
   │
   ├─ 0. 环检测（DFS 三色标记）                    ← 课7 实现
-  │     有环 → EmitError("Cycle: A → B → C → A")
-  │
   ├─ 1. 获取输出节点（材质根）
   ├─ 2. 必需引脚检查                              ← 课7 实现
-  │     MaterialOutput.BaseColor 未连 → EmitError
-  │
   ├─ 3. 对每个输入引脚 CompileInputPin             ← 课7 实现
-  │     CompileInputPin(outputNode, "BaseColor")
-  │       │
-  │       ├─ 找到上游节点
-  │       ├─ CompileExpression(upstreamNode)      ← 课7 实现（接 ExpressionRegistry）
-  │       │     │
-  │       │     ├─ 上游 Expression::Compile(this)
-  │       │     │    ├─ CompileInputPin() ← 递归
-  │       │     │    ├─ compiler->Add(a, b) ← ★ 本课实现
-  │       │     │    └─ 返回输出引脚的代码块索引
-  │       │     │
-  │       │     └─ 缓存结果
-  │
+  │     CompileExpression(upstreamNode)           ← 课7 实现
+  │       └─ 上游 Expression::Compile(compiler, node)
+  │            ├─ CompileInputPin() ← 递归
+  │            ├─ compiler->Add(a, b) ← ★ 本课实现
+  │            └─ 返回输出引脚的代码块索引
   └─ 4. GenerateCode() 组装 HLSL                 ← 课8 实现
 ```
 
-**本课（课6）只实现★标注的算子 API 层**——`compiler->Add/Sub/Mul/Div/Constant/...` + 支撑它们的数据结构（`chunks_`、`CompileError`、`EmitError`）。课 6 的测试 `compiler_test.cpp` **直接调算子 API**，不走 `Compile(Graph*)`。
+**本课只实现★标注的算子 API 层**及其全部支撑结构。课 6 的测试 `compiler_test.cpp` **直接调算子 API**，不走 `Compile(Graph*)`。
 
 ### 关键设计：双向递归（对照 UE）
 
-这是理解整个编译器的钥匙——**递归是双向的**，编译器和图节点各管一半：
-
 | 角色 | 职责 |
 |------|------|
-| **编译器**（`MaterialCompiler`）| 只暴露"算子 API"（`Add`/`Constant`/`TextureSample`…），**不知道图结构** |
-| **图节点**（`Expression` 子类）| `Compile()` 里**先编译自己的输入引脚（递归），再调编译器算子组合结果** |
+| **编译器**（`MaterialCompiler` 接口）| 只暴露"算子 API"（`Add`/`Constant`/...），**不知道图结构** |
+| **图节点**（`Expression` 子类）| `Compile()` 里先编译自己的输入引脚（递归），再调编译器算子组合结果 |
 
-```
-Expression::Compile(compiler, node):
-    int a = compiler->CompileInputPin(node, "A");   // ← 递归编译 A 引脚（上游）
-    int b = compiler->CompileInputPin(node, "B");   // ← 递归编译 B 引脚（上游）
-    return compiler->Add(a, b);                      // 组合（本课实现的算子）
-```
+> **UE 对照**：`FHLSLMaterialTranslator` 只提供算子，`UMaterialExpression` 子类的 `Compile()` 驱动递归。见 `Material.cpp` 的 `CompilePropertyAndSetMaterialProperty`。
 
-> **UE 对照**：UE 也是这套——`FHLSLMaterialTranslator` 只提供算子，`UMaterialExpression` 子类的 `Compile()` 驱动递归。见 `Engine/Source/Runtime/Engine/Private/Materials/Material.cpp` 的 `CompilePropertyAndSetMaterialProperty`，它触发具体节点的 `Compile`，节点又调 `Compiler->Add/Sub/...`。
+### 为什么是表达式树，不是 variant 存常量
 
-### CodeChunk 是什么
+编译期一个 chunk 的"值"有**三种形态**，这是理解本课的钥匙：
 
-每一行 HLSL 代码 = 一个 CodeChunk，编译器用 `int32_t` 索引引用：
+| 形态 | 例子 | UE 怎么存 | 教学版怎么存 |
+|------|------|----------|-------------|
+| 纯常量 | `Constant3(1,0,0)` | `FMaterialUniformExpressionConstant`（表达式树的叶子）| `UniformConstant`（树的叶子）|
+| 含参数的可折叠表达式 | `ScalarParameter("R") * 2` | `FMaterialUniformExpressionFoldedMath` 子树（preshader 运行时 CPU 求值）| `UniformFoldedMath` 子树（`GetNumberValue` CPU 求值）|
+| 纯 GPU 表达式 | `TextureSample` 的结果 | 无表达式，只有 HLSL 代码串 | 无表达式，只有 HLSL 代码串 |
 
-```hlsl
-float Local0 = 1.0;              // CodeChunk 0: 常量
-float Local1 = 0.5;              // CodeChunk 1: 常量
-float Local2 = Local0 + Local1;  // CodeChunk 2: Add 的结果，引用 0 和 1
-```
-
-`Add(0, 1)` 返回 `2`（索引），下游用 `2` 引用结果。**`int32_t` 是 `chunks_` 数组的下标，不是数值**。负数段（`-1` 等）作为 **`INDEX_NONE` 哨兵**——上游算子出错（类型不匹配等）时返回 -1，下游算子的 `if (a < 0 || b < 0) return -1;` 会**沿依赖链传播错误**，但**不重复 EmitError**（同一个错误只报一次，靠 `SameAs` 去重）。
+如果 chunk 里只存一个 `std::variant<float, Vec2, Vec3, Vec4>` 常量值，第二种形态（含参数）完全表达不了——参数的值编译期不知道，只有"一棵保留参数依赖的树"才能在运行时求值。UE 的 `FShaderCodeChunk` 里挂的就是 `TRefCountPtr<FMaterialUniformExpression>` 指针（`.h:111`），教学版照搬：**chunk 挂表达式树指针，常量只是树的一种叶子**。
 
 ---
 
-## 第一部分：类型系统（对照 UE `EMaterialValueType`）
+## 第一部分：类型系统——`EValueType` 改为 uint64_t bitmask
 
-### 文件：`src/MaterialGraph/Public/Types.h`（扩展 `EValueType`）
+### 文件：`src/MaterialGraph/Public/Types.h`
+
+课 1-4 定义的 `enum class EValueType`（普通枚举）在本课替换为 bitmask。对照 UE `Engine/Source/Runtime/Engine/Public/MaterialValueType.h`（全文 93 行，建议通读）：
 
 ```cpp
-enum class EValueType {
-    Unknown,
-    // 标量/向量（float）
-    Float1, Float2, Float3, Float4,
-    // 整数（材质里偶有整数运算：循环计数、位掩码等）
-    Int1, Int2, Int3, Int4,
-    // 矩阵（变换、投影）
-    Matrix3x3, Matrix4x4,
-    // 资源对象类型（不能参与算术，只能给 TextureSample 用）
-    Texture2D,
-    SamplerState,
+// 值类型 bitmask。对照 UE EMaterialValueType（MaterialValueType.h）。
+// 单类型 = 单个位；类别掩码 = 多个位的或。判断类别用 &，判断单类型用 ==。
+enum EValueType : uint64_t {
+    MCT_Unknown  = 0,
+
+    // 标量/向量（float）——位值与 UE 完全一致（bit 0-3）
+    MCT_Float1   = 1u << 0,
+    MCT_Float2   = 1u << 1,
+    MCT_Float3   = 1u << 2,
+    MCT_Float4   = 1u << 3,
+
+    // 纹理对象类型——"对象类型"，不能参与算术，只供 TextureSample 用
+    // （位值对齐 UE：MCT_Texture2D 在 bit 4）
+    MCT_Texture2D   = 1u << 4,
+    MCT_TextureCube = 1u << 5,
+
+    // 矩阵——位值对齐 UE（bit 32/33，UE 用 1ull 因为超过 32 位）
+    MCT_Float3x3 = 1ull << 32,
+    MCT_Float4x4 = 1ull << 33,
+
+    // ===== 类别掩码（多个位的或，用于"是不是某类"的集合判断）=====
+    MCT_Float   = MCT_Float1 | MCT_Float2 | MCT_Float3 | MCT_Float4,   // 任意 float 向量
+    MCT_Texture = MCT_Texture2D | MCT_TextureCube,                     // 任意纹理
 };
 ```
 
-**每个类型的用途**：
-- `Float1-4`：颜色、UV、向量、标量——材质主体
-- `Int1-4`：整数运算（少数节点用，如位操作）
-- `Matrix3x3/4x4`：变换矩阵（如 `Transform` 节点）
-- `Texture2D / SamplerState`：纹理对象 + 采样器状态，是"对象类型"，**不能算术运算**，只供 `TextureSample` 使用
+### 每个位/掩码的作用（全表）
 
-**类型查询（free function，留在这层）**：
+| 位/掩码 | 作用 | 使用场景 |
+|---------|------|---------|
+| `MCT_Float1` | 标量 float | 单分量常量、Dot/Length 的结果 |
+| `MCT_Float2` | 二维向量 | UV 坐标 |
+| `MCT_Float3` | 三维向量 | 颜色 RGB、世界坐标 |
+| `MCT_Float4` | 四维向量 | RGBA 颜色、齐次坐标 |
+| `MCT_Float3x3` | 3x3 矩阵 | 切线空间变换（Transform 节点用）|
+| `MCT_Float4x4` | 4x4 矩阵 | 投影/世界变换 |
+| `MCT_Texture2D` | 2D 纹理对象 | TextureSample 的输入，**不能算术** |
+| `MCT_TextureCube` | 立方体纹理 | 环境贴图反射采样 |
+| `MCT_Float`（掩码）| "任意 float 向量"集合 | `Type & MCT_Float` 判断能否声明局部变量、能否算术 |
+| `MCT_Texture`（掩码）| "任意纹理"集合 | `Type & MCT_Texture` 判断是否对象类型 |
+
+### UE 有、教学版不引入的位（对照表，避免"为什么少了"的疑问）
+
+| UE 位 | UE 用途 | 不引入的原因 |
+|-------|---------|-------------|
+| `MCT_UInt1-4`（bit 25-28）| 无符号整数运算（位操作、VT 页表）| 教学版无整数节点；UE 也没有有符号 Int 类型 |
+| `MCT_LWCScalar/Vector2/3/4`（bit 18-21）| Large World Coordinates 双精度坐标 | 教学版不做双精度坐标管线（LWC 是全管线工程：类型提升/截断/WSAdd 函数族）|
+| `MCT_StaticBool` / `MCT_Bool` | 静态开关 / 动态 bool | 教学版无静态开关系统 |
+| `MCT_MaterialAttributes` / `MCT_Substrate` / `MCT_ShadingModel` | 属性打包节点 / 新材质模型 | 教学版无这些节点系统 |
+| 其余 Texture 变体（Array/Volume/External/Virtual...）| 各类纹理 | 教学版只保留 2D + Cube |
+| `MCT_LicenseeReserved`（bit 48-63）| 授权方自定义保留段 | 不适用 |
+
+### 两条关键语义（从 UE 注释原样搬来，最容易踩的坑）
+
+UE 源文件头两个类型的注释里藏着两条规则：
+
+1. **`MCT_Float1` 不会自动提升**（"Note that MCT_Float1 will not auto promote to any other float types"）——算术推导里 `Float1 + Float3 → Float3` 的提升，是推导函数的特判逻辑，**不是类型系统自带的**。
+2. **标量表达式的返回类型用 `MCT_Float` 掩码，不用 `MCT_Float1`**（"use MCT_Float instead for scalar expression return types"）——`MCT_Float` 语义是"标量，可复制提升到任意 float 向量"。UE 的 `GetArithmeticResultType`（`.cpp:4250`）显式写了 `TypeA == MCT_Float || TypeA == MCT_Float1` 两者都当标量处理，就是为这条规则服务。
+
+### 判断方式的迁移（普通枚举 → bitmask）
+
+| 旧写法（enum）| 新写法（bitmask）| 说明 |
+|--------------|-----------------|------|
+| `type == EValueType::Float3` | `type == MCT_Float3` | 单类型判断不变（只能对单值位用 `==`）|
+| （做不到）| `type & MCT_Float` | **新增能力**：类别集合判断 |
+| （做不到）| `type & MCT_Texture` | 对象类型判断 |
+| ❌ `type == MCT_Float` 当"是 float3"用 | 掩码永远不能 `==` 单值 | `MCT_Float & MCT_Float3` 为真，但 `MCT_Float == MCT_Float3` 为假 |
+
+### 类型查询（free function，留在 Types.h）
 
 ```cpp
-// 分量数：纯类型属性查询，零编译器知识 → 放 Types.h（不放 TypeSystem）
+// 分量数：单值位有效；掩码/矩阵/纹理返回 0（掩码问"分量数"没有意义）
+// 注意 MCT_Float 返回 1——UE GetNumComponents 同样把 MCT_Float 当标量处理
 inline int GetComponentCount(EValueType t) {
     switch (t) {
-        case EValueType::Float1: case EValueType::Int1: return 1;
-        case EValueType::Float2: case EValueType::Int2: return 2;
-        case EValueType::Float3: case EValueType::Int3: return 3;
-        case EValueType::Float4: case EValueType::Int4: return 4;
-        default: return 0;   // Matrix/Texture/Unknown 不走分量逻辑
+        case MCT_Float: case MCT_Float1: return 1;
+        case MCT_Float2: return 2;
+        case MCT_Float3: return 3;
+        case MCT_Float4: return 4;
+        default: return 0;   // Matrix/Texture/Unknown/掩码组合不走分量逻辑
     }
 }
 ```
-> `GetComponentCount` 是"类型本身的属性"，留 Types.h；TypeSystem（编译器层）**不重复定义**，需要时调 `::GetComponentCount(t)`。分层原则：HLSL/组合规则才进 TypeSystem。
+
+分层原则不变：**纯类型属性查询留 Types.h，HLSL 字符串/推导规则进编译器层 TypeSystem**。
 
 ### 文件：`src/Compiler/Public/TypeSystem.h`（推导规则）
 
-算术运算的结果类型推导（对照 UE `GetArithmeticResultType`）：
+对照 UE `FHLSLMaterialTranslator::GetArithmeticResultType`（`.cpp:4221-4261`，逐行对齐）：
 
 ```cpp
 class TypeSystem {
 public:
-    // 算术结果类型（Add/Sub/Mul/Div 用）
+    // 算术结果类型。对照 UE .cpp:4221：
+    // ①非 primitive（矩阵/纹理）→ 错误；②同类型 → 原类型；
+    // ③任一方是 MCT_Float / MCT_Float1（标量）→ 另一方；
+    // ④其余（Float2 vs Float3 等）→ 错误 + Unknown
     static EValueType GetArithmeticResultType(EValueType a, EValueType b) {
-        if (a == Unknown || b == Unknown) return Unknown;
-        if (a == b) return a;
-        // 标量 × 向量 → 向量（标量复制提升）：Float1 + Float3 → Float3
-        if (a == Float1) return b;
-        if (b == Float1) return a;
-        // 同理 Int 标量提升
-        if (a == Int1) return b;
-        if (b == Int1) return a;
-        return Unknown;  // Float2 + Float3 这种不兼容
+        // ① 对象类型/矩阵/未知不能算术（对照 UE IsPrimitiveType 检查）
+        if (a & MCT_Texture || b & MCT_Texture) return MCT_Unknown;
+        if (a == MCT_Unknown || b == MCT_Unknown) return MCT_Unknown;
+        if (GetComponentCount(a) == 0 || GetComponentCount(b) == 0) return MCT_Unknown;  // 矩阵
+
+        if (a == b) return a;                        // ② 同类型
+        if (a == MCT_Float || a == MCT_Float1) return b;   // ③ 标量提升
+        if (b == MCT_Float || b == MCT_Float1) return a;
+        return MCT_Unknown;                          // ④ 不兼容
+        // 注意：返回 Unknown 时调用方负责 EmitError——UE 在这里 Errorf，
+        // 教学版把错误上报挪到算子里（带上 node/pin 定位，见第三部分）
     }
-    // GetComponentCount 不在这里——它是纯类型属性查询，留在 Types.h（free function），
-    // 本类不重复定义，需要时调 ::GetComponentCount(t)。分层：HLSL/组合规则才进 TypeSystem。
 
     static const char* ToHLSLType(EValueType t) {
         switch (t) {
-            case EValueType::Float1:   return "float";
-            case EValueType::Float2:   return "float2";
-            case EValueType::Float3:   return "float3";
-            case EValueType::Float4:   return "float4";
-            case EValueType::Int1:     return "int";
-            case EValueType::Int2:     return "int2";
-            case EValueType::Int3:     return "int3";
-            case EValueType::Int4:     return "int4";
-            case EValueType::Matrix3x3: return "float3x3";
-            case EValueType::Matrix4x4: return "float4x4";
+            case MCT_Float: case MCT_Float1: return "float";
+            case MCT_Float2:   return "float2";
+            case MCT_Float3:   return "float3";
+            case MCT_Float4:   return "float4";
+            case MCT_Float3x3: return "float3x3";
+            case MCT_Float4x4: return "float4x4";
             default: return "float";   // 兜底，避免生成非法 HLSL
         }
     }
 };
 ```
 
-### 对照 UE：为什么 UE 用 bitmask，我们用 enum
-
-UE 的 `EMaterialValueType` 是 **64 位 bitmask**（`Engine/Source/Runtime/Engine/Public/MaterialValueType.h`）：
-
-```cpp
-enum EMaterialValueType : uint64 {
-    MCT_Float1 = 1u<<0, MCT_Float2 = 1u<<1, ...,
-    MCT_Float = MCT_Float1|MCT_Float2|MCT_Float3|MCT_Float4,  // "任意 float"
-    MCT_UInt1..4, MCT_StaticBool, MCT_Float3x3, MCT_Float4x4,
-    MCT_Texture2D, ...
-};
-```
-
-**bitmask 的好处**：能做"类别集合"判断，如 `Type & MCT_Float`（是不是任意 float）、`Type & MCT_Texture`（是不是任意纹理）。UE 的 `AddCodeChunkInner` 就用 `(Type & (MCT_Float|MCT_LWCType|MCT_UInt|...))` 判断能否声明局部变量。
-
-**教学版为什么用普通 enum**：
-- 简单直观，调试看枚举名就懂（bitmask 看到的是数字）
-- 教学版的类型少（不需要"任意 float"这种集合判断）
-- 代价：不能做 `IsFloat()` 这种集合查询——但教学版用 `switch` 逐个判断够用
-
-> 这是一个有意的简化取舍：**UE 用 bitmask 换表达力（集合运算），教学版用 enum 换可读性**。
+> UE 版里错误上报（`Errorf`）在 `GetArithmeticResultType` 内部；教学版挪到算子里发，因为 EmitError 需要 node/pin 上下文（第三部分），而 TypeSystem 是无状态的静态工具类。
 
 ---
 
-## 第二部分：CodeChunk（对照 UE `FShaderCodeChunk`）
+## 第二部分：UniformExpression——常量/参数表达式树
+
+### 文件：`src/Compiler/Public/UniformExpression.h`
+
+对照 `Engine/Source/Runtime/Engine/Private/Materials/MaterialUniformExpressions.h`。这棵树表达"只随 uniform 输入变化的表达式"——纯常量是它的特例（叶子），含参数的表达式是它的内部节点。
+
+### 基类（对照 `FMaterialUniformExpression`，`.h:56-81`）
+
+```cpp
+#pragma once
+#include "Core/Public/RefCounted.h"     // Ref<> 引用计数智能指针（对标 TRefCountPtr）
+#include "Core/Public/MathTypes.h"      // Vec4
+#include "MaterialGraph/Public/Types.h"
+#include <vector>
+
+// 渲染期上下文：表达式树 CPU 求值时提供外部数据。
+// 当前无参数源（空壳）；参数系统的求值入口就是它。
+struct MaterialRenderContext {};
+
+// 表达式树基类。对照 FMaterialUniformExpression（MaterialUniformExpressions.h:56）
+class UniformExpression : public RefCounted {
+public:
+    // 这棵子树是否编译期常量（整棵子树无参数节点才为真）。
+    // 基类默认 false——只有 Constant 叶子/Folded 递归判定才返回 true。
+    // 对照 UE：virtual bool IsConstant() const { return false; }
+    virtual bool IsConstant() const { return false; }
+
+    // 语义相等判定（去重用）：两棵树结构、值、类型完全一致才为真。
+    // 对照 UE：virtual bool IsIdentical(const FMaterialUniformExpression*) const { return false; }
+    virtual bool IsIdentical(const UniformExpression* other) const { return false; }
+
+    // CPU 求值：把这棵子树算成一个 4 分量值（对标 UE GetNumberValue(Context, FLinearColor&)）。
+    // 只对 IsConstant()==true 的树保证结果确定；含参数的树由参数表决定。
+    virtual void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const { out = Vec4(0,0,0,0); }
+
+    virtual ~UniformExpression() = default;
+};
+```
+
+### 基类每个虚函数的作用
+
+| 虚函数 | UE 对应 | 作用 | 谁依赖它 |
+|--------|---------|------|---------|
+| `IsConstant()` | 同名（`.h:65`）| 递归判定子树是否纯常量 | 算子的"立即折叠"判定：两边都常量 → 编译期算成字面量，不生成运算 |
+| `IsIdentical(other)` | 同名（`.h:66`）| 语义去重 | `AddUniformExpression` 的第二层去重：相同表达式只建一个 chunk（多个材质属性共享）|
+| `GetNumberValue(ctx, out)` | 同名（`.h:70`）| CPU 端求值整棵树 | 立即折叠时算值；参数变化时运行时重求值（不重编译 shader，即 preshader 语义）|
+
+**UE 有、教学版不采用的基类成员**（逐个说明）：
+
+| UE 成员 | 作用 | 不采用原因 |
+|---------|------|-----------|
+| `GetType()`（`FMaterialUniformExpressionType` RTTI）| 序列化/类型分派 | 教学版用 C++ 自带的 `dynamic_cast`/`IsIdentical` 内部 `static_cast` 前的类别判断即可，不需要手写 RTTI 注册表 |
+| `WriteNumberOpcodes(FPreshaderData&)` | 把树编译成 preshader **字节码**（后序遍历写指令流）| 教学版不做字节码虚拟机——树的求值直接用 C++ 虚函数递归（`GetNumberValue`），语义等价、实现省一个 VM |
+| `GetChildren()` | 暴露子节点数组（供遍历/序列化/剔除）| 没有 bytecode 序列化和剔除 pass 就没有遍历需求 |
+| `UniformOffset` / `UniformIndex` / `ShaderFrequencyMask` | preshader 结果在 uniform buffer 里的布局 | 课 8 的 cbuffer 布局不需要按 UE 的对齐规则压缩 |
+
+### 常量叶子：`UniformConstant`（对照 `FMaterialUniformExpressionConstant`，`.h:257-306`）
+
+```cpp
+// 常量叶子。对照 FMaterialUniformExpressionConstant：
+// UE 用 FLinearColor Value + uint8 ValueType——4 分量颜色 + 类型标签，
+// 不是 variant！float1-4 统一按 4 分量存，类型标签决定取几个分量。
+class UniformConstant : public UniformExpression {
+public:
+    UniformConstant(const Vec4& value, EValueType type) : value_(value), type_(type) {}
+
+    bool IsConstant() const override { return true; }
+
+    bool IsIdentical(const UniformExpression* other) const override {
+        auto* o = dynamic_cast<const UniformConstant*>(other);
+        return o && o->type_ == type_ && o->value_ == value_;   // 类型 + 值都相等
+    }
+
+    void GetNumberValue(const MaterialRenderContext&, Vec4& out) const override {
+        out = value_;   // 叶子直接返回存储值
+    }
+
+private:
+    Vec4      value_;   // 4 分量统一存储（float1 存 (x,x,x,x)，float2 存 (x,y,0,0)，UE 同款）
+    EValueType type_;   // 类型标签：决定有效分量数
+};
+```
+
+**为什么 4 分量 + 标签而不是 `variant<float, Vec2, Vec3, Vec4>`**：UE 的选择。求值永远在 4 分量上进行（`FLinearColor` 逐分量乘除就是 4 分量全算），类型标签只在**生成 HLSL 字面量**和**语义比较**时区分维度。好处：`FoldedMath` 求值不用分发 variant 类型——统一 4 分量算完，由 chunk 的 `Type` 决定输出格式。
+
+### 二元运算节点：`UniformFoldedMath`（对照 `FMaterialUniformExpressionFoldedMath`，`.h:1093-1158`）
+
+```cpp
+// 折叠运算种类。对照 UE EFoldedMathOperation（.h:1093）
+enum class EFoldedMathOp : uint8_t {
+    Add, Sub, Mul, Div, Dot, Cross,   // UE FMO_Add/Sub/Mul/Div/Dot/Cross 一一对应
+};
+
+// 二元运算节点。对照 FMaterialUniformExpressionFoldedMath（.h:1103）：
+//   IsConstant  = A && B 递归（.h:1134-1137）
+//   IsIdentical = A/B/Op/ValueType 四者递归相等（.h:1138-1146）
+class UniformFoldedMath : public UniformExpression {
+public:
+    UniformFoldedMath(UniformExpression* a, UniformExpression* b,
+                      EFoldedMathOp op, EValueType type)
+        : a_(a), b_(b), op_(op), type_(type) {}
+
+    bool IsConstant() const override {
+        return a_->IsConstant() && b_->IsConstant();   // 递归：子树全常量才算常量
+    }
+
+    bool IsIdentical(const UniformExpression* other) const override {
+        auto* o = dynamic_cast<const UniformFoldedMath*>(other);
+        return o && op_ == o->op_ && type_ == o->type_
+                && a_->IsIdentical(o->a_.get()) && b_->IsIdentical(o->b_.get());
+    }
+
+    void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const override {
+        Vec4 va, vb;
+        a_->GetNumberValue(ctx, va);        // 先递归求两个孩子（后序遍历）
+        b_->GetNumberValue(ctx, vb);
+        EvalComponents(va, vb, out);        // 逐分量/按运算语义组合
+        if (op_ == EFoldedMathOp::Dot)   out = Vec4(DotComponents(va, vb), 0, 0, 0);
+        if (op_ == EFoldedMathOp::Cross) out = CrossComponents(va, vb);
+    }
+
+private:
+    // 逐分量四则：Add/Sub/Mul/Div 对 4 个分量全算（维度裁剪交给类型标签，
+    // 对照 UE FLinearColor 的 operator* / operator/ 就是 4 分量全算）
+    static void EvalComponents(const Vec4& a, const Vec4& b, Vec4& out);
+    static float DotComponents(const Vec4& a, const Vec4& b);   // 前 N 分量点积（N 由 type_ 决定）
+    static Vec4  CrossComponents(const Vec4& a, const Vec4& b); // 前 3 分量叉积
+
+    Ref<UniformExpression> a_, b_;   // 子树（引用计数，对标 TRefCountPtr）
+    EFoldedMathOp op_;
+    EValueType    type_;             // 运算的"操作数维度"标签（Dot/Cross 用，对标 UE ValueType 成员）
+};
+```
+
+### 一元运算节点：`UniformFoldedUnary`
+
+UE 为每个一元运算**单独建类**（如 `FMaterialUniformExpressionRcp`——Div 的倒数优化用，见 `.cpp:9696`；`FMaterialUniformExpressionPeriodic` 等）。教学版合并成一个类 + op 枚举，**语义完全一致**（IsConstant 递归 / IsIdentical 递归 / GetNumberValue 逐分量）：
+
+```cpp
+enum class EFoldedUnaryOp : uint8_t { Neg, Abs, Sine, Cosine, Rcp };
+
+class UniformFoldedUnary : public UniformExpression {
+public:
+    UniformFoldedUnary(UniformExpression* x, EFoldedUnaryOp op) : x_(x), op_(op) {}
+
+    bool IsConstant() const override { return x_->IsConstant(); }   // 递归
+
+    bool IsIdentical(const UniformExpression* other) const override {
+        auto* o = dynamic_cast<const UniformFoldedUnary*>(other);
+        return o && op_ == o->op_ && x_->IsIdentical(o->x_.get());
+    }
+
+    void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const override {
+        Vec4 v; x_->GetNumberValue(ctx, v);
+        switch (op_) {
+            case EFoldedUnaryOp::Neg:    out = Vec4(-v.x, -v.y, -v.z, -v.w); break;
+            case EFoldedUnaryOp::Abs:    out = Vec4(std::abs(v.x), std::abs(v.y),
+                                                    std::abs(v.z), std::abs(v.w)); break;
+            case EFoldedUnaryOp::Sine:   out = Vec4(std::sin(v.x), std::sin(v.y),
+                                                    std::sin(v.z), std::sin(v.w)); break;
+            case EFoldedUnaryOp::Cosine: out = Vec4(std::cos(v.x), std::cos(v.y),
+                                                    std::cos(v.z), std::cos(v.w)); break;
+            case EFoldedUnaryOp::Rcp:    out = Vec4(1.f/v.x, 1.f/v.y, 1.f/v.z, 1.f/v.w); break;
+        }
+    }
+
+private:
+    Ref<UniformExpression> x_;
+    EFoldedUnaryOp op_;
+};
+```
+
+### 三种形态在这棵树上怎么统一（回看背景知识的表）
+
+- `Constant3(1,0,0)` → 建 `UniformConstant(Vec4(1,0,0,0), MCT_Float3)` 叶子
+- `Add(Constant(1), Constant(2))` → 两边都 `IsConstant()` → **不建树，立即求值**成 `UniformConstant(3)`（见第七部分"立即折叠 vs 建树"）
+- `Add(param, Constant(2))`（参数，课 20）→ 建子树，运行时 `GetNumberValue` 求值
+- `Add(texSample结果, x)` → 无表达式 → 纯 HLSL 代码串 chunk
+
+---
+
+## 第三部分：CodeChunk——对齐 FShaderCodeChunk 全字段
 
 ### 文件：`src/Compiler/Public/CodeChunk.h`
+
+### UE `FShaderCodeChunk` 全字段表（`.h:83-174`，每个字段的作用）
+
+| UE 字段 | 作用 | 教学版 |
+|---------|------|--------|
+| `uint64 Hash` | 代码块哈希——"不同表达式生成了等价代码"时去重（默认就是代码串的 CityHash64）| ✅ `hash` |
+| `uint64 MaterialAttributeMask` | MaterialAttributes 引脚的属性位掩码——一个引脚打包多个材质属性（如 BSD 节点），记录这个 chunk 覆盖了哪些属性 | ❌ 无 MaterialAttributes 节点 |
+| `FString DefinitionFinite` | 代码定义串（**硬件有限差分**版本）——非内联时是 `float3 Local0 = ...;` 局部变量声明，内联时是直接嵌入的表达式 | ✅ `code`（教学版只有一版定义串）|
+| `FString DefinitionAnalytic` | 代码定义串（**解析偏导**版本）——导数感知材质（如曲面细分位移）需要解析导数时用这版 | ❌ 不做导数双轨（需要整套 DerivativeAutogen）|
+| `FString SymbolName` | 局部变量名（`Local0`）。**有 UniformExpression 或内联时为空**，直接用 Definition | ✅ `symbol_name` |
+| `TRefCountPtr<FMaterialUniformExpression> UniformExpression` | 挂的表达式树（常量/含参数）。**为空 = 纯 GPU 代码块** | ✅ `uniform_expression`（`Ref<UniformExpression>`）|
+| `TArray<int32> ScopedChunks` | 作用域在此 chunk 下的子块（Custom 节点函数体的块）——翻译完成后统一填充 | ❌ 无 Custom 节点作用域 |
+| `TArray<int32> ReferencedCodeChunks` | 依赖哪些其他 chunk——生成代码时按依赖顺序输出 | ✅ `references` |
+| `EMaterialValueType Type` | 值类型（bitmask）| ✅ `type` |
+| `int32 DeclaredScopeIndex / UsedScopeIndex / ScopeLevel` | 作用域三件套：声明在哪个作用域/使用在哪个作用域/嵌套层级——Custom 函数体内声明的变量不能泄漏到外层 | ❌ 同上，无函数作用域 |
+| `bool bInline` | 内联块：无变量名，Definition 直接嵌入使用处 | ✅ `is_inline` |
+| `bool bIntermediate` | 中间块标记——只为辅助其他 chunk 存在（如 LWC 转换辅助块），编译收尾可剔除 | ❌ 无剔除 pass |
+| `EDerivativeStatus DerivativeStatus` | 此表达式的偏导数状态（有限差分/解析/无效）| ❌ 不做导数 |
+
+### 教学版 CodeChunk
 
 ```cpp
 #pragma once
 #include "MaterialGraph/Public/Types.h"
-#include "Core/Public/MathTypes.h"   // Vec2/Vec3/Vec4
+#include "Compiler/Public/UniformExpression.h"
+#include "Core/Public/RefCounted.h"
 #include <string>
 #include <vector>
 #include <cstdint>
-#include <variant>
 
+// 代码块：一行（或一段）HLSL 代码 + 元数据。对照 FShaderCodeChunk（HLSLMaterialTranslator.h:83）
 struct CodeChunk {
-    uint64_t hash = 0;              // ① 哈希：去重用（相同代码只存一份）
-    std::string code;               // ② HLSL 代码片段，如 "Local0 + Local1"
-    std::string symbol_name;        // ③ 变量名，如 "Local2"（非内联时）
-    EValueType type = EValueType::Unknown;  // ④ 类型（决定生成 float/float3/...）
-    bool is_inline = false;         // ⑤ 短表达式直接嵌入，不声明变量
-    bool is_constant = false;       // ⑥ 是否编译时常量（折叠标记）
-
-    // ⑦ 常量值——核心：variant 支持向量
-    std::variant<float, Vec2, Vec3, Vec4> constant_value;
-
-    std::vector<int32_t> references; // ⑧ 依赖哪些其他 chunk（确定声明顺序）
+    uint64_t hash = 0;                        // 代码哈希：纯代码块去重（UE 同）
+    std::string code;                         // 定义串（= UE DefinitionFinite）
+    std::string symbol_name;                  // 局部变量名；有 uniform_expression 时为空（UE 同）
+    EValueType type = MCT_Unknown;            // 值类型（bitmask）
+    bool is_inline = false;                   // 内联块：无变量名，code 直接嵌入（UE bInline）
+    Ref<UniformExpression> uniform_expression;// 表达式树；空 = 纯 GPU 代码块（UE 同名成员）
+    std::vector<int32_t> references;          // 依赖的 chunk 索引（UE ReferencedCodeChunks）
 };
 ```
 
-### 每个字段的作用 + 为什么
+### 两个构造函数的语义（UE 的设计，教学版遵守）
 
-| 字段 | 作用 | 为什么需要 |
-|------|------|-----------|
-| ① `hash` | 代码块去重 | 相同的 `Local0 + Local1` 只存一份，UE 也这么做（CityHash64）|
-| ② `code` | HLSL 片段 | 最终拼进着色器，如 `"float3(1,0,0) + float3(0,1,0)"` |
-| ③ `symbol_name` | 局部变量名 | 非内联时生成 `float3 Local2 = ...;`，下游用 `Local2` 引用 |
-| ④ `type` | 值类型 | 决定生成 `float` / `float3` / `int` / 等声明；算术推导用 |
-| ⑤ `is_inline` | 是否内联 | 短表达式（如 `1.0`）直接嵌入使用处，不生成变量声明——减少无谓局部变量 |
-| ⑥ `is_constant` | 是否常量 | 折叠判定根：`Add` 里 `if (IsConstant(a) && IsConstant(b))` 走折叠 |
-| ⑦ `constant_value` | **常量值（variant）** | 折叠时存实际数值，**能装 Vec2/3/4，向量也能折叠** |
-| ⑧ `references` | 依赖追踪 | 记录依赖哪些 chunk，生成代码时按依赖顺序声明 |
+UE 给了两个构造函数（`.h:143` / `.h:160`），对应 chunk 的两种来源：
 
-### 为什么 `constant_value` 用 `std::variant`
+1. **纯代码块**（`Hash, Definition, SymbolName, Type, bInline`）——`AddCodeChunkInner` 路径用：可能有 SymbolName（非内联时分配 `Local0`）。
+2. **带表达式树的块**（`Hash, UniformExpression, Definition, Type`）——`AddUniformExpressionInner` 路径用：**没有 SymbolName 参数、bInline 恒 false**，但字段注释说明了真正语义：*有 UniformExpression 时 Definition 直接用，不声明局部变量*。即**表达式块永远"内联"使用**——常量短串直接嵌，含参数块在课 8 生成代码时替换为 preshader 访问串。
 
-如果 `constant_value` 是单个 `float`，**存不下向量**——所以 `Constant3(1,0,0)` 只能走 `AddCodeChunk` 存成 `"float3(1,0,0)"` 字符串、`is_constant=false`、**不参与折叠**。两个颜色常量相加 `Add(Constant3(1,0,0), Constant3(0,1,0))` 无法编译期算。
-
-改成 `std::variant<float, Vec2, Vec3, Vec4>`，向量也能存、能折叠：
+`GetParameterCode` 因此是三段判断（顺序重要）：
 
 ```cpp
-// 能这样折叠：
-int a = c.Constant3(1,0,0);          // constant_value = Vec3(1,0,0)
-int b = c.Constant3(0,1,0);          // constant_value = Vec3(0,1,0)
-int s = c.Add(a, b);                 // 折叠！constant_value = Vec3(1,1,0)
+// 有表达式树 → 直接用定义串（常量字面量 / preshader 访问）
+// 内联块    → 定义串
+// 非内联块  → 变量名（引用 float3 Local0 = ...; 的声明）
+if (c.uniform_expression) return c.code;
+if (c.is_inline)          return c.code;
+return c.symbol_name;
 ```
-
-`variant` 的 `index()` 告诉你存的是哪种类型，`std::get<Vec3>()` 取值。配合 `GetType(idx)`（EValueType），编译器知道这个常量是 float 还是 Vec3。
-
-### 对照 UE：`FShaderCodeChunk` 怎么存常量
-
-UE **不在 chunk 里直接存数值**，而是挂一棵表达式树（`Engine/Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.h:83-174`）：
-
-```cpp
-struct FShaderCodeChunk {
-    uint64 Hash;
-    FString DefinitionFinite;       // HLSL 串
-    FString SymbolName;
-    EMaterialValueType Type;
-    bool bInline;
-    TRefCountPtr<FMaterialUniformExpression> UniformExpression;  // ← 常量/可折叠表达式树
-    ...
-};
-```
-
-常量值存在 `UniformExpression` 指向的 `FMaterialUniformExpressionConstant` 节点里的 `FLinearColor Value`（4 分量，能装 float1-4）+ `ValueType` 标签。
-
-**UE 为什么用表达式树而不是 variant**：
-- UE 要支持 **preshader**——含运行时参数（如 `ScalarParameter`）的表达式也能"折叠"成 CPU 端预求值，而非编译期算死。`FoldedMath(A, B, Op)` 子树保留参数依赖，运行时求值。
-- 表达式树能 `IsConstant()` **递归判定**（整棵子树都是常量才算常量）、`IsIdentical()` 去重。
-- 代价：复杂（要设计表达式类层次 + 序列化 preshader 字节码 + 求值器）。
-
-**教学版为什么用 variant**：
-- 不做 preshader（含参数的运行时折叠）——材质参数直接当 uniform 传给 shader，不在编译器里折叠
-- 只做**编译期常量折叠**（纯常量算成字面量）——variant 直接存值、直接算，够用
-- 代价：丢失了"含参数表达式预求值"能力，但教学版不需要
-
-> 这是有意的简化：**UE 用表达式树换 preshader 能力（含参数预求值），教学版用 variant 换简单（只编译期折叠纯常量）**。核心语义保留——"是否常量"决定能否折叠。
 
 ---
 
-## 第三部分：错误诊断基础设施（编译器层）
+## 第四部分：错误诊断基础设施（编译器层）
 
-> 错误诊断分两层：**编译器层**（错误生成 + 收集）留本课；**UI 层**（节点高亮 + 错误面板 + 点击跳转）→ 课 19。本课只做编译器层。
->
-> 错误检查分两类：**算子内检查**（类型不匹配 / 除零）留本课，**图层级检查**（循环依赖 / 必需引脚未连）→ 课 7（依赖 `Compile(Graph*)` 主流程）。
-
-### 为什么错误要带节点/pin 定位
-
-**问题**：如果 `CompileResult` 只有一个 `error_message`（一句话），用户看到 "Type mismatch: Float3 vs Float1" 不知道是图里**哪个 Add 节点**的**哪个引脚**出错——只能眼睛挨个扫图。一个稍大的材质图可能有十几个 Add，这种错误信息几乎没有可操作性。
-
-**正确做法**：每个错误携带 `{nodeId, pinName}`，编辑器（课 19）据此：
-- 把对应节点的标题栏按严重级别着色（Error=红 / Warning=黄 / Info=蓝）
-- 把具体出错的引脚单独标红（不是整个节点一片红——多个引脚时只标出错的那一个）
-- 错误列表里点击一条 → 跳到对应节点 + 选中引脚
-
-**为什么必须支持多错误**：一个图可能同时有多个错误（`MaterialOutput.BaseColor` 没连 + 某个 `Add` 类型不匹配 + 另一个 `Divide` 除零）。一次编译把所有错误都报出来，用户一轮修复，不用"改一个 → 重编译 → 发现下一个"反复横跳。
-
-**对照 UE**：UE 编译错误带 line + node 信息，`HandleMaterialCompilationErrors`（`Engine/Source/Runtime/Engine/Private/Materials/Material.cpp`）把编译器收集的错误回填到 `UMaterialExpression::LastErrorText`，再触发节点 redraw。
+> 错误诊断分两层：**编译器层**（错误生成 + 收集）留本课；**UI 层**（节点高亮 + 错误面板）→ 课 19。
 
 ### 文件：`src/Compiler/Public/CompileError.h`
 
@@ -313,19 +473,18 @@ struct FShaderCodeChunk {
 // 错误严重级别（决定 UI 着色 + 是否中断编译）
 enum class EErrorSeverity {
     Error,    // 编译失败：类型不匹配、循环依赖、必需引脚未连接
-    Warning,  // 编译继续：除零保护、隐式窄化（Float3→Float1）
+    Warning,  // 编译继续：除零保护、隐式窄化
     Info,     // 提示：未使用节点、冗余算子
 };
 
 struct CompileError {
-    UUID            nodeId   = UUID::Invalid();  // 出错节点（必需——UI 按它高亮、点击跳节点）
-    std::string     pinName;                     // 出错引脚名（可空——节点级错误如环检测）
+    UUID            nodeId   = UUID::Invalid();  // 出错节点（UI 按它高亮、点击跳转）
+    std::string     pinName;                     // 出错引脚名（空 = 节点级错误如环检测）
     std::string     message;                     // 用户可读描述（要带上下文）
     EErrorSeverity  severity = EErrorSeverity::Error;
 
-    // 去重 key：同 node + 同 pin + 同 message 视为同一个错误。
-    // 递归编译可能多次触发同一检查（同一个节点经多条路径被访问），需去重。
-    // 用方法而不是 operator==，避免被误用到别处的相等比较
+    // 去重 key：同 node + 同 pin + 同 message 视为同一个错误
+    // （递归编译可能多次触发同一检查）。用方法不用 operator==，避免误用
     bool SameAs(const CompileError& other) const {
         return nodeId == other.nodeId
             && pinName == other.pinName
@@ -334,18 +493,7 @@ struct CompileError {
 };
 ```
 
-**字段说明**：
-
-| 字段 | 为什么需要 |
-|------|----------|
-| `nodeId` | 编辑器按节点高亮（标题栏染色）、错误列表点击跳节点，都要 nodeId |
-| `pinName` | 区分节点级 vs 引脚级错误。环检测是节点级（pinName 空）；类型不匹配是引脚级（pinName="A"/"B"）。引脚级高亮只标出错的那个 pin，不是整节点一片红 |
-| `message` | 用户可读描述。要带足够上下文，如 `"Type mismatch on pin 'A': expects Float1 but upstream provides Float3"` |
-| `severity` | UI 着色（红/黄/蓝）+ 决定是否中断编译。Error 中断当前分支，Warning/Info 继续 |
-
-**为什么用 enum 而不是 `bool is_warning`**：将来要加 Info（未使用节点提示）、Fatal（编译器内部错误），enum 扩展性更好；debug 时打印枚举名也比看 bool 直观。
-
-### `CompileResult`（直接定义最终版）
+### `CompileResult`（最终版，课 7 的 `Compile()` 直接填它）
 
 ```cpp
 struct CompileResult {
@@ -354,7 +502,6 @@ struct CompileResult {
     std::string                 error_message;         // 兼容字段：第一个 Error 级错误的 message
     std::vector<CompileError>   errors;                // 所有错误（含 Warning/Info）
 
-    // 便捷查询：是否有 Error 级错误（Warning/Info 不算）
     bool HasErrors() const {
         for (const auto& e : errors)
             if (e.severity == EErrorSeverity::Error) return true;
@@ -363,40 +510,26 @@ struct CompileResult {
 };
 ```
 
-**`error_message` 保留作为兼容字段**：`Compile()`（课 7 实现）末尾把第一个 Error 的 message 复制到 `error_message`，简化只想知道"出错没、错是什么"的调用方代码。
-
-> **`hlsl_code` 在失败时也填**：即使有 Error，编译器仍可能生成部分 HLSL（错误分支被短路，其他分支正常）。课 8 实现的代码面板可以继续显示这部分代码（红色标错），帮用户对照定位——不要清空。
-
-### 错误收集策略：贯穿编译路径一次加全
-
-**原则**：错误检查**贯穿所有编译路径**，在出错点立即 `EmitError(...)`——不要"先标记、编译结束后回扫补错误"。
-
-**为什么**：
-
-1. **递归编译天然带上下文**：`CompileInputPin(node, "A")`（课 7）入口知道当前在编译哪个节点的哪个引脚。失败时直接拿 `node`/`"A"` emit，**事后回扫反而要在两个地方维护同一套上下文**（编译时一份 + 回扫时一份），极易不一致。
-
-2. **避免遗漏路径**：编译器有十几个算子，每个都有类型检查、除零检查……如果在算子里发错误，每加一个算子自动获得错误报告；如果"事后扫"，每加一个算子都要记得在回扫函数里加对应检查。
-
-3. **多错误一次报全**：每个算子的错误检查独立运行，编译完一轮 `errors_` 自然收集了所有错误。
+> `hlsl_code` 在失败时也填——错误分支被短路，其他分支正常，部分 HLSL 帮用户对照定位，不清空。
 
 ### 错误短路 vs 继续的策略
 
 | 严重度 | 行为 | 例子 |
 |--------|------|------|
-| Error（当前算子）| 当前算子**不生成新 chunk**（返回 `INDEX_NONE=-1`），但**不立即停止整个编译** | 类型不匹配：`Add` 返回 -1，下游算子的 `if (a < 0) return -1;` 哨兵会传播 |
-| Error（致命）| 立即 return，不继续编译 | 循环依赖（课 7）：无法继续拓扑遍历，整个 `Compile()` 提前结束 |
-| Warning | 编译继续（生成兜底 chunk），同时进 `errors_` | 除零：返回 `Constant(0)`，但发一条 Warning |
+| Error（当前算子）| 不生成新 chunk（返回 `INDEX_NONE=-1`），**不停止整个编译** | 类型不匹配：`Add` 返回 -1，下游 `if (a < 0) return -1;` 哨兵传播 |
+| Error（致命）| 立即 return，不继续编译 | 循环依赖（课 7）|
+| Warning | 编译继续（生成兜底 chunk），同时进 `errors_` | 除零：折叠为 `Constant(0)` + Warning |
 | Info | 编译继续，无副作用 | 未使用节点提示 |
 
-这套"短路当前算子但继续其他分支"的策略对照 UE 的 `INDEX_NONE` 哨兵传播（`HLSLMaterialTranslator.cpp` 所有算子开头都检查 `if (A < 0 || B < 0) return INDEX_NONE;`）。**关键点**：上游 Error 让下游也"染上"`INDEX_NONE`，但下游**不要重复 EmitError**同一个错误（去重靠 `SameAs`）。
+对照 UE 的 `INDEX_NONE` 哨兵传播（所有算子开头 `if (A == INDEX_NONE || B == INDEX_NONE) return INDEX_NONE;`）。**关键**：上游 Error 让下游"染上"哨兵，但下游**不重复 EmitError**（`SameAs` 去重）。
 
-### `EmitError` 收集器 + 上下文成员（MaterialCompiler 私有成员）
+### `EmitError` 收集器（HLSLTranslator 私有段，第五部分整合）
 
 ```cpp
-// MaterialCompiler.h private 段（在第四部分完整定义类时整合进去）
-std::vector<CompileError> errors_;        // 所有错误
-Node*         current_node_ = nullptr;    // 当前正在编译的节点（EmitError 默认 nodeId 用它）
-std::string   current_pin_;               // 当前正在编译的引脚（EmitError 默认 pinName 用它）
+// HLSLTranslator.h private 段
+std::vector<CompileError> errors_;
+Node*       current_node_ = nullptr;   // 当前正在编译的节点（课7 的 CompileInputPin 设置）
+std::string current_pin_;              // 当前正在编译的引脚（同上）
 
 void EmitError(const std::string& msg,
                EErrorSeverity sev = EErrorSeverity::Error,
@@ -405,709 +538,727 @@ void EmitError(const std::string& msg,
 ```
 
 ```cpp
-// MaterialCompiler.cpp
-void MaterialCompiler::EmitError(const std::string& msg, EErrorSeverity sev,
-                                  const UUID& overrideNodeId,
-                                  const std::string& overridePinName) {
+// HLSLTranslator.cpp
+void HLSLTranslator::EmitError(const std::string& msg, EErrorSeverity sev,
+                               const UUID& overrideNodeId,
+                               const std::string& overridePinName) {
     CompileError err;
     err.message  = msg;
     err.severity = sev;
-    // 优先用 override（检查项显式指定），否则用 current_* 上下文
+    // 优先 override（算子显式指定），否则 current_* 上下文（课7 接上后自动有值）
     err.nodeId   = overrideNodeId.IsValid() ? overrideNodeId
                   : (current_node_ ? current_node_->id : UUID::Invalid());
     err.pinName  = !overridePinName.empty() ? overridePinName : current_pin_;
 
-    // 去重：同 node + 同 pin + 同 message 只存一份
-    // （递归编译可能多次触发同一检查，如环路上的节点被多条路径访问）
-    for (const auto& existing : errors_)
+    for (const auto& existing : errors_)      // SameAs 去重
         if (existing.SameAs(err)) return;
     errors_.push_back(err);
 }
 ```
 
-**`current_node_` / `current_pin_` 谁来设**：课 7 实现的 `CompileInputPin` 入口会设 `current_node_ = node; current_pin_ = pin_name;`——这是"贯穿编译路径一次加全"策略的核心机制，让所有下游算子的 EmitError 都能拿到正确的定位上下文，不需要每个算子自己手动传 nodeId。**课 6 阶段**还没接 `CompileInputPin`，所以 `current_node_` 默认为 `nullptr`，算子里 EmitError 时 `nodeId` 会落到 `UUID::Invalid()`——这是正常的，等课 7 接上 `CompileInputPin` 后自动有上下文。`compiler_test.cpp` 测试错误收集时，可以**手动 `compiler.current_node_ = &someNode`**（友元测试）或**显式 overrideNodeId 参数**绕过。
+**课 6 阶段** `current_node_` 是 nullptr，EmitError 的 nodeId 落到 `UUID::Invalid()`——正常，课 7 接 `CompileInputPin` 后自动有上下文。测试用显式 `overrideNodeId` 参数或友元访问。
 
-> **调试用 helper**：错误信息里要展示类型名，建议加个 `TypeName(EValueType)` 函数（返回 `"Float1"`/`"Float3"`/...）。可以基于 `TypeSystem::ToHLSLType` 包一层去 `"float"` 前缀，或单独写个 switch。错误信息里的类型名要让人看得懂。
+> **调试 helper**：错误信息要展示类型名，加 `TypeName(EValueType)`（返回 `"MCT_Float3"` 等，单值位查表）。
 
 ---
 
-## 第四部分：常数折叠 + 算术算子（含 EmitError 集成）
+## 第五部分：双层编译器——抽象接口 + HLSL 实现
 
-### 文件：`src/Compiler/Public/ConstantFolding.h`
+### UE 为什么拆两层（真实理由，`MaterialCompiler.h:141-144`）
+
+UE 基类注释原话：*"The interface used to translate material expressions into executable code. Note: Most member functions should be pure virtual to force a FProxyMaterialCompiler override!"*
+
+三个真实理由：
+
+1. **代理编译器**（`FProxyMaterialCompiler`）：预览材质、Lightmass 烘烤等场景需要一个"替身编译器"——拦截特定调用（如把某些表达式替换成常量），其余转发给真编译器。没有抽象接口就没有代理。
+2. **多种编译器类型**：`EMaterialCompilerType { Standard, Lightmass, MaterialProxy }`（`MaterialCompiler.h:86-91`）——表达式节点可以根据编译器类型选择不同行为。
+3. **依赖倒置**：`UMaterialExpression`（表达式）只 include 抽象接口头，**不知道** HLSL 实现的存在。没有这层接口，"表达式调编译器、编译器调表达式"会形成循环依赖。教学版同理：`Expression`（L4）只依赖 `MaterialCompiler` 接口，`HLSLTranslator`（L5）实现接口并通过 `ExpressionRegistry`（L4）调用表达式——环被接口剪开。
+
+```
+Expression 子类 ──只认识──▶ MaterialCompiler（抽象接口，纯虚算子）
+                                   ▲ 实现
+HLSLTranslator ──创建/求值──▶ ExpressionRegistry ──▶ Expression 子类
+```
+
+### 文件：`src/Compiler/Public/MaterialCompiler.h`（抽象基类）
+
+对照 `FMaterialCompiler`（`MaterialCompiler.h:145`）——纯虚算子接口，本课只声明课 6 实现的算子集：
 
 ```cpp
 #pragma once
-#include "Core/Public/MathTypes.h"
-#include <cmath>
-#include <variant>
-#include <optional>
+#include "MaterialGraph/Public/Types.h"
+#include "Compiler/Public/UniformExpression.h"
 #include <string>
+#include <cstdint>
 
-// 常量值类型（和 CodeChunk::constant_value 一致）
-using ConstValue = std::variant<float, Vec2, Vec3, Vec4>;
-
-class ConstantFolding {
+// 编译器抽象接口。对照 FMaterialCompiler（Engine/Public/MaterialCompiler.h:145）：
+// 纯虚算子集，表达式节点的 Compile() 只看到这个接口。
+class MaterialCompiler {
 public:
-    // 二元运算折叠。返回空 optional 表示不能折叠（除零、类型不兼容、未知 op）
-    static std::optional<ConstValue> FoldBinary(const std::string& op,
-                                                 const ConstValue& a,
-                                                 const ConstValue& b) {
-        // 都是向量但维度不同（Vec2+Vec3）→ 不折叠，让调用方发 HLSL 或报错
-        if (DimOf(a) > 1 && DimOf(b) > 1 && DimOf(a) != DimOf(b))
-            return std::nullopt;
+    virtual ~MaterialCompiler() = default;
 
-        const int dim = std::max(DimOf(a), DimOf(b));   // 结果维度
-        float pa[4], pb[4];
-        FillArray(a, dim, pa);   // 标量(float)广播到 dim 个分量；向量按自身分量填
-        FillArray(b, dim, pb);
+    // 常量（全部走表达式树路径）
+    virtual int32_t Constant(float v) = 0;
+    virtual int32_t Constant2(float x, float y) = 0;
+    virtual int32_t Constant3(float x, float y, float z) = 0;
+    virtual int32_t Constant4(float x, float y, float z, float w) = 0;
 
-        // 除零检查：任意分量 b==0 则不能折叠（交由 Divide 算子处理 EmitError）
-        if (op == "/") {
-            for (int i = 0; i < dim; ++i)
-                if (pb[i] == 0.0f) return std::nullopt;
-        }
+    // 算术
+    virtual int32_t Add(int32_t a, int32_t b) = 0;
+    virtual int32_t Subtract(int32_t a, int32_t b) = 0;
+    virtual int32_t Multiply(int32_t a, int32_t b) = 0;
+    virtual int32_t Divide(int32_t a, int32_t b) = 0;
+    virtual int32_t Power(int32_t base, int32_t exp) = 0;
+    virtual int32_t Lerp(int32_t a, int32_t b, int32_t alpha) = 0;
+    virtual int32_t Clamp(int32_t x, int32_t minVal, int32_t maxVal) = 0;
 
-        float r[4];
-        for (int i = 0; i < dim; ++i) {
-            if      (op == "+") r[i] = pa[i] + pb[i];
-            else if (op == "-") r[i] = pa[i] - pb[i];
-            else if (op == "*") r[i] = pa[i] * pb[i];
-            else if (op == "/") r[i] = pa[i] / pb[i];
-            else return std::nullopt;   // 未知 op
-        }
-        return MakeValue(r, dim);
-    }
+    // 一元
+    virtual int32_t Abs(int32_t x) = 0;
+    virtual int32_t Negate(int32_t x) = 0;
+    virtual int32_t Sine(int32_t x) = 0;
+    virtual int32_t Cosine(int32_t x) = 0;
 
-    // 一元运算折叠
-    static std::optional<ConstValue> FoldUnary(const std::string& op, const ConstValue& a) {
-        const int dim = DimOf(a);
-        float pa[4];
-        FillArray(a, dim, pa);
-        float r[4];
-        for (int i = 0; i < dim; ++i) {
-            if      (op == "abs") r[i] = std::abs(pa[i]);
-            else if (op == "neg") r[i] = -pa[i];
-            else if (op == "sin") r[i] = std::sin(pa[i]);
-            else if (op == "cos") r[i] = std::cos(pa[i]);
-            else return std::nullopt;
-        }
-        return MakeValue(r, dim);
-    }
+    // 向量
+    virtual int32_t Dot(int32_t a, int32_t b) = 0;
+    virtual int32_t Cross(int32_t a, int32_t b) = 0;
+    virtual int32_t Normalize(int32_t x) = 0;
+    virtual int32_t Length(int32_t x) = 0;
 
-    // 标量常量判定（代数化简用：x*1, x*0, x/1, x-0 的 1/0 检查）
-    static bool IsScalarZero(const ConstValue& v) {
-        return std::holds_alternative<float>(v) && std::get<float>(v) == 0.0f;
-    }
-    static bool IsScalarOne(const ConstValue& v) {
-        return std::holds_alternative<float>(v) && std::get<float>(v) == 1.0f;
-    }
+    // 向量操作 / 类型转换
+    virtual int32_t ComponentMask(int32_t input, bool r, bool g, bool b, bool a) = 0;
+    virtual int32_t AppendVector(int32_t a, int32_t b) = 0;
+    virtual int32_t ValidCast(int32_t code, EValueType dest_type) = 0;
 
-private:
-    // 维度：float=1, Vec2=2, Vec3=3, Vec4=4
-    static int DimOf(const ConstValue& v) {
-        switch (v.index()) {
-            case 0: return 1;   // float
-            case 1: return 2;   // Vec2
-            case 2: return 3;   // Vec3
-            case 3: return 4;   // Vec4
-        }
-        return 0;
-    }
-
-    // 把 ConstValue 按目标维度 dim 填到 out[]。float 标量会广播到所有分量
-    // （实现 Float1 + Float3 这种标量提升）；向量按自身分量填（不足的分量不动）
-    static void FillArray(const ConstValue& v, int dim, float out[4]) {
-        if (std::holds_alternative<float>(v)) {
-            float f = std::get<float>(v);
-            for (int i = 0; i < dim; ++i) out[i] = f;       // 标量广播
-        } else if (std::holds_alternative<Vec2>(v)) {
-            Vec2 vec = std::get<Vec2>(v); out[0] = vec.x; out[1] = vec.y;
-        } else if (std::holds_alternative<Vec3>(v)) {
-            Vec3 vec = std::get<Vec3>(v); out[0] = vec.x; out[1] = vec.y; out[2] = vec.z;
-        } else if (std::holds_alternative<Vec4>(v)) {
-            Vec4 vec = std::get<Vec4>(v); out[0] = vec.x; out[1] = vec.y; out[2] = vec.z; out[3] = vec.w;
-        }
-    }
-
-    // 按维度组装回 ConstValue
-    static ConstValue MakeValue(const float r[4], int dim) {
-        switch (dim) {
-            case 1: return r[0];
-            case 2: return Vec2(r[0], r[1]);
-            case 3: return Vec3(r[0], r[1], r[2]);
-            case 4: return Vec4(r[0], r[1], r[2], r[3]);
-        }
-        return r[0];
-    }
+    // 查询（对照 UE 基类的 GetType/GetParameterType/GetParameterUniformExpression）
+    virtual EValueType           GetType(int32_t index) const = 0;
+    virtual std::string          GetParameterCode(int32_t index) const = 0;
+    virtual EValueType           GetParameterType(int32_t index) const = 0;
+    virtual UniformExpression*   GetParameterUniformExpression(int32_t index) const = 0;
 };
 ```
 
-**关键**：折叠函数接收/返回 `ConstValue`（variant），能处理向量。例如 `FoldBinary("+", Vec3(1,0,0), Vec3(0,1,0))` 逐分量相加得 `Vec3(1,1,0)`。
+> UE 基类还有 `Error`/`ShouldStopTranslating`/`SetMaterialProperty` 等——教学版的错误收集是带定位的 `EmitError`（实现层内部），编译上下文（材质属性）到课 7 的 `Compile(Graph*)` 才出现，届时在基类**追加**声明。
 
-实现要点：用 `std::visit` 或检查 `variant.index()` 分发——两个 float 直接算、两个 Vec3 逐分量算、float × Vec3 标量广播（`Float1 + Float3` 情况）。
-
-### 代数化简（在 `Add/Sub/Mul/Div` 里特判，不只靠 FoldBinary）
-
-对照 UE 的 `Mul`（`HLSLMaterialTranslator.cpp:9939`）：
-
-| 模式 | 化简结果 | 例子 |
-|------|---------|------|
-| `x * 1` | `x`（直通，不生成新 chunk）| `Multiply(expr, Constant(1.0))` → 直接返回 expr 的索引 |
-| `x * 0` | `0` | `Multiply(expr, Constant(0.0))` → 返回 `Constant(0)` |
-| `x / 1` | `x` | |
-| `0 / x` | `0` | |
-| `x - 0` | `x` | |
-| `x - x` | `0` | |
-| `pow(x, 1)` | `x` | |
-| `pow(x, 0)` | `1` | |
-
-### Add/Sub/Mul/Div 的三段判定（对照 UE，含 EmitError）
-
-UE 的 `FHLSLMaterialTranslator::Add`（`.cpp:9849-9883`）有一套清晰的判定顺序，教学版照搬这个骨架，**段 1 直接带 EmitError**（不是返回 -1 让用户看不到原因）：
-
-```cpp
-// === Add：三段判定的模板（带 EmitError）===
-int32_t MaterialCompiler::Add(int32_t a, int32_t b) {
-    // 段 1：哨兵传播 + 类型检查（带 EmitError）
-    if (a < 0 || b < 0) return -1;   // 上游 Error 已发过错误，不重复
-    auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) {
-        EmitError("Add inputs incompatible: A=" + TypeName(GetType(a))
-                  + ", B=" + TypeName(GetType(b)),
-                  EErrorSeverity::Error,
-                  /*overrideNodeId=*/current_node_ ? current_node_->id : UUID::Invalid(),
-                  /*overridePinName=*/"A/B");   // ← 显式 override，算子不知是 A 还是 B 出错
-        return -1;
-    }
-
-    // 段 2：常数折叠（两边都是常量 → 编译期算出 variant）
-    if (IsConstant(a) && IsConstant(b)) {
-        auto folded = ConstantFolding::FoldBinary("+", GetConstantValue(a), GetConstantValue(b));
-        if (folded) return AddConstantChunk(resultType, *folded);
-    }
-
-    // 段 3：普通 HLSL 发射（简单算术走内联）
-    return AddInlinedCodeChunk(resultType,
-        GetParameterCode(a) + " + " + GetParameterCode(b));
-}
-
-// === Subtract：同 Add 模式，加一个 x-0→x 化简 ===
-int32_t MaterialCompiler::Subtract(int32_t a, int32_t b) {
-    if (a < 0 || b < 0) return -1;
-    auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) {
-        EmitError("Subtract inputs incompatible: A=" + TypeName(GetType(a))
-                  + ", B=" + TypeName(GetType(b)),
-                  EErrorSeverity::Error,
-                  current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
-        return -1;
-    }
-
-    if (IsConstant(a) && IsConstant(b)) {
-        auto folded = ConstantFolding::FoldBinary("-", GetConstantValue(a), GetConstantValue(b));
-        if (folded) return AddConstantChunk(resultType, *folded);
-    }
-    // 代数化简：x - 0 → x（b 是标量常量 0）
-    if (IsConstant(b) && ConstantFolding::IsScalarZero(GetConstantValue(b))) return a;
-
-    return AddInlinedCodeChunk(resultType,
-        GetParameterCode(a) + " - " + GetParameterCode(b));
-}
-
-// === Multiply：含 1*x→x、x*1→x、0*x→0、x*0→0 化简 ===
-int32_t MaterialCompiler::Multiply(int32_t a, int32_t b) {
-    if (a < 0 || b < 0) return -1;
-    auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) {
-        EmitError("Multiply inputs incompatible: A=" + TypeName(GetType(a))
-                  + ", B=" + TypeName(GetType(b)),
-                  EErrorSeverity::Error,
-                  current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
-        return -1;
-    }
-
-    if (IsConstant(a) && IsConstant(b)) {
-        auto folded = ConstantFolding::FoldBinary("*", GetConstantValue(a), GetConstantValue(b));
-        if (folded) return AddConstantChunk(resultType, *folded);
-    }
-    // 代数化简
-    if (IsConstant(a) && ConstantFolding::IsScalarOne (GetConstantValue(a))) return b;               // 1 * x → x
-    if (IsConstant(b) && ConstantFolding::IsScalarOne (GetConstantValue(b))) return a;               // x * 1 → x
-    if (IsConstant(a) && ConstantFolding::IsScalarZero(GetConstantValue(a))) return Constant(0.0f);  // 0 * x → 0
-    if (IsConstant(b) && ConstantFolding::IsScalarZero(GetConstantValue(b))) return Constant(0.0f);  // x * 0 → 0
-
-    return AddInlinedCodeChunk(resultType,
-        GetParameterCode(a) + " * " + GetParameterCode(b));
-}
-
-// === Divide：含除零保护（Warning）+ x/1→x 化简 ===
-int32_t MaterialCompiler::Divide(int32_t a, int32_t b) {
-    if (a < 0 || b < 0) return -1;
-    auto resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
-    if (resultType == EValueType::Unknown) {
-        EmitError("Divide inputs incompatible: A=" + TypeName(GetType(a))
-                  + ", B=" + TypeName(GetType(b)),
-                  EErrorSeverity::Error,
-                  current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
-        return -1;
-    }
-
-    // 除零保护：b 是常量 0 → 编译继续，但发 Warning（UI 才能高亮除数引脚）
-    if (IsConstant(b) && ConstantFolding::IsScalarZero(GetConstantValue(b))) {
-        EmitError("Division by zero: divisor (pin 'B') is constant 0",
-                  EErrorSeverity::Warning,
-                  current_node_ ? current_node_->id : UUID::Invalid(),
-                  /*overridePinName=*/"B");   // ← 精确到除数引脚
-        return Constant(0.0f);
-    }
-
-    if (IsConstant(a) && IsConstant(b)) {
-        auto folded = ConstantFolding::FoldBinary("/", GetConstantValue(a), GetConstantValue(b));
-        if (folded) return AddConstantChunk(resultType, *folded);
-    }
-    // 代数化简：x / 1 → x
-    if (IsConstant(b) && ConstantFolding::IsScalarOne(GetConstantValue(b))) return a;
-
-    return AddInlinedCodeChunk(resultType,
-        GetParameterCode(a) + " / " + GetParameterCode(b));
-}
-```
-
-三段的职责：
-1. **错误检查**：`INDEX_NONE`（负数）传播 + 类型推导失败 → `EmitError`——上游失败不继续算，类型不匹配发错误带定位
-2. **常数折叠**：两边都常量 → 编译期算，生成扁平常量 chunk
-3. **HLSL 发射**：非常量 → 生成代码串 chunk
-
-**为什么除零是 Warning 不是 Error**：除零在 HLSL 里行为未定义，但我们用 `Constant(0)` 兜底，shader 仍能编译运行——用户应该修但不应阻塞编译。这是"软错误"策略，对照 UE 也有很多 Warning 级编译问题不阻塞（如未使用的输入、隐式转换）。
-
-### 对照 UE：preshader 双轨
-
-UE 实际是**三轨**（`HLSLMaterialTranslator.cpp` 的 `Div` 10011-10048 看得最清）：
-1. **错误检查**（`INDEX_NONE`）
-2. **编译期折叠**：两边都是 `IsConstant()` → `ConstResultValue` 直接算字面量
-3. **preshader 折叠**：两边都有 `UniformExpression`（但不是纯常量，含参数）→ 建 `FoldedMath(A,B,Op)` 子树，运行时 CPU 求值
-4. **普通 HLSL 发射**：至少一边不是 uniform → 发代码串
-
-**教学版只做 1+2+4，跳过 3（preshader）**——因为 variant 只存纯常量，不支持含参数表达式树。这是 variant 方案的代价，但教学版不需要 preshader。
-
-### 其他算子（Power 为代表，其余照 Add 模式）
-
-Add/Sub/Mul/Div 是最复杂的（三段判定 + 化简）。其他算子结构类似但更简单。给一个 `Power` 完整实现作模板：
-
-```cpp
-// Power：三段判定 + pow(x,0)=1 / pow(x,1)=x 化简
-int32_t MaterialCompiler::Power(int32_t base, int32_t exp) {
-    if (base < 0 || exp < 0) return -1;
-
-    if (IsConstant(base) && IsConstant(exp)) {
-        const auto& bv = GetConstantValue(base);
-        const auto& ev = GetConstantValue(exp);
-        if (ConstantFolding::IsScalarZero(ev)) return Constant(1.0f);   // pow(x,0) → 1
-        if (ConstantFolding::IsScalarOne(ev))  return base;             // pow(x,1) → x
-        // 两个标量常量 → 编译期算 pow
-        if (std::holds_alternative<float>(bv) && std::holds_alternative<float>(ev)) {
-            return AddConstantChunk(GetType(base),
-                std::pow(std::get<float>(bv), std::get<float>(ev)));
-        }
-    }
-    // 非常量 → 发 HLSL（pow 是函数调用，非内联，声明局部变量）
-    return AddCodeChunk(GetType(base),
-        "pow(" + GetParameterCode(base) + ", " + GetParameterCode(exp) + ")", /*is_inline=*/false);
-}
-```
-
-其余算子照这个模式实现（每个 ~5-8 行）：
-
-| 算子 | 模式 | 代码骨架 |
-|------|------|---------|
-| `Abs/Negate/Sine/Cosine` | 一元 + 常量折叠 | 常量时 `ConstantFolding::FoldUnary(...)` → `AddConstantChunk`；否则 `AddInlinedCodeChunk(GetType(x), "abs(" + GetParameterCode(x) + ")")`（一元短，内联）|
-| `Lerp(a,b,alpha)` | 三元，无折叠 | `AddCodeChunk(GetType(a), "lerp(" + a + ", " + b + ", " + alpha + ")", false)` |
-| `Clamp(x,min,max)` | 三元，无折叠 | `AddCodeChunk(GetType(x), "clamp(" + x + ", " + min + ", " + max + ")", false)` |
-| `Dot(a,b)` | 二元，结果固定 Float1 | `AddInlinedCodeChunk(EValueType::Float1, "dot(" + a + ", " + b + ")")` |
-| `Cross(a,b)` | 二元，结果固定 Float3 | `AddCodeChunk(EValueType::Float3, "cross(" + a + ", " + b + ")", false)` |
-| `Normalize(x)` | 一元，类型同输入 | `AddInlinedCodeChunk(GetType(x), "normalize(" + x + ")")` |
-| `Length(x)` | 一元，结果 Float1 | `AddInlinedCodeChunk(EValueType::Float1, "length(" + x + ")")` |
-
-（表里 `a`/`x` 等代表 `GetParameterCode(对应索引)`，写代码时展开）
-
----
-
-## 第五部分：MaterialCompiler 主类（完整定义）
-
-### 文件：`src/Compiler/Public/MaterialCompiler.h`
-
-完整 API（对照 UE `FHLSLMaterialTranslator` 的算子集）：
-- `AddCodeChunk` vs `AddInlinedCodeChunk` 分离（对照 UE）
-- `Constant2/3/4` 走 `AddConstantChunk`（向量也折叠）
-- 常量查询返回 `ConstValue`（variant）
-- **`CompileResult` 直接定义带 errors 数组的最终版**
-- **`errors_` / `current_node_` / `current_pin_` / `EmitError` 直接定义**（错误收集是算子的标配基础设施，不是后插补丁）
-
-> **本课 API 列表不含** `Compile(Graph*)` / `CompileInputPin` / `CompileExpression` / `GenerateCode` / `TextureCoordinate` / `TextureSample` / `If`——这些分别在课 7/8/14 实现，本课完全不做（不在正文挖"占位"）。
+### 文件：`src/Compiler/Public/HLSLTranslator.h`（实现类）
 
 ```cpp
 #pragma once
+#include "Compiler/Public/MaterialCompiler.h"
+#include "Compiler/Public/CodeChunk.h"
+#include "Compiler/Public/CompileError.h"
+#include "Compiler/Public/TypeSystem.h"
+#include "MaterialGraph/Public/Graph.h"     // Node（错误定位 current_node_ 用）
+#include "Core/Public/Hash.h"
 #include <map>
 #include <vector>
 #include <string>
-#include "MaterialGraph/Public/Graph.h"
-#include "Compiler/Public/CodeChunk.h"
-#include "Compiler/Public/ConstantFolding.h"
-#include "Compiler/Public/CompileError.h"
-#include "Compiler/Public/TypeSystem.h"
-#include "MaterialGraph/Public/Types.h"
-#include "Core/Public/Hash.h"
 
-class MaterialCompiler {
+// HLSL 翻译器。对照 FHLSLMaterialTranslator（继承 FMaterialCompiler）。
+class HLSLTranslator : public MaterialCompiler {
 public:
-    // === 编译结果（带 errors 数组的最终版）===
-    struct CompileResult {
-        bool                        success = false;       // = !HasErrors()
-        std::string                 hlsl_code;
-        std::string                 error_message;         // 兼容字段：第一个 Error 的 message
-        std::vector<CompileError>   errors;                // 所有错误（含 Warning/Info）
+    // === 算子实现（第七部分逐一展开，此处声明）===
+    int32_t Constant(float v) override;
+    int32_t Constant2(float x, float y) override;
+    int32_t Constant3(float x, float y, float z) override;
+    int32_t Constant4(float x, float y, float z, float w) override;
+    int32_t Add(int32_t a, int32_t b) override;
+    int32_t Subtract(int32_t a, int32_t b) override;
+    int32_t Multiply(int32_t a, int32_t b) override;
+    int32_t Divide(int32_t a, int32_t b) override;
+    int32_t Power(int32_t base, int32_t exp) override;
+    int32_t Lerp(int32_t a, int32_t b, int32_t alpha) override;
+    int32_t Clamp(int32_t x, int32_t minVal, int32_t maxVal) override;
+    int32_t Abs(int32_t x) override;
+    int32_t Negate(int32_t x) override;
+    int32_t Sine(int32_t x) override;
+    int32_t Cosine(int32_t x) override;
+    int32_t Dot(int32_t a, int32_t b) override;
+    int32_t Cross(int32_t a, int32_t b) override;
+    int32_t Normalize(int32_t x) override;
+    int32_t Length(int32_t x) override;
+    int32_t ComponentMask(int32_t input, bool r, bool g, bool b, bool a) override;
+    int32_t AppendVector(int32_t a, int32_t b) override;
+    int32_t ValidCast(int32_t code, EValueType dest_type) override;
 
-        bool HasErrors() const {
-            for (const auto& e : errors)
-                if (e.severity == EErrorSeverity::Error) return true;
-            return false;
-        }
-    };
+    EValueType         GetType(int32_t index) const override;
+    std::string        GetParameterCode(int32_t index) const override;
+    EValueType         GetParameterType(int32_t index) const override;
+    UniformExpression* GetParameterUniformExpression(int32_t index) const override;
 
-    // Compile(Graph*) / CompileInputPin / CompileExpression → 课7 实现
-    // GenerateCode → 课8 实现
+    // === 常量/表达式快捷判定（算子和测试用，对照 UE IsExpressionConstantValue）===
+    bool IsExpressionConstantValue(int32_t index, float compare) const;
+    bool IsConstant(int32_t index) const;   // chunk 有表达式且树 IsConstant()
 
-    // === 算子 API（图节点 Compile 里调用；本课测试直接调）===
-
-    // 算术（三段判定 + 向量折叠 + EmitError）
-    int32_t Add(int32_t a, int32_t b);
-    int32_t Subtract(int32_t a, int32_t b);
-    int32_t Multiply(int32_t a, int32_t b);
-    int32_t Divide(int32_t a, int32_t b);
-    int32_t Power(int32_t base, int32_t exp);
-    int32_t Lerp(int32_t a, int32_t b, int32_t alpha);
-    int32_t Clamp(int32_t x, int32_t minVal, int32_t maxVal);
-    int32_t Abs(int32_t x);
-    int32_t Negate(int32_t x);
-
-    // 三角函数
-    int32_t Sine(int32_t x);
-    int32_t Cosine(int32_t x);
-
-    // 向量运算
-    int32_t Dot(int32_t a, int32_t b);
-    int32_t Cross(int32_t a, int32_t b);
-    int32_t Normalize(int32_t x);
-    int32_t Length(int32_t x);
-
-    // 常量——全部走常量路径（向量也折叠）
-    int32_t Constant(float v);                    // Float1 常量
-    int32_t Constant2(float x, float y);          // Float2 常量（走 AddConstantChunk）
-    int32_t Constant3(float x, float y, float z); // Float3 常量（走 AddConstantChunk）
-    int32_t Constant4(float x, float y, float z, float w);
-
-    // 向量操作 / 类型转换
-    int32_t ComponentMask(int32_t input, bool r, bool g, bool b, bool a);
-    int32_t AppendVector(int32_t a, int32_t b);
-    int32_t Cast(int32_t code, EValueType target_type);
-
-    // TextureCoordinate / TextureSample / If → 课14/15 实现
-
-    // === 查询（常量值返回 variant；带边界保护）===
-    std::string GetParameterCode(int32_t index) const;
-    EValueType  GetType(int32_t index) const;
-    bool        IsConstant(int32_t index) const;
-    ConstValue  GetConstantValue(int32_t index) const;   // ← 返回 variant
-
-    // === 错误访问（供测试 + 课19 UI 层读取）===
+    // === 错误访问（测试 + 课19 UI 层读取）===
     const std::vector<CompileError>& GetErrors() const { return errors_; }
 
+    // 测试注入通道：课6 没有 TextureSample 等非表达式来源，测试用友元
+    // 直接注入"纯 GPU 代码块"，验证算子的非表达式路径
+    friend struct CompilerTestAccess;
+
 private:
-    // === 代码块管理 ===
+    // === 代码块管理（第六部分）===
     int32_t AddCodeChunk(EValueType type, const std::string& code, bool is_inline = false);
-    int32_t AddInlinedCodeChunk(EValueType type, const std::string& code);  // 零成本操作专用
-    int32_t AddConstantChunk(EValueType type, const ConstValue& value);     // ← 接收 variant
-    std::string FormatConstantCode(const ConstValue& value);
+    int32_t AddInlinedCodeChunk(EValueType type, const std::string& code);
+    int32_t AddUniformExpression(UniformExpression* expr, EValueType type,
+                                 const std::string& code);
+    int32_t ConstResultValue(EValueType type, const Vec4& value);   // 折叠结果 → 常量块
     std::string MakeSymbolName();
+    std::string FormatConstantCode(EValueType type, const Vec4& value);
 
-    // ParseDefaultValue → 课7 在 CompileInputPin 里实现（解析未连接引脚的默认值）
-
-    // === 错误收集 ===
+    // === 错误收集（第四部分）===
     std::vector<CompileError> errors_;
-    Node*         current_node_ = nullptr;    // 当前正在编译的节点（课7 的 CompileInputPin 设置）
-    std::string   current_pin_;               // 当前正在编译的引脚（课7 的 CompileInputPin 设置）
-
-    void EmitError(const std::string& msg,
-                   EErrorSeverity sev = EErrorSeverity::Error,
+    Node*       current_node_ = nullptr;
+    std::string current_pin_;
+    void EmitError(const std::string& msg, EErrorSeverity sev = EErrorSeverity::Error,
                    const UUID& overrideNodeId = UUID::Invalid(),
                    const std::string& overridePinName = "");
 
     // === 状态 ===
-    std::vector<CodeChunk> chunks_;
-    std::map<uint64_t, int32_t> hash_to_chunk_;     // hash 去重
-    // node_cache_ → 课7 在 CompileExpression 里用
+    std::vector<CodeChunk> chunks_;                 // 全部代码块（UE CurrentScopeChunks，教学版无作用域只有一个数组）
+    std::map<uint64_t, int32_t> hash_to_chunk_;     // 纯代码块的去重索引（UE 用线性扫描，教学版用 map 等价）
+    std::vector<Ref<UniformExpression>> uniform_expressions_;  // 材质级唯一表达式表（UE UniformExpressions，跨属性共享）
     int32_t next_symbol_index_ = 0;
-    Graph* current_graph_ = nullptr;
+    Graph*  current_graph_ = nullptr;
+    // node_cache_ → 课7 的 CompileExpression 用
 };
 ```
 
-### 关键实现要点
+---
 
-#### 1. `AddCodeChunk` vs `AddInlinedCodeChunk`（对照 UE）
+## 第六部分：代码块管理与双层去重
 
-UE 严格区分这两个（`HLSLMaterialTranslator.h:806-811`）：
+UE 有**两条添加路径、两层去重**，教学版全部照搬：
 
-| 方法 | 用途 | 生成 | 例子 |
-|------|------|------|------|
-| `AddCodeChunk`（非内联）| 会产生**真实指令**的表达式 | `float3 Local0 = ...;` 局部变量声明 | `tex2D(...)`、复杂函数调用 |
-| `AddInlinedCodeChunk` | **零成本操作** | 直接嵌入使用处，无变量声明 | `mask`（`v.xy`）、`append`、简单算术 |
+| 路径 | UE 函数 | 去重方式 | 装什么 |
+|------|---------|---------|--------|
+| 纯代码块 | `AddCodeChunkInner`（`.cpp:3337`）| 代码串 hash（非内联块线性扫 `Hash` 比对，`.cpp:3365-3372`）| `(a + b)`、`pow(...)` 等纯 GPU 表达式 |
+| 表达式块 | `AddUniformExpressionInner`（`.cpp:3610`）| **`IsIdentical` 语义去重**（材质级 + chunk 级两层，`.cpp:3644-3673`）| 常量字面量、FoldedMath/Unary 子树 |
 
-> UE 注释原话（`.h:795-800`）："Creating local variables instead of inlining simplifies the generated code... Making compiles faster and enabling the shader optimizer to do a better job."（复杂表达式声明局部变量，让生成代码清晰、shader 编译快、优化器效果好）
-
-教学版照搬这个区分——`Add`/`Sub` 等简单算术用 `AddInlinedCodeChunk`（生成 `a + b` 嵌入），`Power` 等用 `AddCodeChunk`（生成局部变量）。`TextureSample` 同样会用 `AddCodeChunk`（课 14 实现）。
-
-#### 2. `Constant2/3/4` 走常量路径（核心）
-
-如果 `Constant3` 用 `AddCodeChunk(... "float3(x,y,z)" ...)`——只是 code 字符串，`is_constant=false`，不能折叠。
-
-走 `AddConstantChunk` 存 variant 常量值：
+### 纯代码块路径（对照 `AddCodeChunkInner` `.cpp:3337-3405`）
 
 ```cpp
-int32_t Constant3(float x, float y, float z) {
-    return AddConstantChunk(EValueType::Float3, Vec3(x, y, z));  // ← 存 Vec3，is_constant=true
-}
-```
-
-这样 `Add(Constant3(...), Constant3(...))` 能折叠（两边都 `is_constant`，variant 逐分量算）。
-
-#### 3. 代码块管理（完整实现）
-
-```cpp
-// 生成局部变量名：Local0, Local1, ...
-std::string MaterialCompiler::MakeSymbolName() {
+// 生成局部变量名：Local0, Local1, ...（UE CreateSymbolName(TEXT("Local"))）
+std::string HLSLTranslator::MakeSymbolName() {
     return "Local" + std::to_string(next_symbol_index_++);
 }
 
-// 通用代码块：产生真实指令的表达式用（函数调用、复杂算术）。
-// 非内联时生成 "float3 Local0 = ...;" 声明；内联时不声明，直接嵌入使用处
-int32_t MaterialCompiler::AddCodeChunk(EValueType type, const std::string& code, bool is_inline) {
-    uint64_t hash = HashString(code);
-    auto it = hash_to_chunk_.find(hash);
-    if (it != hash_to_chunk_.end()) return it->second;   // hash 命中 → 复用（去重）
+// 纯代码块。对照 UE AddCodeChunkInner：
+//  ① Unknown → INDEX_NONE（.cpp:3341）
+//  ② 内联块不去重直接追加（.cpp:3355-3360，UE 也只对非内联块查重）
+//  ③ 只有数值类型能声明局部变量（.cpp:3362 的 Type & (MCT_Float|MCT_LWCType|MCT_UInt|...)）
+//  ④ 纹理等对象类型试图建块 → Errorf（.cpp:3389-3399）
+int32_t HLSLTranslator::AddCodeChunk(EValueType type, const std::string& code, bool is_inline) {
+    if (type == MCT_Unknown) return -1;                       // ①
 
-    CodeChunk chunk;
-    chunk.hash = hash;
-    chunk.code = code;
-    chunk.type = type;
-    chunk.is_inline = is_inline;
-    if (!is_inline) chunk.symbol_name = MakeSymbolName();   // 非内联才需要变量名
-    chunks_.push_back(chunk);
-    int32_t index = (int32_t)chunks_.size() - 1;
-    hash_to_chunk_[hash] = index;
+    int32_t index = -1;
+    if (is_inline) {
+        index = (int32_t)chunks_.size();                      // ② 内联不去重
+    } else if (type & MCT_Float || type == MCT_Float3x3 || type == MCT_Float4x4) {
+        // ③ 数值类型才能建局部变量块 + hash 去重
+        uint64_t hash = HashString(code);
+        auto it = hash_to_chunk_.find(hash);
+        if (it != hash_to_chunk_.end()) return it->second;    // hash 命中 → 复用
+
+        CodeChunk chunk;
+        chunk.hash = hash;
+        chunk.code = "\t" + std::string(TypeSystem::ToHLSLType(type)) + " "
+                   + MakeSymbolName() + " = " + code + ";";   // UE .cpp:3380：定义串含声明+换行
+        chunk.symbol_name = /* MakeSymbolName() 生成的那次调用 */;
+        chunk.type = type;
+        chunk.is_inline = false;
+        chunks_.push_back(chunk);
+        index = (int32_t)chunks_.size() - 1;
+        hash_to_chunk_[hash] = index;
+    } else if (type & MCT_Texture) {
+        EmitError("Operation not supported on a Texture");
+        return -1;                                            // ④ 对照 UE .cpp:3390
+    } else {
+        EmitError("Operation not supported for type " + TypeName(type));
+        return -1;
+    }
+    chunks_[index].references = {};   // 调用方按需填
     return index;
 }
 
-// 内联代码块（零成本操作专用：mask/append/简单算术）—— AddCodeChunk 的 inline=true 简写
-int32_t MaterialCompiler::AddInlinedCodeChunk(EValueType type, const std::string& code) {
+// 内联简写（UE AddInlinedCodeChunk：零成本操作专用——mask/append/简单算术）
+int32_t HLSLTranslator::AddInlinedCodeChunk(EValueType type, const std::string& code) {
     return AddCodeChunk(type, code, /*is_inline=*/true);
-}
-
-// 常量代码块：存 variant 值，is_constant=true，参与常数折叠
-int32_t MaterialCompiler::AddConstantChunk(EValueType type, const ConstValue& value) {
-    std::string code = FormatConstantCode(value);          // 生成 "0.0"/"1.0"/"float3(...)" 等
-    uint64_t hash = HashString("const_" + code);           // "const_" 前缀：防和普通 chunk 碰撞
-    auto it = hash_to_chunk_.find(hash);
-    if (it != hash_to_chunk_.end()) return it->second;
-
-    CodeChunk chunk;
-    chunk.hash = hash;
-    chunk.code = code;
-    chunk.type = type;
-    chunk.is_inline = true;          // 常量总是内联（短）
-    chunk.is_constant = true;        // 标记为常量（折叠判定用）
-    chunk.constant_value = value;    // ← variant 存储
-    chunks_.push_back(chunk);
-    int32_t index = (int32_t)chunks_.size() - 1;
-    hash_to_chunk_[hash] = index;
-    return index;
-}
-
-// 把 variant 常量格式化成 HLSL 串。标量 0/1 特判（生成的 HLSL 干净，不是 "0.000000"）
-std::string MaterialCompiler::FormatConstantCode(const ConstValue& value) {
-    if (std::holds_alternative<float>(value)) {
-        float f = std::get<float>(value);
-        if (f == 0.0f) return "0.0";
-        if (f == 1.0f) return "1.0";
-        return std::to_string(f);
-    }
-    if (std::holds_alternative<Vec2>(value)) {
-        Vec2 v = std::get<Vec2>(value);
-        return "float2(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ")";
-    }
-    if (std::holds_alternative<Vec3>(value)) {
-        Vec3 v = std::get<Vec3>(value);
-        return "float3(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
-    }
-    if (std::holds_alternative<Vec4>(value)) {
-        Vec4 v = std::get<Vec4>(value);
-        return "float4(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ", " + std::to_string(v.w) + ")";
-    }
-    return "0.0";   // 兜底
 }
 ```
 
-#### 4. hash 去重（对照 UE 双层去重）
+> UE 注释原话（`.cpp:3530-3535`）："Creating local variables instead of inlining simplifies the generated code and reduces redundant expression chains, Making compiles faster and enabling the shader optimizer to do a better job."——**会产生真实指令**的表达式（函数调用、纹理采样）用非内联块，让生成代码清晰、shader 编译快、优化器效果好；零成本操作（mask、简单算术）内联。
 
-教学版用**单层 hash 去重**（`hash_to_chunk_` map）：相同 code 的 chunk 复用索引。
-
-> **UE 是双层**（`HLSLMaterialTranslator.cpp:4187-4265`）：① HLSL 串 hash 去重（减少局部变量）；② `UniformExpression::IsIdentical()` 去重（让多个材质属性共享同一 preshader）。教学版只做①，因为没 preshader。
-
-#### 5. 查询方法（完整实现，带边界保护）
-
-算子和折叠都依赖这四个查询。**`assert` 在 Debug 下捕获调用方越界 bug**，越界返回安全的兜底值（不让一条坏索引导致连续崩溃）：
+### 表达式块路径（对照 `AddUniformExpressionInner` `.cpp:3610-3723`）
 
 ```cpp
-std::string MaterialCompiler::GetParameterCode(int32_t index) const {
+// 表达式块。对照 UE AddUniformExpressionInner 的两层 IsIdentical 去重：
+//  第一层（.cpp:3646-3673）：扫材质级 UniformExpressions 表，IsIdentical 命中 →
+//    若当前 chunks 里已有同表达式的块 → 直接复用那个块（delete 新表达式）
+//  第二层（.cpp:3709-3719）：没命中 → 新块 + 表达式登记进材质级表
+int32_t HLSLTranslator::AddUniformExpression(UniformExpression* expr,
+                                             EValueType type,
+                                             const std::string& code) {
+    if (type == MCT_Unknown) { delete expr; return -1; }
+
+    // 第一层：材质级表达式表 + chunk 级复用
+    for (int32_t i = 0; i < (int32_t)chunks_.size(); ++i) {
+        UniformExpression* existing = chunks_[i].uniform_expression.get();
+        if (existing && existing->IsIdentical(expr)) {
+            delete expr;              // UE .cpp:3662：语义相同 → 丢弃新树，复用旧块
+            return i;
+        }
+    }
+    for (const auto& registered : uniform_expressions_) {
+        if (registered->IsIdentical(expr)) {
+            // 材质级已有此表达式（chunk 在别的属性下）——复用表达式对象，仍建新块
+            // 教学版课6 只有一个输出属性，走不到这里；保留逻辑对齐 UE 结构
+            expr = registered.get();
+            break;
+        }
+    }
+
+    CodeChunk chunk;
+    chunk.hash = HashString("expr_" + code);
+    chunk.code = code;                          // 表达式块：code 直接嵌（无 SymbolName）
+    chunk.type = type;
+    chunk.is_inline = false;                    // UE 带表达式构造 bInline=false
+    chunk.uniform_expression = expr;            // 挂树（chunk 持引用，expr 裸指针被接管）
+    chunks_.push_back(chunk);
+    int32_t index = (int32_t)chunks_.size() - 1;
+
+    // 第二层：登记材质级唯一表达式表
+    bool registered_before = false;
+    for (const auto& r : uniform_expressions_)
+        if (r.get() == expr) { registered_before = true; break; }
+    if (!registered_before)
+        uniform_expressions_.push_back(chunk.uniform_expression);
+    return index;
+}
+```
+
+**为什么要两层去重**：代码 hash 只能发现"字符串相同"，发现不了"字符串不同但语义相同"——`Constant(1) + Constant(2)` 和 `Constant(3)` 的代码串分别是 `(1.0 + 2.0)` 和 `3.0`，但 `IsIdentical`（递归比较树）在立即折叠后能判定它们相等（折叠让两个都变成 `UniformConstant(3)`，第二层材质级表保证整个材质只保留一份）。UE 靠这层让**多个材质属性共享同一表达式**（`.cpp:3654` 注释原话："This allows multiple material properties to share uniform expressions"）。
+
+### 折叠结果快捷路径（对照 UE `ConstResultValue`）
+
+```cpp
+// 折叠出的常量 → 常量块（对照 UE ConstResultValue：new FMaterialUniformExpressionConstant + AddUniformExpression）
+int32_t HLSLTranslator::ConstResultValue(EValueType type, const Vec4& value) {
+    return AddUniformExpression(new UniformConstant(value, type), type,
+                                FormatConstantCode(type, value));
+}
+
+// 常量字面量格式化（干净输出：0/1 特判，向量 float3(x,y,z)）
+std::string HLSLTranslator::FormatConstantCode(EValueType type, const Vec4& v) {
+    int n = GetComponentCount(type);
+    if (n <= 1) {
+        if (v.x == 0.0f) return "0.0";
+        if (v.x == 1.0f) return "1.0";
+        return std::to_string(v.x);
+    }
+    std::string s = std::string(TypeSystem::ToHLSLType(type)) + "(" + std::to_string(v.x);
+    if (n >= 2) s += ", " + std::to_string(v.y);
+    if (n >= 3) s += ", " + std::to_string(v.z);
+    if (n >= 4) s += ", " + std::to_string(v.w);
+    return s + ")";
+}
+```
+
+### 查询方法（带边界保护，assert 开发期断言 + if 兜底）
+
+```cpp
+std::string HLSLTranslator::GetParameterCode(int32_t index) const {
     assert(index >= 0 && index < (int32_t)chunks_.size());
     if (index < 0 || index >= (int32_t)chunks_.size()) return "0.0";
     const auto& c = chunks_[index];
-    return c.is_inline ? c.code : c.symbol_name;   // 内联返回代码串，非内联返回变量名
+    if (c.uniform_expression) return c.code;   // 表达式块：定义串直接用（UE 字段注释语义）
+    return c.is_inline ? c.code : c.symbol_name;
 }
-EValueType MaterialCompiler::GetType(int32_t index) const {
+EValueType HLSLTranslator::GetType(int32_t index) const {
     assert(index >= 0 && index < (int32_t)chunks_.size());
-    if (index < 0 || index >= (int32_t)chunks_.size()) return EValueType::Unknown;
+    if (index < 0 || index >= (int32_t)chunks_.size()) return MCT_Unknown;
     return chunks_[index].type;
 }
-bool MaterialCompiler::IsConstant(int32_t index) const {
+EValueType HLSLTranslator::GetParameterType(int32_t index) const { return GetType(index); }
+
+UniformExpression* HLSLTranslator::GetParameterUniformExpression(int32_t index) const {
     assert(index >= 0 && index < (int32_t)chunks_.size());
-    if (index < 0 || index >= (int32_t)chunks_.size()) return false;
-    return chunks_[index].is_constant;
+    if (index < 0 || index >= (int32_t)chunks_.size()) return nullptr;
+    return chunks_[index].uniform_expression.get();
 }
-ConstValue MaterialCompiler::GetConstantValue(int32_t index) const {
-    assert(index >= 0 && index < (int32_t)chunks_.size());
-    if (index < 0 || index >= (int32_t)chunks_.size()) return 0.0f;   // 越界返回 float 0
-    return chunks_[index].constant_value;   // ← 返回 variant
+
+// chunk 是否常量 = 有表达式 && 树 IsConstant()（递归）
+bool HLSLTranslator::IsConstant(int32_t index) const {
+    UniformExpression* e = GetParameterUniformExpression(index);
+    return e && e->IsConstant();
+}
+
+// 对照 UE IsExpressionConstantValue：表达式是常量且所有有效分量 == compare
+bool HLSLTranslator::IsExpressionConstantValue(int32_t index, float compare) const {
+    if (!IsConstant(index)) return false;
+    MaterialRenderContext ctx;
+    Vec4 v; GetParameterUniformExpression(index)->GetNumberValue(ctx, v);
+    int n = std::max(1, GetComponentCount(GetType(index)));
+    for (int i = 0; i < n; ++i)
+        if ((&v.x)[i] != compare) return false;
+    return true;
 }
 ```
 
-> 为什么 `assert` + `if` 双保险：`assert` 是开发期断言（捕获调用方 bug，触发调试器中断）；`if` 是 Release 期的兜底（避免一条坏索引让整个编译崩溃。下游算子拿到兜底值还能继续编译，错误集中报告而不是连环崩溃）。
-
 ---
 
-## 第六部分：实现步骤（按依赖顺序）
+## 第七部分：算子实现——三轨判定（对照 UE 真实结构）
 
-边写边用 `compiler_test.cpp` 验证，每实现一块放开对应测试：
+### Constant/2/3/4：常量也走表达式路径（对照 `.cpp:5211-5233`）
 
-1. **类型系统**：`Types.h` 扩展 `EValueType`；`TypeSystem.h` 推导规则
-2. **CompileError**：`CompileError.h` 定义 `CompileError` / `EErrorSeverity` 结构（无实现，纯数据）
-3. **CodeChunk**：variant `constant_value` + 各字段
-4. **MaterialCompiler 类骨架**：状态成员 + `errors_` / `current_node_` / `current_pin_` + `EmitError`（带 `SameAs` 去重）+ `CompileResult`（带 errors 数组 + `HasErrors`）
-5. **代码块管理**：`MakeSymbolName` / `AddCodeChunk` / `AddInlinedCodeChunk` / `AddConstantChunk`（variant 版）/ hash 去重 / `FormatConstantCode`
-6. **查询**：`GetType` / `IsConstant` / `GetConstantValue`（返回 variant）/ `GetParameterCode`（带 assert + 边界保护）
-7. **常量**：`Constant/2/3/4` 全走 `AddConstantChunk`
-8. **ConstantFolding**：`FoldBinary` / `FoldUnary` / `IsScalarZero` / `IsScalarOne`（variant 版）
-9. **算术（带 EmitError）**：`Add/Sub/Mul/Div` 三段判定 + 向量折叠 + 代数化简 + 类型不匹配 EmitError + 除零 Warning
-10. **其他算子**：`Power/Lerp/Clamp/Abs/Negate/Sine/Cosine/Dot/Cross/Normalize/Length/ComponentMask/AppendVector/Cast`
-
----
-
-## 第七部分：测试（`compiler_test.cpp`）
-
-测试覆盖完整版的关键能力（特别是向量折叠 + 错误收集）：
+UE 的 `Constant` 一行建 `FMaterialUniformExpressionConstant`（`FLinearColor(X,X,X,X)` + 类型标签）走 `AddUniformExpression`——**常量从来不是特殊 chunk，就是表达式块的叶子**：
 
 ```cpp
-// 1. 标量折叠
-int s = c.Add(c.Constant(1.0f), c.Constant(2.0f));
-assert(c.IsConstant(s));
-assert(std::get<float>(c.GetConstantValue(s)) == 3.0f);
-
-// 2. 向量折叠（完整版核心）
-int a = c.Constant3(1,0,0);
-int b = c.Constant3(0,1,0);
-int v = c.Add(a, b);
-assert(std::get<Vec3>(c.GetConstantValue(v)) == Vec3(1,1,0));
-
-// 3. Multiply 优化（乘1直通、乘0归零）
-int x = c.Constant3(1,2,3);    // 非常量
-assert(c.Multiply(x, c.Constant(1.0f)) == x);   // 直通，返回原索引
-assert(std::get<float>(c.GetConstantValue(c.Multiply(c.Constant(2.0f), c.Constant(0.0f)))) == 0.0f);
-
-// 4. 除零保护（不崩 + Warning 进 errors）
-c.GetErrors().clear();   // 测试前清空
-int dz = c.Divide(c.Constant(1.0f), c.Constant(0.0f));
-assert(std::get<float>(c.GetConstantValue(dz)) == 0.0f);   // 兜底返回 0
-assert(!c.GetErrors().empty());                            // 有错误
-assert(c.GetErrors().back().severity == EErrorSeverity::Warning);
-assert(c.GetErrors().back().pinName == "B");               // 精确到除数引脚
-
-// 5. 嵌套运算（2*3+4 → 10）
-int n = c.Add(c.Multiply(c.Constant(2.0f), c.Constant(3.0f)), c.Constant(4.0f));
-assert(std::get<float>(c.GetConstantValue(n)) == 10.0f);
-
-// 6. 类型不匹配 EmitError（Float2 + Float3 不兼容）
-c.GetErrors().clear();
-int bad = c.Add(c.Constant2(1,2), c.Constant3(1,2,3));
-assert(bad < 0);   // 哨兵传播
-assert(!c.GetErrors().empty());
-assert(c.GetErrors().back().severity == EErrorSeverity::Error);
-
-// 7. 错误去重（同一个错误多次触发只存一份）
-c.GetErrors().clear();
-for (int i = 0; i < 5; ++i) {
-    c.Add(c.Constant2(1,2), c.Constant3(1,2,3));   // 同一个类型不匹配
+int32_t HLSLTranslator::Constant(float v) {
+    // UE .cpp:5214：FLinearColor(X,X,X,X)——标量也填满 4 分量，类型标签 MCT_Float
+    return AddUniformExpression(new UniformConstant(Vec4(v, v, v, v), MCT_Float),
+                                MCT_Float, FormatConstantCode(MCT_Float, Vec4(v,v,v,v)));
 }
-// 因为 Add 返回 -1，第二次循环时 a<0 短路，不会重复 emit
-// 如果是不同路径触发同一检查，靠 SameAs 去重
-assert(c.GetErrors().size() <= 2);   // 一次 emit + 可能的传播
-
-// 8. 查询边界保护
-assert(c.GetType(9999) == EValueType::Unknown);   // 越界不崩，返回 Unknown
-assert(c.GetParameterCode(-1) == "0.0");          // 负索引返回 "0.0"
+int32_t HLSLTranslator::Constant2(float x, float y) {
+    return AddUniformExpression(new UniformConstant(Vec4(x, y, 0, 0), MCT_Float2),
+                                MCT_Float2, FormatConstantCode(MCT_Float2, Vec4(x,y,0,0)));
+}
+int32_t HLSLTranslator::Constant3(float x, float y, float z) {
+    return AddUniformExpression(new UniformConstant(Vec4(x, y, z, 0), MCT_Float3),
+                                MCT_Float3, FormatConstantCode(MCT_Float3, Vec4(x,y,z,0)));
+}
+int32_t HLSLTranslator::Constant4(float x, float y, float z, float w) {
+    return AddUniformExpression(new UniformConstant(Vec4(x, y, z, w), MCT_Float4),
+                                MCT_Float4, FormatConstantCode(MCT_Float4, Vec4(x,y,z,w)));
+}
 ```
+
+### 立即折叠 vs 建树：UE 的真实分工
+
+读 UE 源码（`.cpp:9484-9711`）会发现一个重要事实——**不是所有算子都立即折叠纯常量**：
+
+| 算子 | 两边纯常量时 UE 的行为 |
+|------|----------------------|
+| `Add`/`Sub`（`.cpp:9494-9498`）| **直接建 FoldedMath 树**（不立即算）——值的求值交给 preshader 运行时 |
+| `Mul`（`.cpp:9620-9628`）| **立即折叠**：`GetConstParameterValue` 拿值 → `ConstResultValue` |
+| `Div`（`.cpp:9675-9683`）| **立即折叠**，且除零时不折（`!IsExpressionConstantValue(B, 0.0f)`，注释说"HLSL 编译器不喜欢 inf 输出"）|
+
+为什么 Mul/Div 特殊？因为它们的**代数化简**（x*0、x*1、x/1）需要先知道"是不是常量 0/1"，顺手就把纯常量算了；Add/Sub 没有化简需求，UE 就把求值推迟给 preshader。
+
+**教学版规则**：没有 preshader 字节码运行时，统一采用 Mul/Div 的模式——**两边 `IsConstant()` → 立即求值折叠；两边有表达式（至少一边含参数）→ 建 FoldedMath 树**（树的 `GetNumberValue` 是 C++ 直接求值，语义与 preshader 等价）。三个机制（`IsConstant` 递归判定、`ConstResultValue`、`FoldedMath` 树）与 UE 一一对应。
+
+### Add——黄金模板（对照 `.cpp:9484-9518`，删去 LWC/导数分支）
+
+```cpp
+int32_t HLSLTranslator::Add(int32_t a, int32_t b) {
+    // 段 1：哨兵传播 + 类型检查（UE .cpp:9486 INDEX_NONE 检查在最前）
+    if (a < 0 || b < 0) return -1;
+    EValueType resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
+    if (resultType == MCT_Unknown) {
+        EmitError("Add inputs incompatible: A=" + TypeName(GetType(a))
+                  + ", B=" + TypeName(GetType(b)), EErrorSeverity::Error,
+                  current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
+        return -1;
+    }
+
+    // 段 2：表达式三轨（UE .cpp:9491-9498 的 ExpressionA && ExpressionB 分支）
+    UniformExpression* ea = GetParameterUniformExpression(a);
+    UniformExpression* eb = GetParameterUniformExpression(b);
+    if (ea && eb) {
+        if (ea->IsConstant() && eb->IsConstant()) {
+            // 纯常量 → 立即求值折叠（Mul/Div 模式）
+            MaterialRenderContext ctx;
+            Vec4 va, vb;
+            ea->GetNumberValue(ctx, va);
+            eb->GetNumberValue(ctx, vb);
+            // 维度对齐：标量广播到较宽的分量（Float1+Float3 → 3 分量）
+            AlignComponents(va, GetType(a), vb, GetType(b), resultType);
+            return ConstResultValue(resultType, va + vb);
+        }
+        // 含参数 → 建树（UE .cpp:9497：new FoldedMath(A, B, FMO_Add)）
+        return AddUniformExpression(
+            new UniformFoldedMath(ea, eb, EFoldedMathOp::Add, resultType),
+            resultType,
+            "(" + GetParameterCode(a) + " + " + GetParameterCode(b) + ")");
+    }
+
+    // 段 3：纯 HLSL 发射（UE .cpp:9514：AddCodeChunk "(%s + %s)"——简单算术内联）
+    return AddInlinedCodeChunk(resultType,
+        "(" + GetParameterCode(a) + " + " + GetParameterCode(b) + ")");
+}
+```
+
+（`AlignComponents` 是私有 helper：按 `GetComponentCount` 把窄分量值广播到结果宽度，配合 `UniformConstant` 的 4 分量存储。）
+
+### Subtract（同模板，`-` / `FMO_Sub`）
+
+同 Add，把 `+` 换 `-`、`EFoldedMathOp::Sub`。UE 的 Sub 尾部有 LWC 截断逻辑（`.cpp:9556-9568`），教学版无 LWC 不需要。
+
+### Multiply（对照 `.cpp:9574-9644`，代数化简 + 标量提升）
+
+```cpp
+int32_t HLSLTranslator::Multiply(int32_t a, int32_t b) {
+    if (a < 0 || b < 0) return -1;
+    EValueType resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
+    if (resultType == MCT_Unknown) { /* 同 Add 的 EmitError */ return -1; }
+
+    // === 代数化简（UE .cpp:9591-9613 逐条对照）===
+    // x * 0 / 0 * x → 0（UE .cpp:9591：ConstArithmeticResultValue(A, B, 0.0)）
+    if (IsExpressionConstantValue(a, 0.0f) || IsExpressionConstantValue(b, 0.0f))
+        return ConstResultValue(resultType, Vec4(0,0,0,0));
+
+    // x * 1 → x（UE .cpp:9595-9613：不是简单返回索引！标量×向量要补分量）
+    if (IsExpressionConstantValue(b, 1.0f)) return PromoteToType(a, resultType);
+    if (IsExpressionConstantValue(a, 1.0f)) return PromoteToType(b, resultType);
+
+    // === 表达式三轨（UE .cpp:9616-9632）===
+    UniformExpression* ea = GetParameterUniformExpression(a);
+    UniformExpression* eb = GetParameterUniformExpression(b);
+    if (ea && eb) {
+        if (ea->IsConstant() && eb->IsConstant()) {
+            MaterialRenderContext ctx;
+            Vec4 va, vb; ea->GetNumberValue(ctx, va); eb->GetNumberValue(ctx, vb);
+            AlignComponents(va, GetType(a), vb, GetType(b), resultType);
+            return ConstResultValue(resultType, va * vb);   // UE .cpp:9626：ValueA * ValueB
+        }
+        return AddUniformExpression(
+            new UniformFoldedMath(ea, eb, EFoldedMathOp::Mul, resultType), resultType,
+            "(" + GetParameterCode(a) + " * " + GetParameterCode(b) + ")");
+    }
+    return AddInlinedCodeChunk(resultType,
+        "(" + GetParameterCode(a) + " * " + GetParameterCode(b) + ")");
+}
+
+// 标量×向量的 ×1 直通（UE .cpp:9604-9613 的 while AppendVector 循环）：
+// Float1 * Float3(1,1,1) 时 a 是 Float1，直接返回 a 类型不够，要 Append 补分量
+int32_t HLSLTranslator::PromoteToType(int32_t code, EValueType resultType) {
+    int32_t result = code;
+    while (GetComponentCount(GetType(result)) < GetComponentCount(resultType))
+        result = AppendVector(result, result);   // UE .cpp:9610：AppendVector(Return, ConstOneReturnValue)
+    return result;
+}
+```
+
+> **为什么 ×1 直通不能无脑返回索引**：`Float1 * Float3` 结果类型是 Float3，但被直通的操作数是 Float1——下游按 Float3 用它会分量不足。UE 用 while-AppendVector 循环把标量复制成向量（`.cpp:9608-9611` 注释原话："This should only be possible with scalar x vector arithmatic"）。这是教科书级坑，UE 用循环处理了。
+
+### Divide（对照 `.cpp:9646-9711`，四条化简 + rcp 技巧 + 除零 Warning）
+
+```cpp
+int32_t HLSLTranslator::Divide(int32_t a, int32_t b) {
+    if (a < 0 || b < 0) return -1;
+    EValueType resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
+    if (resultType == MCT_Unknown) { /* 同 Add 的 EmitError */ return -1; }
+
+    // 0 / x → 0（UE .cpp:9655）
+    if (IsExpressionConstantValue(a, 0.0f))
+        return ConstResultValue(resultType, Vec4(0,0,0,0));
+    // x / 1 → x（含标量提升，UE .cpp:9659-9668）
+    if (IsExpressionConstantValue(b, 1.0f))
+        return PromoteToType(a, resultType);
+
+    UniformExpression* ea = GetParameterUniformExpression(a);
+    UniformExpression* eb = GetParameterUniformExpression(b);
+    if (ea && eb) {
+        // 除零：UE 不折（.cpp:9675 注释"hlsl compiler does not like inf"），
+        // 教学版在 UE 行为之上加 Warning + 兜底 0（错误进 errors_ 列表，课 19 UI 才能高亮）
+        if (IsExpressionConstantValue(b, 0.0f)) {
+            EmitError("Division by zero: divisor (pin 'B') is constant 0",
+                      EErrorSeverity::Warning,
+                      current_node_ ? current_node_->id : UUID::Invalid(), "B");
+            return ConstResultValue(resultType, Vec4(0,0,0,0));
+        }
+        if (ea->IsConstant() && eb->IsConstant()) {          // 纯常量立即折（UE .cpp:9675-9683）
+            MaterialRenderContext ctx;
+            Vec4 va, vb; ea->GetNumberValue(ctx, va); eb->GetNumberValue(ctx, vb);
+            AlignComponents(va, GetType(a), vb, GetType(b), resultType);
+            return ConstResultValue(resultType, va / vb);
+        }
+        return AddUniformExpression(
+            new UniformFoldedMath(ea, eb, EFoldedMathOp::Div, resultType), resultType,
+            "(" + GetParameterCode(a) + " / " + GetParameterCode(b) + ")");
+    }
+
+    // rcp 技巧（UE .cpp:9688-9699）：除数是【非纯常量】表达式时，
+    // 把倒数折进表达式树（1/b 在 CPU 端求值），GPU 端只剩乘法——
+    // "Division is often optimized as multiplication by reciprocal"（UE 注释原话）
+    if (eb && !eb->IsConstant()) {
+        int32_t rcpB = AddUniformExpression(
+            new UniformFoldedUnary(eb, EFoldedUnaryOp::Rcp), GetType(b),
+            "rcp(" + GetParameterCode(b) + ")");
+        return Multiply(a, rcpB);
+    }
+
+    return AddInlinedCodeChunk(resultType,
+        "(" + GetParameterCode(a) + " / " + GetParameterCode(b) + ")");
+}
+```
+
+### 其他算子（每个按 Add 模板，5-15 行）
+
+| 算子 | 表达式树轨道 | HLSL 轨道 | 备注 |
+|------|-------------|-----------|------|
+| `Power` | 两边常量 → 求值 `pow`；`pow(x,0)→1`、`pow(x,1)→x` 化简 | `AddCodeChunk`（函数调用非内联）：`pow(a, b)` | UE `Power`（`.cpp:9817`）|
+| `Abs`/`Negate`/`Sine`/`Cosine` | 常量 → `UniformFoldedUnary` 求值 | 一元短表达式内联：`abs(x)`/`-x`/`sin(x)`/`cos(x)` | 一元树节点用 |
+| `Lerp(a,b,alpha)` | 三元无化简，HLSL 直接发 | `AddCodeChunk`：`lerp(a, b, alpha)` | 结果类型 = GetArithmeticResultType(a,b) |
+| `Clamp(x,min,max)` | 同上 | `AddCodeChunk`：`clamp(x, min, max)` | 类型同 x |
+| `Dot(a,b)` | 两边有表达式 → `FoldedMath(FMO_Dot, 维度标签)`（UE `.cpp:9742` 连 ValueType 都传了）| 内联 `dot(a, b)`，结果 `MCT_Float` | UE `.cpp:9713`：标量×标量退化为 Mul |
+| `Cross(a,b)` | `FoldedMath(FMO_Cross)` | `AddCodeChunk`：`cross(a, b)`，结果 `MCT_Float3` | 要求两边 Float3 |
+| `Normalize(x)` | 常量 → 求值 | 内联 `normalize(x)` | 类型同输入 |
+| `Length(x)` | 常量 → 求值 | 内联 `length(x)`，结果 `MCT_Float` | |
+| `ComponentMask` | 常量 → 按掩码取分量重组 | 内联 `v.xz` 形式 | 零成本操作，内联 |
+| `AppendVector` | 常量 → 拼接两树分量 | 内联 `float4(a, b)` | 类型 = 两边分量数之和 |
+| `ValidCast` | 常量 → 求值后重打类型标签 | 截断 `float4→float3` / 复制提升 `float1→float3` | 对照 UE `ValidCast`（`MaterialCompiler.h:237` 注释：truncate 不加分量、float1 复制提升任意）|
+
+`ValidCast` 规则（UE 注释原意）：`float4 → float3` 截断 ✅；`float2 → float3` 加分量 ❌（报错）；`float1 → 任意 float` 复制提升 ✅。
 
 ---
 
-## 第八部分：UE 5.7 参考（相对 `Engine/` 路径）
+## 第八部分：实现步骤（按依赖顺序）
 
-> 注：UE 源码根目录因工作环境而异（如 `E:\UE5\` 或仓库内 `UE5/UnrealEngine-release/`），下表路径均为相对 `Engine/` 的路径，在自己的 UE 源码根目录下对应查找即可。
+1. **Types.h 改造**：`EValueType` 换 bitmask（MCT_* 单值位 + 类别掩码）；`GetComponentCount` 适配；全项目 `EValueType::Float3` 等旧引用改 `MCT_Float3`（编译器会逐个报错，正好逐个改）
+2. **TypeSystem**：`GetArithmeticResultType`（对齐 UE 4 步逻辑）+ `ToHLSLType` + `TypeName`
+3. **UniformExpression.h**：基类 → `UniformConstant` → `EFoldedMathOp` + `UniformFoldedMath` → `EFoldedUnaryOp` + `UniformFoldedUnary`（`MaterialRenderContext` 空壳结构体）
+4. **CodeChunk.h**：全字段版（含 `uniform_expression`）
+5. **CompileError.h**：`EErrorSeverity` / `CompileError` / `CompileResult`（纯数据，无实现文件）
+6. **MaterialCompiler.h**：抽象基类（纯虚接口，无 .cpp）
+7. **HLSLTranslator 骨架**：成员 + `EmitError`（SameAs 去重）
+8. **代码块管理**：`MakeSymbolName` / `AddCodeChunk` / `AddInlinedCodeChunk` / `AddUniformExpression`（双层去重）/ `ConstResultValue` / `FormatConstantCode` / 查询四件套 + `IsConstant` / `IsExpressionConstantValue` / `AlignComponents`
+9. **常量**：`Constant/2/3/4`
+10. **算术**：`Add` → `Subtract` → `Multiply`（含 `PromoteToType`）→ `Divide`（含 rcp）
+11. **其余算子**：`Power/Lerp/Clamp/Abs/Negate/Sine/Cosine/Dot/Cross/Normalize/Length/ComponentMask/AppendVector/ValidCast`
+
+每实现一块放开 `compiler_test.cpp` 对应测试。
+
+---
+
+## 第九部分：测试（`compiler_test.cpp`）
+
+```cpp
+// 0. 测试通道：注入"纯 GPU 代码块"（课6 没有纹理等非表达式来源，
+//    用友元 CompilerTestAccess 造一个，验证算子的非表达式路径）
+struct CompilerTestAccess {
+    static int32_t MakeRawChunk(HLSLTranslator& c, EValueType type, const std::string& code) {
+        CodeChunk chunk;
+        chunk.hash = HashString(code);
+        chunk.code = code;
+        chunk.type = type;
+        chunk.is_inline = true;   // 简单起见内联块（无 uniform_expression）
+        c.chunks_.push_back(chunk);
+        return (int32_t)c.chunks_.size() - 1;
+    }
+};
+MaterialRenderContext ctx;   // 求值上下文
+
+// 1. 标量折叠：Constant(1) + Constant(2) → 折叠成常量 3（无加法代码）
+HLSLTranslator c;
+int s = c.Add(c.Constant(1.0f), c.Constant(2.0f));
+assert(c.IsConstant(s));
+UniformExpression* se = c.GetParameterUniformExpression(s);
+Vec4 v; se->GetNumberValue(ctx, v);
+assert(v.x == 3.0f);
+// 折叠后是"纯常量叶子"而非 FoldedMath 树：和 UniformConstant(3) 语义相等
+assert(se->IsIdentical(UniformConstant(Vec4(3,3,3,3), MCT_Float)));
+
+// 2. 向量折叠：Constant3(1,0,0) + Constant3(0,1,0) → (1,1,0)
+int a = c.Constant3(1,0,0);
+int b = c.Constant3(0,1,0);
+int vec = c.Add(a, b);
+assert(c.IsConstant(vec));
+c.GetParameterUniformExpression(vec)->GetNumberValue(ctx, v);
+assert(v.x == 1.0f && v.y == 1.0f && v.z == 0.0f);
+assert(c.GetParameterCode(vec) == "float3(1.000000, 1.000000, 0.000000)");  // 字面量直接可用
+
+// 3. x*1 直通 + 标量提升（UE 的 while-AppendVector 路径）
+int raw = CompilerTestAccess::MakeRawChunk(c, MCT_Float, "View.GameTime");  // 非表达式块
+int m1 = c.Multiply(raw, c.Constant(1.0f));       // Float1 * Float1 → 直通
+assert(m1 == raw);
+int vec3c = c.Constant3(1,1,1);
+int m2 = c.Multiply(raw, vec3c);                  // Float1 * Float3(1,1,1)
+assert(c.GetType(m2) == MCT_Float3);              // 类型提升到位（AppendVector 补分量）
+
+// 4. x*0 → 0；嵌套 2*3+4 → 10
+assert(c.IsExpressionConstantValue(c.Multiply(c.Constant(2.0f), c.Constant(0.0f)), 0.0f));
+int n = c.Add(c.Multiply(c.Constant(2.0f), c.Constant(3.0f)), c.Constant(4.0f));
+assert(c.IsExpressionConstantValue(n, 10.0f));
+
+// 5. 除零：Warning + 兜底 0 + 错误进列表（含 rcp 路径前置检查）
+c.GetErrors().clear();
+int dz = c.Divide(c.Constant(1.0f), c.Constant(0.0f));
+assert(c.IsExpressionConstantValue(dz, 0.0f));
+assert(!c.GetErrors().empty());
+assert(c.GetErrors().back().severity == EErrorSeverity::Warning);
+assert(c.GetErrors().back().pinName == "B");      // 精确到除数引脚
+
+// 6. 表达式树构建 + 双层去重（除零外的树路径：
+//    本课没有参数节点，纯常量一律立即折叠——树只在"除零跳过折叠"时出现，UE 同款行为）
+int t1 = c.Divide(c.Constant(1.0f), c.Constant(0.0f));   // 建 FoldedMath(Div) 树（跳过折叠）
+int t2 = c.Divide(c.Constant(1.0f), c.Constant(0.0f));   // 再来一次同样的
+assert(t1 == t2);   // IsIdentical 去重：同一棵树只建一个 chunk
+
+// 7. 类型不匹配 EmitError（Float2 + Float3）
+c.GetErrors().clear();
+int bad = c.Add(c.Constant2(1,2), c.Constant3(1,2,3));
+assert(bad < 0);                                     // 哨兵
+assert(!c.GetErrors().empty());
+assert(c.GetErrors().back().severity == EErrorSeverity::Error);
+// 错误去重：同错误重复触发只存一份
+size_t errCount = c.GetErrors().size();
+c.Add(c.Constant2(1,2), c.Constant3(1,2,3));
+assert(c.GetErrors().size() == errCount);
+
+// 8. 非表达式路径：两个纯 GPU 块相加 → 内联 HLSL，无树
+int r1 = CompilerTestAccess::MakeRawChunk(c, MCT_Float, "View.GameTime");
+int r2 = CompilerTestAccess::MakeRawChunk(c, MCT_Float, "View.RealTime");
+int r3 = c.Add(r1, r2);
+assert(c.GetParameterUniformExpression(r3) == nullptr);          // 无表达式
+assert(c.GetParameterCode(r3) == "(View.GameTime + View.RealTime)");
+
+// 9. 查询边界保护
+assert(c.GetType(9999) == MCT_Unknown);
+assert(c.GetParameterCode(-1) == "0.0");
+```
+
+> 测试 6 说明树的验证策略：`FoldedMath` 树的**大量出现**要等参数表达式（课 20 的 `ScalarParameter` 不是 `IsConstant`，两边有它就走建树轨道）——本课用除零路径（UE 明确跳过折叠建树）验证树构建、递归 `IsConstant`、`IsIdentical` 去重三个机制都已工作。
+
+---
+
+## 第十部分：UE 5.8.1 参考（相对 `Engine/` 路径，行号实测）
 
 | 本课概念 | UE 对应 | 位置 |
 |---------|---------|------|
+| `EValueType` bitmask | `EMaterialValueType` | `Source/Runtime/Engine/Public/MaterialValueType.h`（全文 93 行）|
+| 类别判断 `Type & MCT_Float` | 同（`AddCodeChunkInner` 用它判断能否建局部变量）| `HLSLMaterialTranslator.cpp:3362` |
 | `CodeChunk` | `FShaderCodeChunk` | `Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.h:83-174` |
-| `EValueType` | `EMaterialValueType`（64 位 bitmask）| `Source/Runtime/Engine/Public/MaterialValueType.h` |
-| `MaterialCompiler` 算子 | `FHLSLMaterialTranslator::Add/Sub/Mul/Div` | `Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.cpp:9849-10060` |
-| `Constant/2/3/4` | `FHLSLMaterialTranslator::Constant/2/3/4` | 同上 `.cpp:5598-5630` |
-| `AddCodeChunk`/`AddInlinedCodeChunk` | 同名（UE 也是这两个）| 同上 `.cpp:3880-4280` |
-| 常量折叠 variant（教学版简化）| `FMaterialUniformExpression` 表达式树 + preshader | `Source/Runtime/Engine/Private/Materials/MaterialUniformExpressions.h` |
-| 类型推导 | `GetArithmeticResultType` | `HLSLMaterialTranslator.cpp:4612-4663` |
-| `CompileError{nodeId, pinName, message, severity}` | `FMaterialCompilerError` + `UMaterialExpression::LastErrorText` | `Engine/Source/Runtime/Engine/Public/MaterialShared.h` |
-| `EmitError`（贯穿编译路径一次加全）| `Compiler->Errorf` + 各 expression `Compile` 失败时记录 | `HLSLMaterialTranslator.cpp` 各算子开头 |
-| 算子类型检查 + INDEX_NONE 哨兵传播 | 同（UE 也是 `if (A < 0) return INDEX_NONE;`）| `HLSLMaterialTranslator.cpp` 全部分发器 |
+| 表达式树基类 | `FMaterialUniformExpression` | `Source/Runtime/Engine/Private/Materials/MaterialUniformExpressions.h:56-81` |
+| 常量叶子（4 分量 + 类型标签）| `FMaterialUniformExpressionConstant` | 同上 `.h:257-306` |
+| 二元折叠节点 + FMO 枚举 | `FMaterialUniformExpressionFoldedMath` + `EFoldedMathOperation` | 同上 `.h:1093-1158` |
+| 抽象编译器基类 | `FMaterialCompiler` | `Source/Runtime/Engine/Public/MaterialCompiler.h:145` |
+| 编译器类型枚举（Standard/Lightmass/MaterialProxy）| `EMaterialCompilerType` | 同上 `:86-91` |
+| `GetArithmeticResultType` | 同名（MCT_Float/MCT_Float1 标量特判）| `HLSLMaterialTranslator.cpp:4221-4261` |
+| `Constant/2/3/4` 走表达式路径 | 同名 | 同上 `.cpp:5211-5233` |
+| 纯代码块管理 + 类型限制 | `AddCodeChunkInner` | 同上 `.cpp:3337-3405` |
+| 表达式块 + IsIdentical 双层去重 | `AddUniformExpressionInner` | 同上 `.cpp:3610-3723` |
+| `Add`/`Sub`/`Mul`/`Div`/`Dot` | 同名（三轨判定原貌）| 同上 `.cpp:9484 / 9520 / 9574 / 9646 / 9713` |
+| rcp 除法优化 | `FMaterialUniformExpressionRcp` + Div 内使用 | 同上 `.cpp:9696` |
+| `ValidCast` 截断/提升规则 | 基类注释 | `MaterialCompiler.h:233-238` |
 
-**搜索关键词**（在 UE 源码里）：`FShaderCodeChunk`、`FHLSLMaterialTranslator::Add`、`AddCodeChunkInner`、`IsExpressionConstantValue`、`EMaterialValueType`、`HandleMaterialCompilationErrors`、`FMaterialCompilerError`、`LastErrorText`。
+**搜索关键词**（在 UE 源码里）：`FShaderCodeChunk`、`AddUniformExpressionInner`、`IsIdentical`、`FMaterialUniformExpressionFoldedMath`、`IsExpressionConstantValue`、`ConstResultValue`、`EMaterialCompilerType`。
 
 ---
 
-## 第九部分：错误诊断（已踩坑 / 注意）
+## 第十一部分：已踩坑 / 注意
 
 | 坑 | 现象 | 教训 |
 |----|------|------|
-| 递归编译中途出错不短路 | 类型错误后仍生成残缺 HLSL，错上加错 | Error 级哨兵传播（算子返 -1），**当前分支**不展开，但**其他分支继续**（让多错误一轮报全）|
-| 错误不去重 | 同一类型不匹配因递归多次访问被报 N 次，错误列表刷屏 | `EmitError` 里 `SameAs` 判定，相同 node+pin+message 只存一份 |
-| 除零只用 `ME_LOG_WARNING` | 用户在 UI 看不到（日志只到控制台）| 改为 `EmitError(Warning)` 进 errors 列表，UI 才能高亮（课 19）|
-| 算子内 pinName 不准 | `Add` 里不知道是 A 还是 B 出错（`current_pin_` 是上游设的）| 算子内 EmitError 时**显式 override pinName**（如 `"A/B"`），不要依赖 `current_pin_` |
-| `current_node_` 未设置 | 课 6 阶段没接 CompileInputPin，`current_node_` 是 nullptr，EmitError 拿到 nodeId 为 Invalid | 课 6 测试时用 overrideNodeId 显式指定，或友元测试设置 `current_node_`；课 7 接 CompileInputPin 后自动有上下文 |
-| `hlsl_code` 在失败时被清空 | 用户改不到代码面板对照 | 即使编译失败也保留部分 HLSL（错误分支被短路，其他分支正常）；课 8 UI 显示残缺代码 + 错误信息 |
-
-> **核心设计取舍**：错误检查**贯穿编译路径一次加全**（不要"先标记后补"），因为递归编译天然带 node/pin 上下文，事后回扫反而要在两处维护同一检查。
-
-**对照 UE 错误诊断的三个差异**：
-
-1. **UE 的错误回填是后处理**：编译完后 `HandleMaterialCompilationErrors` 遍历编译器收集的错误，回填到 `UMaterialExpression::LastErrorText`，再触发节点 redraw。**我们是编译时直接带 nodeId**——课 7 实现的 `CompileInputPin` 入口设置 `current_node_`，EmitError 直接定位，省了"编译器错误 → 表达式对象"的回填层。代价：我们的错误检查和编译耦合在 `MaterialCompiler` 里，UE 是分离的（编译器只生成错误，回填由 `UMaterial` 做）。
-
-2. **UE 的环检测在编辑时**：用户连线时就调 `IsMaterialInputLooping` 拒绝循环连接，编译时不会有环——我们是编辑时允许（`Pin::CanConnectTo` 不查环），编译时查（课 7）。教学版简化（编辑时每条连线都要 DFS 对教学过重），代价是用户能连出环（编译才发现）。
-
-3. **UE 错误没 pin 概念**：UE 的 `UMaterialExpression` 是类，输入是命名成员（`FExpressionInput A`），错误格式是 "line N: expression ClassName: error text"——没明确"哪个 pin"。**我们 pin 一等公民**（`Pin::name`），错误能精确到引脚，UI 引脚级高亮更直接（课 19）。
+| 掩码用 `==` 判断 | `type == MCT_Float` 对 Float3 永远为假 | 类别判断必须 `&`，`==` 只对单值位合法 |
+| `MCT_Float` 和 `MCT_Float1` 混用 | 标量表达式返回 `MCT_Float`（UE 规则），只判 `Float1` 会漏 | 推导/分量数两处都同时接受两者（UE `.cpp:4250`、`GetNumComponents` 同款）|
+| ×1 直通直接返回索引 | `Float1 * Float3` 直通后下游分量不足 | 走 `PromoteToType` 的 while-AppendVector（UE `.cpp:9608`）|
+| 表达式块给 SymbolName | UE 带表达式的构造函数根本没有 SymbolName 参数 | 有表达式 → 定义串直接用，`GetParameterCode` 第一判 |
+| 纯常量 Add/Sub 建树不折叠 | 输出 `(1.0 + 2.0)` 而非 `3.0` | 教学版统一"纯常量立即折"（Mul/Div 模式），见第七部分分工说明 |
+| `dynamic_cast` 没开 RTTI | `IsIdentical` 全返回假 | CMake 确认编译选项含 RTTI（MSVC 默认开）|
+| 除零返回 inf/nan 常量 | HLSL 编译器拒绝 inf 字面量（UE 注释原话）| 除零不折 + Warning + 兜底 0 |
+| 递归错误重复报告 | 错误列表刷屏 | `EmitError` 里 `SameAs` 去重 + 下游不重复 emit |
+| 算子内 pinName 不准 | 算子不知道 A 还是 B 出错 | 算子内 EmitError 显式 override pinName（`"A/B"` 或 `"B"`）|
 
 ---
 
@@ -1115,28 +1266,27 @@ assert(c.GetParameterCode(-1) == "0.0");          // 负索引返回 "0.0"
 
 本课真正实现的（每一条都能本课勾选）：
 
-- [ ] `EValueType` 扩展（Float/Int/Matrix/Texture/Sampler）+ `TypeSystem::GetArithmeticResultType` / `ToHLSLType` 推导
-- [ ] `GetComponentCount` 留 Types.h（free function），`TypeSystem` 不重复定义
-- [ ] `CodeChunk` 用 variant `constant_value`（支持 Vec2/3/4 折叠）
-- [ ] `CompileError` 结构（`nodeId` / `pinName` / `message` / `severity`）+ `EErrorSeverity` 三级 + `SameAs` 去重
-- [ ] `CompileResult` 直接定义带 `errors` 数组的最终版 + `HasErrors()` 查询 + `error_message` 兼容字段
-- [ ] `MaterialCompiler::EmitError` 收集器 + `errors_` / `current_node_` / `current_pin_` 上下文成员
-- [ ] 4 个查询函数（`GetType` / `IsConstant` / `GetConstantValue` / `GetParameterCode`）+ assert + 边界保护
-- [ ] `AddCodeChunk` / `AddInlinedCodeChunk` / `AddConstantChunk`（接收 variant）+ hash 去重 + `FormatConstantCode`
-- [ ] `Constant` / `Constant2` / `Constant3` / `Constant4` 全走常量路径（`is_constant=true`）
-- [ ] `ConstantFolding::FoldBinary` / `FoldUnary` / `IsScalarZero` / `IsScalarOne`（variant 版，含标量广播）
-- [ ] `Add` / `Subtract` / `Multiply` / `Divide` 三段判定 + 向量折叠 + 代数化简 + 类型不匹配 `EmitError(Error)` + 除零 `EmitError(Warning)`
-- [ ] `Abs` / `Negate` / `Sine` / `Cosine`（一元 + 折叠）
-- [ ] `Lerp` / `Clamp` / `Power`（多元，含 `pow(x,0)→1` / `pow(x,1)→x` 化简）
-- [ ] `Dot` / `Cross` / `Normalize` / `Length`（向量运算）
-- [ ] `ComponentMask` / `AppendVector` / `Cast`
-- [ ] `compiler_test.cpp` 全部断言通过：标量折叠、向量折叠、乘 1/0 化简、除零 Warning + errors 收集、类型不匹配 Error + 哨兵传播、嵌套运算、查询边界保护、错误去重
+- [ ] `EValueType` bitmask 改造（MCT_* 单值位 + `MCT_Float`/`MCT_Texture` 掩码，位值对齐 UE）+ 全项目旧枚举引用迁移
+- [ ] `GetComponentCount` 适配（`MCT_Float` 与 `MCT_Float1` 都返回 1）
+- [ ] `TypeSystem::GetArithmeticResultType`（4 步逻辑对齐 UE）+ `ToHLSLType` + `TypeName`
+- [ ] `UniformExpression` 基类（`IsConstant` / `IsIdentical` / `GetNumberValue(ctx, out)` 三个虚函数，语义对齐 UE）
+- [ ] `UniformConstant`（Vec4 4 分量 + 类型标签，对齐 `FMaterialUniformExpressionConstant`）
+- [ ] `UniformFoldedMath`（`EFoldedMathOp` 6 运算 + 递归 IsConstant/IsIdentical）+ `UniformFoldedUnary`（5 运算）
+- [ ] `CodeChunk` 全字段版：逐字段对照表 + `uniform_expression` 树指针 + 两种 chunk 来源的语义（表达式块无 SymbolName）
+- [ ] `MaterialCompiler` 抽象基类（纯虚算子接口）+ `HLSLTranslator` 实现（两层结构，依赖倒置）
+- [ ] `CompileError` / `EErrorSeverity` / `CompileResult`（errors 数组 + `HasErrors`）+ `EmitError`（SameAs 去重）+ `current_node_`/`current_pin_` 上下文
+- [ ] `AddCodeChunk`（Unknown→-1 / 内联不去重 / 数值类型限制 / 纹理报错）+ `AddInlinedCodeChunk` + `AddUniformExpression`（IsIdentical 双层去重 + 材质级表达式表）
+- [ ] `Constant/2/3/4` 全走表达式路径（`UniformConstant` 叶子）
+- [ ] 查询四件套 + `IsConstant`（树递归）+ `IsExpressionConstantValue` + assert + 边界保护
+- [ ] `Add`/`Subtract`/`Multiply`/`Divide` 三轨判定 + 立即折叠 + 代数化简（x*0/x*1/0/x/x/1）+ `PromoteToType` 标量提升 + 除零 Warning + rcp 技巧
+- [ ] `Power`/`Lerp`/`Clamp`/`Abs`/`Negate`/`Sine`/`Cosine`/`Dot`/`Cross`/`Normalize`/`Length`/`ComponentMask`/`AppendVector`/`ValidCast`
+- [ ] `compiler_test.cpp` 全部断言通过：标量/向量折叠、×1 直通+标量提升、×0 归零、嵌套折叠、除零 Warning、树构建+IsIdentical 去重、类型不匹配 Error+哨兵、非表达式 HLSL 路径、边界保护
 
 ---
 
 ## 核心原则回顾
 
-1. **一步到位**：variant CodeChunk + 完整类型 + 向量折叠 + 错误收集，直接做完整版，不做"先标量后向量"、"先无错误后有错误"的中间态
-2. **对照 UE**：每个设计点知道 UE 怎么做、教学版为什么简化（variant vs 表达式树、enum vs bitmask、单层 vs 双层去重、错误编译时直接带 nodeId vs UE 后处理回填）
-3. **保留核心语义**：hash 去重、"是否常量"判定、双向递归——这些和 UE 一致，简化的是"实现手段"不是"设计思想"
-4. **本课边界清晰**：算子 API + chunks 数据结构 + 编译器层错误收集做完；`Compile(Graph*)` 留课 7、`GenerateCode` 留课 8、纹理算子留课 14/15、错误 UI 留课 19。**不挖坑、不留 TODO 占位、不写"课 X 再做"**
+1. **结构对齐优先**：bitmask / 全字段 chunk / 表达式树 / 双层编译器四个结构原样照搬 UE，简化只发生在"UE 为工业规模付出的工程"（preshader 字节码 VM、LWC、导数双轨、作用域系统）——每个不采用的字段都在对照表里说明了它**在 UE 里的作用**和不采用的理由。
+2. **树是三种形态的统一**：纯常量（叶子）、含参数（子树，运行时 CPU 求值）、纯 GPU（无树）——理解了这个，算子的三轨判定就是自然的。
+3. **保留核心语义**：递归 IsConstant、IsIdentical 双层去重、INDEX_NONE 哨兵、立即折叠 vs 建树的分工、"局部变量 vs 内联"的取舍——全部与 UE 同源。
+4. **本课边界清晰**：算子 API + 数据结构 + 编译器层错误收集；`Compile(Graph*)` 课 7、`GenerateCode` 课 8、纹理算子课 14/15、错误 UI 课 19、参数表达式节点课 20（树上追加子类 + `MaterialRenderContext` 填充参数表）。不挖坑、不留占位。
