@@ -126,19 +126,13 @@ L5 应用层            ← UI / Compiler / Renderer
   - 3 个**非虚** = 基类用反射统一实现（GetParameters/SetParameter/GetParameter），子类不碰
 - **UI 不 switch 枚举**：`PropertyCustomizerRegistry` 按 `std::type_index` 注册编辑器（对标 `IPropertyTypeCustomization`）。
 
-### 类型系统去重（课 5 期间的重构；课 6 起 EValueType 改为 bitmask）
-- `Types.h`（L2 数据模型层）：`EValueType`（**课 6 起为 `uint64_t` bitmask，成员用 UE 命名 `MCT_Float1/...` + 类别掩码 `MCT_Float`/`MCT_Texture`**）/ `EPinDataDirection` / `GetComponentCount` / `CanImplicitConvert` —— **零编译器知识**
+### 类型系统去重（课 5 期间的重构）
+- `Types.h`（L2 数据模型层）：`EValueType` / `EPinDataDirection` / `GetComponentCount` / `CanImplicitConvert` —— **零编译器知识**
 - `TypeSystem.h`（L5 编译器层）：`GetArithmeticResultType` / `ToHLSLType` —— HLSL 字符串映射属于编译器
 - 原则：HLSL 字符串不能出现在 Types.h，破坏分层
 
-### 编译器结构对齐 UE（课 6 教案，2026-08-17 定稿）
-- **`EValueType` 是 bitmask 不是普通 enum**：类别判断用 `&`（`type & MCT_Float`），`==` 只对单值位合法；`MCT_Float` 和 `MCT_Float1` 都按标量处理（UE 语义：MCT_Float1 不自动提升，标量表达式类型用 MCT_Float）
-- **常量/可折叠值统一为 `UniformExpression` 表达式树，不用 variant**：`UniformConstant`（Vec4 四分量 + 类型标签，对齐 `FMaterialUniformExpressionConstant`）+ `UniformFoldedMath`/`UniformFoldedUnary`（递归 `IsConstant`/`IsIdentical`/`GetNumberValue(ctx, out)`）；chunk 挂 `Ref<UniformExpression>`（对齐 `FShaderCodeChunk`）
-- **编译器两层**：`MaterialCompiler` 抽象基类（纯虚算子，对齐 `FMaterialCompiler`）+ `HLSLTranslator` 实现（对齐 `FHLSLMaterialTranslator`）；Expression 只依赖抽象接口（依赖倒置，解循环依赖）
-- **三轨判定**：哨兵+类型检查 → 两边有表达式（纯常量立即折叠 `ConstResultValue` / 含参数建树）→ 纯 HLSL 发射
-- **双层去重**：纯代码块代码 hash + 表达式块 `IsIdentical`（材质级 `uniform_expressions_` 表 + chunk 级复用）
-- **×1 直通必须走 `PromoteToType`**（while-AppendVector 补分量，标量×向量场景），不能直接返回索引
-- 明确不做（字段级取舍见 lesson06.md 对照表）：preshader 字节码 VM（树直接 C++ 求值）、LWC、导数双轨、Custom 作用域
+### 编译器结构对齐 UE（课 6 教案，已定稿，不要推翻）
+设计细节（EValueType 改 bitmask / UniformExpression 表达式树替代 variant / MaterialCompiler 抽象基类 + HLSLTranslator 实现的两层结构 / 三轨判定 / 双层去重 / PromoteToType 规则）**以 lesson06.md 为唯一权威来源**，此处不复述。
 
 ### 宏的命名规范
 - `ME_BEGIN_CLASS` / `ME_FIELD` / `ME_END_CLASS` / `ME_DISPLAY_NAME` / `ME_CATEGORY` / `ME_CATEGORY_COLOR`
