@@ -609,6 +609,38 @@ JSON 文件格式保持兼容：依然是 `parameters` 字段下的 key-value �
 
 ---
 
+## MaterialAttributes 打包节点的序列化（课 6 `MCT_MaterialAttributes` 的节点侧消费）
+
+课 6 引入的 `MCT_MaterialAttributes` 类型位在本课落地它的**节点**：Make/Break MaterialAttributes（对照 UE `MaterialExpressionMakeMaterialAttributes` / `BreakMaterialAttributes`）。
+
+**节点的语义**（编译侧在课 8 生成代码时展开，本课只管图数据和序列化）：
+
+- **MakeMaterialAttributes**：8 个输入引脚（BaseColor/Metallic/Roughness/Normal/Emissive/Opacity/AO/Tangent），1 个输出引脚（类型 `MCT_MaterialAttributes`）——把零散属性线打包成一根
+- **BreakMaterialAttributes**：1 个输入引脚（`MCT_MaterialAttributes`），8 个输出——反向拆包
+- 输出引脚类型在 `GetOutputPins()` 里声明为 `MCT_MaterialAttributes`，编译器的算术拦截（课 6 `GetArithmeticResultType` 对它返回 Unknown）保证它只能连进 Break 节点或材质根
+
+**序列化要点**（本课的实现内容）：
+
+```json
+// MakeMaterialAttributes 节点的 JSON——和普通节点同构，无特殊处理：
+// 引脚类型不序列化（加载时由 Expression::GetInputPins/GetOutputPins 重建），
+// 连接按 "节点ID + 引脚名" 存（引脚名是 BaseColor/Metallic 等属性名）
+{
+  "type": "MakeMaterialAttributes",
+  "id": "...",
+  "pos": [120, 340],
+  "parameters": {},
+  "connections": [
+    { "from_node": "n1", "from_pin": "RGB",  "to_pin": "BaseColor" },
+    { "from_node": "n3", "from_pin": "Value", "to_pin": "Roughness" }
+  ]
+}
+```
+
+关键点：**`MCT_MaterialAttributes` 类型位不出现在序列化数据里**——类型是节点的固有元数据（`GetOutputPins()` 每次重建时报告），不是实例状态。序列化只存「谁连谁」，类型检查在加载后编译时重做。这和 UE 一致（.uasset 里也不存引脚类型，存 `FExpressionInput` 对象引用）。
+
+---
+
 ## 完成标志
 
 - [ ] 保存材质图到 JSON 文件
@@ -617,3 +649,4 @@ JSON 文件格式保持兼容：依然是 `parameters` 字段下的 key-value �
 - [ ] 导出 HLSL 着色器文件
 - [ ] 新建/打开/保存/另存为操作正确
 - [ ] 未保存提示
+- [ ] Make/Break MaterialAttributes 节点可序列化（连接按引脚名 BaseColor/Metallic/... 存取，类型位不进序列化流）

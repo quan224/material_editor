@@ -1130,6 +1130,34 @@ UE5 的 DX12 封装比我们的复杂得多，但核心结构是一样的：
 
 ---
 
+## 前向链接：纹理类型 → SRV 视图维度（课 6 类型位的渲染侧消费）
+
+课 6 的 `EValueType` 纹理族（`MCT_Texture2D/2DArray/Volume/...`）在渲染侧的消费就在本课的描述符系统：**每种纹理类型对应一种 SRV 的 ViewDimension**。本课先立映射表（描述符骨架代码里按它分派），课 15 的纹理 SRV 实际创建时直接查表：
+
+| EValueType（课 6）| D3D12 SRV ViewDimension | HLSL 声明（课 6 ToHLSLType）| 采样坐标 |
+|---|---|---|---|
+| `MCT_Texture2D` | `D3D12_SRV_DIMENSION_TEXTURE2D` | `Texture2D` | float2 uv |
+| `MCT_TextureCube` | `D3D12_SRV_DIMENSION_TEXTURECUBE` | `TextureCube` | float3 方向 |
+| `MCT_Texture2DArray` | `D3D12_SRV_DIMENSION_TEXTURE2DARRAY` | `Texture2DArray` | float2 uv + layer |
+| `MCT_TextureVolume` | `D3D12_SRV_DIMENSION_TEXTURE3D` | `Texture3D` | float3 uvw |
+| `MCT_TextureExternal` / `MCT_TextureVirtual` | 同 Texture2D 路径 | `Texture2D` | float2 uv（教学版简化路径，类型位对齐 UE）|
+
+```cpp
+// DX12Device/描述符辅助：由编译器类型位直接决定 SRV 形状（课 15 CreateShaderResourceView 用）
+inline D3D12_SRV_DIMENSION GetSRVDimension(EValueType t) {
+    switch (t) {
+        case MCT_TextureCube:    return D3D12_SRV_DIMENSION_TEXTURECUBE;
+        case MCT_Texture2DArray: return D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        case MCT_TextureVolume:  return D3D12_SRV_DIMENSION_TEXTURE3D;
+        default:                 return D3D12_SRV_DIMENSION_TEXTURE2D;  // 2D/External/Virtual
+    }
+}
+```
+
+这就是"类型位有消费方"的完整闭环在渲染侧的一段：**编译器用类型位生成采样代码（课 6 ToHLSLType + 课 8 HLSL），渲染器用同一个类型位决定资源视图形状（本课表 + 课 15 SRV）**——两端读的是同一个标签，代码不会对不上。
+
+---
+
 ## 完成标志
 
 - [ ] DX12 设备创建成功，日志输出 "DX12 device initialized"
@@ -1139,3 +1167,4 @@ UE5 的 DX12 封装比我们的复杂得多，但核心结构是一样的：
 - [ ] 关闭程序时日志输出 "DX12Device::Destroy — 资源清理完成"
 - [ ] 关闭程序不崩溃（资源正确释放）
 - [ ] Debug 模式下，Visual Studio 输出窗口没有 D3D12 错误信息
+- [ ] `GetSRVDimension` 辅助函数就位（EValueType 纹理族 → ViewDimension 映射，课 15 SRV 创建直接调用）

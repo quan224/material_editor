@@ -1231,6 +1231,13 @@ void MainWindow::OnCompile() {
 - [ ] 着色器统计面板显示指令数、纹理采样数
 - [ ] 所有新表达式注册到调色板和工厂
 
+**Substrate BSDF 节点族（课 6 `MCT_Substrate` 的节点侧消费，桩化实现）**：
+
+- [ ] `SubstrateSlabBSDF` 节点（对照 UE `MaterialExpressionSubstrateSlabBSDF`）：输入 BaseColor/Roughness/Metallic，输出引脚类型 `MCT_Substrate`
+- [ ] 编译路径：`Compile()` 生成 `GetInitialisedSubstrateData()` 桩调用 chunk（对齐 UE `HLSLMaterialTranslator.cpp:12927` 的真实调用形态），类型 `MCT_Substrate`、HLSL 类型 `FSubstrateData`（课 6 ToHLSLType 已映射）
+- [ ] 桩函数定义进课 8 的 HLSL 模板公共段：`FSubstrateData GetInitialisedSubstrateData() { FSubstrateData D; /* 默认灰 BSDF */ return D; }`——**类型通路全真，BSDF 光学求值桩化**（UE 的 Substrate.ush 运行时 16k 行，教学版到课 17 的 PBR 预览用传统 Lit 路径）
+- [ ] 算术拦截测试：`Substrate输出 + Constant` → 编译报错（课 6 `GetArithmeticResultType` 对 `MCT_Substrate` 返回 Unknown 的端到端验证）
+
 **参数系统（第四部分深度）**：
 
 - [ ] `UniformTable` 数据结构实现（`Register` 同名合并 + 类型冲突检测 + `GenerateHLSL`）
