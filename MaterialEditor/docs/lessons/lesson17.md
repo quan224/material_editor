@@ -641,7 +641,7 @@ void MaterialPreview::SetMesh(ID3D12Device* device,
 #include <QPoint>
 #include "Renderer/Public/DX12Widget.h"
 #include "Renderer/Public/MaterialPreview.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Expression/Public/MaterialCompiler.h"  // 抽象接口在 L4（课6 分层裁决）
 
 // ViewportPanel — QDockWidget 包装 DX12Widget + 鼠标事件 → 相机控制
 class ViewportPanel : public QDockWidget {

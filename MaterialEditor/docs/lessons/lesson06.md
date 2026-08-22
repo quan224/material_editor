@@ -100,11 +100,13 @@ enum EValueType : uint64_t {
     MCT_Texture2D   = 1u << 4,
     MCT_TextureCube = 1u << 5,
 
-    // 纹理变体——位值对齐 UE（bit 6-9 同段）
+    // 纹理变体——位值对齐 UE（散布在 bit 6/8/12/13，UE 的纹理位本来就不连续：
+    // bit 7=TextureCubeArray、bit 9=StaticBool、bit 10=Unknown（UE 的 Unknown 位，
+    // 教学版 MCT_Unknown 用 0）教学版均未引入，bit 11=MaterialAttributes 在下面引入）
     MCT_Texture2DArray  = 1u << 6,   // 贴图数组：uv + layer 索引采样
-    MCT_TextureVolume   = 1u << 7,   // 3D 纹理：uvw 采样（体积雾等）
-    MCT_TextureExternal = 1u << 8,   // 外部纹理（视频帧直采）
-    MCT_TextureVirtual  = 1u << 9,   // 虚拟纹理（分页流式，页表间接采样）
+    MCT_VolumeTexture   = 1u << 8,   // 3D 纹理：uvw 采样（体积雾等）——UE 原名即 VolumeTexture
+    MCT_TextureExternal = 1u << 12,  // 外部纹理（视频帧直采）
+    MCT_TextureVirtual  = 1u << 13,  // 虚拟纹理（分页流式，页表间接采样）
 
     // 打包/模型类型——位值对齐 UE（bit 11/16/17）
     MCT_MaterialAttributes = 1u << 11,  // 材质属性打包值（一个 struct 流动）
@@ -118,7 +120,7 @@ enum EValueType : uint64_t {
     // ===== 类别掩码（多个位的或，用于"是不是某类"的集合判断）=====
     MCT_Float   = MCT_Float1 | MCT_Float2 | MCT_Float3 | MCT_Float4,   // 任意 float 向量
     MCT_Texture = MCT_Texture2D | MCT_TextureCube | MCT_Texture2DArray
-                | MCT_TextureVolume | MCT_TextureExternal | MCT_TextureVirtual,  // 任意纹理
+                | MCT_VolumeTexture | MCT_TextureExternal | MCT_TextureVirtual,  // 任意纹理
     // 打包值三件套（MaterialAttributes/ShadingModel/Substrate）不能算术、只走专门节点，
     // UE 也没有给它们统一掩码——用 == 单值判断，同款
 };
@@ -137,7 +139,7 @@ enum EValueType : uint64_t {
 | `MCT_Texture2D` | 2D 纹理对象 | TextureSample 的输入，**不能算术** |
 | `MCT_TextureCube` | 立方体纹理 | 环境贴图反射采样 |
 | `MCT_Texture2DArray` | 贴图数组 | uv + layer 索引采样；DX12 SRV 用 `TEXTURE2DARRAY` 维度 |
-| `MCT_TextureVolume` | 3D 纹理 | uwv 三维采样（体积雾/3D 数据）；SRV `TEXTURE3D` |
+| `MCT_VolumeTexture` | 3D 纹理 | uvw 三维采样（体积雾/3D 数据）；SRV `TEXTURE3D` |
 | `MCT_TextureExternal` | 外部纹理 | 视频帧采样；教学版按普通 2D 采样路径，类型位对齐 UE |
 | `MCT_TextureVirtual` | 虚拟纹理 | 分页流式；教学版按普通 2D 采样 + 注释说明页表机制，类型位对齐 UE |
 | `MCT_MaterialAttributes` | 材质属性打包值 | Make/Break 节点的输入输出；编译时展开成多个属性 chunk |
@@ -244,7 +246,7 @@ public:
             case MCT_Texture2D:      return "Texture2D";
             case MCT_TextureCube:    return "TextureCube";
             case MCT_Texture2DArray: return "Texture2DArray";
-            case MCT_TextureVolume:  return "Texture3D";
+            case MCT_VolumeTexture:  return "Texture3D";
             case MCT_TextureExternal:case MCT_TextureVirtual:
                                       return "Texture2D";   // 教学版按 2D 采样路径（见消费方索引）
             // 打包/模型类型（对照 UE：FSubstrateData 见 .cpp:3182）
@@ -267,7 +269,7 @@ public:
             case MCT_Texture2D:      return "Texture2D";
             case MCT_TextureCube:    return "TextureCube";
             case MCT_Texture2DArray: return "Texture2DArray";
-            case MCT_TextureVolume:  return "TextureVolume";
+            case MCT_VolumeTexture:  return "VolumeTexture";
             case MCT_TextureExternal:return "TextureExternal";
             case MCT_TextureVirtual: return "TextureVirtual";
             case MCT_MaterialAttributes: return "MaterialAttributes";

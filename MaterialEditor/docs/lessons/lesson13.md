@@ -565,18 +565,34 @@ void CodePreviewPanel::Clear() {
 
 ### 8. 集成到 MainWindow
 
-修改 `MainWindow.cpp`，将占位替换为真实面板：
+三个面板类就绪，**追加**到 `MainWindow::SetupDockWidgets()`——课 12 建立的中央画布保持不动，只往函数里加 dock：
 
 ```cpp
-#include "UI/Private/MaterialGraphWidget.h"
+#include <QDockWidget>
 #include "UI/Private/Panels/NodePalettePanel.h"
 #include "UI/Private/Panels/PropertyPanel.h"
 #include "UI/Private/Panels/CodePreviewPanel.h"
+```
 
+```cpp
+// MainWindow.h 添加面板成员
+class NodePalettePanel;
+class PropertyPanel;
+class CodePreviewPanel;
+
+private:
+    NodePalettePanel*  palettePanel_  = nullptr;
+    PropertyPanel*     propertyPanel_ = nullptr;
+    CodePreviewPanel*  codePanel_     = nullptr;
+```
+
+```cpp
 void MainWindow::SetupDockWidgets() {
-    // 中央：画布
+    // 中央：画布（课 12 已加，保持不动）
     graphWidget_ = new MaterialGraphWidget(graph_, factory_, this);
     setCentralWidget(graphWidget_);
+
+    // ===== 本课追加：三个面板 dock =====
 
     // 左侧：节点调色板
     palettePanel_ = new NodePalettePanel(factory_);
@@ -612,6 +628,7 @@ void MainWindow::SetupDockWidgets() {
     connect(propertyPanel_, &PropertyPanel::ParameterChanged,
             this, &MainWindow::OnCompile);
 }
+```
 
 // 选中节点时更新属性面板
 // 在 MaterialGraphWidget 中添加 selectionChanged 信号处理

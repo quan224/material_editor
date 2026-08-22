@@ -183,7 +183,7 @@ std::vector<int32_t> HLSLTranslator::CompileExpression(Node* node) {
 #pragma once
 #include "Expression/Public/Expression.h"
 #include "Reflection/Public/ReflectionMacros.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Expression/Public/MaterialCompiler.h"   // 抽象接口在 L4（课6 分层裁决）
 
 class ExprAdd : public Expression {
 public:
@@ -237,7 +237,7 @@ public:
 #pragma once
 #include "Expression/Public/Expression.h"
 #include "Reflection/Public/ReflectionMacros.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Expression/Public/MaterialCompiler.h"   // 抽象接口在 L4（课6 分层裁决）
 
 class ExprConstant : public Expression {
 public:
@@ -271,7 +271,7 @@ public:
 #pragma once
 #include "Expression/Public/Expression.h"
 #include "Reflection/Public/ReflectionMacros.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Expression/Public/MaterialCompiler.h"   // 抽象接口在 L4（课6 分层裁决）
 
 class ExprConstant3Vector : public Expression {
 public:

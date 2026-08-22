@@ -904,76 +904,20 @@ void DX12Device::Destroy() {
 
 ### 4. 验证代码 — main.cpp
 
-修改 `main.cpp`，创建一个 QWidget 作为渲染窗口，用 DX12Device 清屏为蓝色：
+窗口 resize 时要通知 DX12 重建后台缓冲。正确落点是**子类化 QWidget 重写 `resizeEvent`**（Qt 事件系统的标准做法），而不是在 main.cpp 里连信号或装事件过滤器。
+
+在 `main.cpp` 顶部定义验证用的 `RenderWidget`（只重写虚函数、无信号槽，不需要 `Q_OBJECT`，也不必单拆头文件）：
 
 ```cpp
 #include <QApplication>
 #include <QWidget>
 #include <QTimer>
+#include <QPaintEngine>
 #include "Renderer/Public/DX12Device.h"
 #include "Core/Public/Logger.h"
 
-int main(int argc, char* argv[]) {
-    // Qt 应用程序初始化
-    QApplication app(argc, argv);
-
-    // ---- 创建渲染窗口 ----
-    // DX12 需要一个 HWND（Windows 窗口句柄）。
-    // QWidget::winId() 返回的就是底层平台窗口句柄，
-    // 在 Windows 上就是 HWND。
-    QWidget renderWindow;
-    renderWindow.setWindowTitle("Material Editor — DX12 Clear Screen Test");
-    renderWindow.resize(800, 600);
-    renderWindow.show();
-
-    // ---- 初始化 DX12 ----
-    DX12Device device;
-    HWND hwnd = (HWND)renderWindow.winId();
-    device.Init(hwnd, 800, 600);
-    ME_LOG_INFO("DX12 device initialized");
-
-    // ---- 渲染循环 ----
-    // Qt 的事件循环和 DX12 渲染循环结合：
-    // 用 QTimer 每 16ms（~60fps）触发一次渲染。
-    // 这种方式比 while(true) 循环更好，因为不会阻塞 Qt 的事件处理。
-    QTimer renderTimer;
-    QObject::connect(&renderTimer, &QTimer::timeout, [&]() {
-        device.BeginFrame();
-        // 清屏为深蓝色（暗蓝，类似 UE5 编辑器的默认背景）
-        device.ClearColor(0.1f, 0.1f, 0.3f, 1.0f);
-        device.EndFrame();
-    });
-    renderTimer.start(16); // 约 60fps
-
-    // ---- 处理窗口 resize ----
-    // 当用户拖拽窗口边框改变大小时，需要通知 DX12 重建缓冲
-    QObject::connect(&renderWindow, &QWidget::customContextMenuRequested,
-        [&](const QPoint&) {
-            // 占位：实际 resize 处理见下
-        });
-
-    // 用事件过滤器捕获 resize 事件
-    renderWindow.installEventFilter(&renderWindow);
-    // 注意：更正式的做法是创建一个继承 QWidget 的 RenderWidget 类，
-    // 重写 resizeEvent。这里为了简洁使用事件过滤器。
-
-    // ---- 运行 ----
-    int result = app.exec();
-
-    // 退出前清理 DX12 资源
-    device.Destroy();
-    ME_LOG_INFO("Application exited");
-
-    return result;
-}
-```
-
-**更好的 Resize 处理方式**（推荐后续重构时使用）：
-
-```cpp
-// 创建一个专门的渲染 Widget，继承 QWidget
+// 验证用渲染窗口：把 resize 事件转给 DX12Device
 class RenderWidget : public QWidget {
-    Q_OBJECT
 public:
     explicit RenderWidget(QWidget* parent = nullptr)
         : QWidget(parent) {
@@ -996,13 +940,50 @@ protected:
 private:
     DX12Device* device_ = nullptr;
 };
-```
 
-如果你用了 `RenderWidget`，main.cpp 中创建渲染窗口的方式改为：
+int main(int argc, char* argv[]) {
+    // Qt 应用程序初始化
+    QApplication app(argc, argv);
 
-```cpp
-RenderWidget renderWindow;
-renderWindow.SetDX12Device(&device);
+    // ---- 创建渲染窗口 ----
+    // DX12 需要一个 HWND（Windows 窗口句柄）。
+    // QWidget::winId() 返回的就是底层平台窗口句柄，
+    // 在 Windows 上就是 HWND。
+    RenderWidget renderWindow;
+    renderWindow.setWindowTitle("Material Editor — DX12 Clear Screen Test");
+    renderWindow.resize(800, 600);
+    renderWindow.show();
+
+    // ---- 初始化 DX12 ----
+    DX12Device device;
+    HWND hwnd = (HWND)renderWindow.winId();
+    device.Init(hwnd, 800, 600);
+    renderWindow.SetDX12Device(&device);   // 之后 resize 会自动转发给 device
+    ME_LOG_INFO("DX12 device initialized");
+
+    // ---- 渲染循环 ----
+    // Qt 的事件循环和 DX12 渲染循环结合：
+    // 用 QTimer 每 16ms（~60fps）触发一次渲染。
+    // 这种方式比 while(true) 循环更好，因为不会阻塞 Qt 的事件处理。
+    QTimer renderTimer;
+    QObject::connect(&renderTimer, &QTimer::timeout, [&]() {
+        device.BeginFrame();
+        // 清屏为深蓝色（暗蓝，类似 UE5 编辑器的默认背景）
+        device.ClearColor(0.1f, 0.1f, 0.3f, 1.0f);
+        device.EndFrame();
+    });
+    renderTimer.start(16); // 约 60fps
+
+    // ---- 运行 ----
+    // resize 已由 RenderWidget::resizeEvent 处理（见顶部类定义）
+    int result = app.exec();
+
+    // 退出前清理 DX12 资源
+    device.Destroy();
+    ME_LOG_INFO("Application exited");
+
+    return result;
+}
 ```
 
 ### 5. CMakeLists.txt 更新
@@ -1139,7 +1120,7 @@ UE5 的 DX12 封装比我们的复杂得多，但核心结构是一样的：
 | `MCT_Texture2D` | `D3D12_SRV_DIMENSION_TEXTURE2D` | `Texture2D` | float2 uv |
 | `MCT_TextureCube` | `D3D12_SRV_DIMENSION_TEXTURECUBE` | `TextureCube` | float3 方向 |
 | `MCT_Texture2DArray` | `D3D12_SRV_DIMENSION_TEXTURE2DARRAY` | `Texture2DArray` | float2 uv + layer |
-| `MCT_TextureVolume` | `D3D12_SRV_DIMENSION_TEXTURE3D` | `Texture3D` | float3 uvw |
+| `MCT_VolumeTexture` | `D3D12_SRV_DIMENSION_TEXTURE3D` | `Texture3D` | float3 uvw |
 | `MCT_TextureExternal` / `MCT_TextureVirtual` | 同 Texture2D 路径 | `Texture2D` | float2 uv（教学版简化路径，类型位对齐 UE）|
 
 ```cpp
@@ -1148,7 +1129,7 @@ inline D3D12_SRV_DIMENSION GetSRVDimension(EValueType t) {
     switch (t) {
         case MCT_TextureCube:    return D3D12_SRV_DIMENSION_TEXTURECUBE;
         case MCT_Texture2DArray: return D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-        case MCT_TextureVolume:  return D3D12_SRV_DIMENSION_TEXTURE3D;
+        case MCT_VolumeTexture:  return D3D12_SRV_DIMENSION_TEXTURE3D;
         default:                 return D3D12_SRV_DIMENSION_TEXTURE2D;  // 2D/External/Virtual
     }
 }

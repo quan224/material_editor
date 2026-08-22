@@ -2,7 +2,7 @@
 
 ## 目标
 
-搭建 Qt 主窗口框架，使用 QDockWidget 实现可停靠面板布局，和 UE5 材质编辑器一样可以自由拖拽面板。
+搭建 Qt 主窗口框架（`QMainWindow` 骨架）：菜单栏、工具栏、状态栏、文件操作槽函数。这是编辑器的"壳"——画布和各面板作为中央部件/dock 在后续实现各自类之后逐一接入主窗口。
 
 ---
 
@@ -25,7 +25,7 @@ UE5 的材质编辑器布局：
 └─────────────────────────────────────────────────────┘
 ```
 
-UE5 用 Slate 的 `SDockSplitter` 实现可停靠布局。Qt 有等价的 `QDockWidget`，行为一致：面板可以拖拽、浮动、堆叠为标签页。
+上面的布局图是编辑器的**最终形态**。UE5 用 Slate 的 `SDockSplitter` 实现可停靠布局，Qt 有等价的 `QDockWidget`（面板可以拖拽、浮动、堆叠为标签页）。本课先搭壳（菜单/工具栏/状态栏）；每个面板类实现之后，才作为中央部件或 dock 接进来——接入动作在各面板课里完成。
 
 > **节点添加约定**（影响课13 调色板）：所有节点类型都注册在 `NodeFactory`，`Graph::AddNode(typeName, pos)` 是**唯一**添加入口（内部经工厂构造，不手动 new Node）。其中 `MaterialOutput`（材质输出节点）注册时带 `hidden=true`，由 `Graph` 自动创建一个、**不进调色板**——课13 调色板遍历 `GetAllTypes()` 时按 `hidden` 过滤掉它。
 
@@ -45,21 +45,12 @@ src/UI/Private/MainWindow.cpp
 ```cpp
 #pragma once
 #include <QMainWindow>
-#include <QDockWidget>
 #include <QToolBar>
 #include <QMenuBar>
 #include <QStatusBar>
 #include <QLabel>
 #include <QComboBox>
 #include <QAction>
-
-// 前向声明各面板（后续课程实现）
-class MaterialGraphWidget;
-class NodePalettePanel;
-class PropertyPanel;
-class CodePreviewPanel;
-class ViewportPanel;
-class StatsPanel;
 
 class Graph;
 class NodeFactory;
@@ -95,7 +86,6 @@ private:
     void SetupUI();
     void SetupMenuBar();
     void SetupToolBar();
-    void SetupDockWidgets();
     void SetupStatusBar();
     void ConnectSignals();
 
@@ -103,14 +93,6 @@ private:
     Graph* graph_ = nullptr;
     NodeFactory* factory_ = nullptr;
     MaterialCompiler* compiler_ = nullptr;
-
-    // 面板
-    MaterialGraphWidget* graphWidget_ = nullptr;
-    NodePalettePanel* palettePanel_ = nullptr;
-    PropertyPanel* propertyPanel_ = nullptr;
-    CodePreviewPanel* codePanel_ = nullptr;
-    ViewportPanel* viewportPanel_ = nullptr;
-    StatsPanel* statsPanel_ = nullptr;
 
     // UI 组件
     QComboBox* previewMeshCombo_ = nullptr;
@@ -128,16 +110,8 @@ private:
 #include "UI/Public/MainWindow.h"
 #include "MaterialGraph/Public/Graph.h"
 #include "MaterialGraph/Public/NodeFactory.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Expression/Public/MaterialCompiler.h"  // 抽象接口在 L4（课6 分层裁决）
 #include "Expression/Public/ExpressionRegistry.h"
-
-// 后续课程实现的面板，先用占位 QWidget
-// #include "UI/MaterialGraphWidget.h"
-// #include "UI/Panels/NodePalettePanel.h"
-// #include "UI/Panels/PropertyPanel.h"
-// #include "UI/Panels/CodePreviewPanel.h"
-// #include "UI/Panels/ViewportPanel.h"
-// #include "UI/Panels/StatsPanel.h"
 
 #include <QFileDialog>
 #include <QMessageBox>
@@ -187,7 +161,6 @@ MainWindow::~MainWindow() {
 void MainWindow::SetupUI() {
     SetupMenuBar();
     SetupToolBar();
-    SetupDockWidgets();
     SetupStatusBar();
     ConnectSignals();
 }
@@ -264,49 +237,6 @@ void MainWindow::SetupToolBar() {
     toolbar->addWidget(previewMeshCombo_);
 }
 
-void MainWindow::SetupDockWidgets() {
-    // 设置中央部件为占位（后续替换为 MaterialGraphWidget）
-    auto* centralPlaceholder = new QWidget(this);
-    setCentralWidget(centralPlaceholder);
-
-    // === 左侧：节点调色板 ===
-    auto* paletteDock = new QDockWidget("Node Palette", this);
-    paletteDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    // 后续替换为真实面板：paletteDock->setWidget(palettePanel_);
-    auto* palettePlaceholder = new QWidget;
-    palettePlaceholder->setMinimumWidth(200);
-    paletteDock->setWidget(palettePlaceholder);
-    addDockWidget(Qt::LeftDockWidgetArea, paletteDock);
-
-    // === 右侧：属性面板 ===
-    auto* propertyDock = new QDockWidget("Details", this);
-    propertyDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    auto* propertyPlaceholder = new QWidget;
-    propertyPlaceholder->setMinimumWidth(250);
-    propertyDock->setWidget(propertyPlaceholder);
-    addDockWidget(Qt::RightDockWidgetArea, propertyDock);
-
-    // === 底部左：代码预览 ===
-    auto* codeDock = new QDockWidget("HLSL Code", this);
-    codeDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
-    auto* codePlaceholder = new QWidget;
-    codePlaceholder->setMinimumHeight(200);
-    codeDock->setWidget(codePlaceholder);
-    addDockWidget(Qt::BottomDockWidgetArea, codeDock);
-
-    // === 底部右：3D 预览视口 ===
-    auto* viewportDock = new QDockWidget("Viewport", this);
-    viewportDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
-    auto* viewportPlaceholder = new QWidget;
-    viewportPlaceholder->setMinimumSize(300, 200);
-    viewportDock->setWidget(viewportPlaceholder);
-    addDockWidget(Qt::BottomDockWidgetArea, viewportDock);
-
-    // 将底部两个面板堆叠为标签页
-    tabifyDockWidget(codeDock, viewportDock);
-    codeDock->raise();  // 默认显示代码预览
-}
-
 void MainWindow::SetupStatusBar() {
     statusLabel_ = new QLabel("Ready");
     compileStatus_ = new QLabel("");
@@ -379,16 +309,11 @@ void MainWindow::OnCompile() {
         compileStatus_->setStyleSheet("color: green;");
         statusLabel_->setText(QString("Compiled: %1 bytes HLSL")
             .arg(result.hlslCode.size()));
-        // 后续：更新代码预览面板
-        // codePanel_->SetCode(result.hlslCode);
-        // 后续：更新3D预览
-        // viewportPanel_->SetMaterialResult(result);
     } else {
         compileStatus_->setText("Compile Error");
         compileStatus_->setStyleSheet("color: red;");
         statusLabel_->setText(QString("Error: %1").arg(
             QString::fromStdString(result.errorMessage)));
-        // 后续：在代码面板中高亮错误
     }
 }
 
@@ -439,15 +364,10 @@ int main(int argc, char* argv[]) {
 1. 1400×900 的主窗口
 2. 菜单栏：File | Edit | View | Material
 3. 工具栏：New, Open, Save, Compile 按钮 + 预览网格下拉框
-4. 左侧：Node Palette 面板（空白占位）
-5. 右侧：Details 面板（空白占位）
-6. 底部：HLSL Code 和 Viewport 标签页切换
-7. 状态栏：显示 "Ready"
-8. 面板可以拖拽、浮动、重新排列
+4. 状态栏：显示 "Ready"
+5. 中央暂无内容（本课只搭主窗口骨架，不接入画布/面板）
 
 尝试：
-- 拖拽面板到不同位置
-- 双击面板标题栏浮动/恢复
 - 点击 Compile 按钮（此时应该报错，因为没有节点）
 - Ctrl+N, Ctrl+O, Ctrl+S 快捷键工作
 
@@ -472,7 +392,7 @@ int main(int argc, char* argv[]) {
 
 **关键差异**：
 1. **UE 用 Slate（声明式 C++ UI 框架）**，我们用 Qt Widgets——两套完全不同的 UI 框架，但**布局概念一致**（可停靠面板、菜单、工具栏）。
-2. **UE 的布局是可序列化的**（`FLayoutExtender` 把面板布局存进编辑器配置，下次打开恢复）——我们的 `QMainWindow` 用 `saveState()/restoreState()` 能做到同样的事（课18 保存时加上）。
+2. **UE 的布局是可序列化的**（`FLayoutExtender` 把面板布局存进编辑器配置，下次打开恢复）——我们的 `QMainWindow` 用 `saveState()/restoreState()` 能做到同样的事。
 3. **UE 工具栏是 Slate widget**（`SMaterialEditorToolBar`），Qt 用 `QToolBar` + `QAction`，更简单。
 
 > **搜索关键词**（UE 源码）：`MaterialEditor.h`、`FLayoutExtender`、`SDockableTab`、`SMaterialEditorToolBar`。
@@ -481,7 +401,7 @@ int main(int argc, char* argv[]) {
 
 ## 完成标志
 
-- [ ] 主窗口显示正确，面板布局可拖拽
+- [ ] 主窗口显示正确（菜单/工具栏/状态栏）
 - [ ] 菜单栏和工具栏正确显示
 - [ ] 快捷键工作（Ctrl+N/O/S/Delete）
 - [ ] Compile 按钮触发编译（即使此时报错）

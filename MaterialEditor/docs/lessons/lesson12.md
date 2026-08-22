@@ -609,18 +609,30 @@ void MaterialGraphWidget::FitToView() {
 
 ### 6. 集成到 MainWindow
 
-修改 `MainWindow::SetupDockWidgets()`，将中央占位替换为真实的 MaterialGraphWidget：
+画布类就绪，主窗口第一次接入中央部件——`SetupDockWidgets()` 在本课创建：
+
+```cpp
+// MainWindow.h 添加
+class MaterialGraphWidget;   // 前向声明
+
+private:
+    void SetupDockWidgets();
+    MaterialGraphWidget* graphWidget_ = nullptr;
+```
 
 ```cpp
 // MainWindow.cpp 修改
 #include "UI/Private/MaterialGraphWidget.h"
 
+void MainWindow::SetupUI() {
+    // ... 现有 SetupMenuBar/SetupToolBar/SetupStatusBar/ConnectSignals ...
+    SetupDockWidgets();   // 本课新增
+}
+
 void MainWindow::SetupDockWidgets() {
     // 中央：材质图画布
     graphWidget_ = new MaterialGraphWidget(graph_, factory_, this);
     setCentralWidget(graphWidget_);
-
-    // ... 其余面板不变 ...
 }
 ```
 

@@ -609,15 +609,21 @@ JSON 文件格式保持兼容：依然是 `parameters` 字段下的 key-value �
 
 ---
 
-## MaterialAttributes 打包节点的序列化（课 6 `MCT_MaterialAttributes` 的节点侧消费）
+## MaterialAttributes 打包节点：编译 + 序列化（课 6 `MCT_MaterialAttributes` 的节点侧消费）
 
-课 6 引入的 `MCT_MaterialAttributes` 类型位在本课落地它的**节点**：Make/Break MaterialAttributes（对照 UE `MaterialExpressionMakeMaterialAttributes` / `BreakMaterialAttributes`）。
+课 6 引入的 `MCT_MaterialAttributes` 类型位在本课落地它的**节点**：Make/Break MaterialAttributes（对照 UE `MaterialExpressionMakeMaterialAttributes` / `BreakMaterialAttributes`）。编译路径和序列化都在本课实现——课 6 消费方索引指定的落点就是课 18，此时课 7 的根编译、课 8 的代码生成早已就绪，本课做的是纯追加。
 
-**节点的语义**（编译侧在课 8 生成代码时展开，本课只管图数据和序列化）：
+**节点的语义**：
 
 - **MakeMaterialAttributes**：8 个输入引脚（BaseColor/Metallic/Roughness/Normal/Emissive/Opacity/AO/Tangent），1 个输出引脚（类型 `MCT_MaterialAttributes`）——把零散属性线打包成一根
 - **BreakMaterialAttributes**：1 个输入引脚（`MCT_MaterialAttributes`），8 个输出——反向拆包
 - 输出引脚类型在 `GetOutputPins()` 里声明为 `MCT_MaterialAttributes`，编译器的算术拦截（课 6 `GetArithmeticResultType` 对它返回 Unknown）保证它只能连进 Break 节点或材质根
+
+**编译路径**（本课的实现内容，对照 UE `UMaterialExpressionMakeMaterialAttributes::Compile`）：
+
+- **Make**：`Compile()` 依次 `CompileInputPin` 8 个属性引脚，把 8 个结果 chunk 索引存进一个新 chunk 的 `references`，类型 `MCT_MaterialAttributes`、不挂表达式树（纯打包元数据块）。打包块本身不产生 HLSL 代码——`GetParameterCode` 对它无意义，因为算术拦截保证它进不了任何算子
+- **材质根展开**：在课 7 `Compile(Graph*)` 的根编译处**追加**一个分支——根的输入 chunk 类型是 `MCT_MaterialAttributes` 时，按 `references` 把 8 个属性 chunk 回填到材质输出（BaseColor 填 BaseColor 位、Metallic 填 Metallic 位……），未连接的属性走默认值。对照 UE translator 的属性栈机制（`PushMaterialAttribute` / `PopMaterialAttribute`，UE 用它支持嵌套打包）
+- **Break**：编译输入引脚拿到打包块后，从 `references` 按属性序号取出对应 chunk，作为 8 个输出引脚的编译结果——拆包不生成代码，只是索引转发
 
 **序列化要点**（本课的实现内容）：
 
@@ -650,3 +656,4 @@ JSON 文件格式保持兼容：依然是 `parameters` 字段下的 key-value �
 - [ ] 新建/打开/保存/另存为操作正确
 - [ ] 未保存提示
 - [ ] Make/Break MaterialAttributes 节点可序列化（连接按引脚名 BaseColor/Metallic/... 存取，类型位不进序列化流）
+- [ ] Make/Break 编译路径工作：Make 打包 8 引脚 chunk 进 `references` / 材质根展开回填各属性位 / Break 按 `references` 拆包转发

@@ -38,7 +38,7 @@ tests/test_compiler_pipeline.cpp
 #include "MaterialGraph/Public/Graph.h"
 #include "MaterialGraph/Public/NodeFactory.h"
 #include "MaterialGraph/Public/GraphCompiler.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Expression/Public/MaterialCompiler.h"  // 抽象接口在 L4（课6 分层裁决）
 #include "Compiler/Public/TypeSystem.h"
 #include "Expression/Public/ExpressionRegistry.h"
 
@@ -409,7 +409,7 @@ BaseColor = float3(Local3, Local3, Local3);
 - 搜索 `GetMaterialShaderCode` — 最终代码输出（对照 `GenerateCode`/`HLSLGenerator::Generate`）
 - 搜索 `VerifyShaderIsValid` — 验证逻辑（对照我们的 `result.success` 检查）
 
-**UE 的端到端验证**：UE 有完整的自动化测试（`MaterialTest.cpp`、`HLSLMaterialTranslatorTest.cpp`），覆盖各种节点组合 + 折叠 + 类型推导。我们的 `test_compiler_pipeline.cpp` 就是简化版——同样的思路（构造图 → 编译 → 验证 HLSL），只是测试用例少（UE 有几百个）。
+**UE 的端到端验证**：UE 有完整的自动化测试（`MaterialTest.cpp`、`HLSLMaterialTranslatorTest.cpp`），覆盖各种节点组合 + 折叠 + 类型推导。我们的 `test_compiler_pipeline.cpp` 就是教学版——同样的思路（构造图 → 编译 → 验证 HLSL），只是测试用例少（UE 有几百个）。
 
 ---
 

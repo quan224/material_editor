@@ -2095,7 +2095,7 @@ UE5 的 DX12 实现分散在 `D3D12RHI` 模块中。以下文件展示了 UE5 �
 
 > **UE 对照**：`Engine/Source/Runtime/RenderCore/Private/ShaderCompiler*` + `Engine/Source/Programs/ShaderCompileWorker`（worker 进程源码）。
 
-### UE5 vs 我们的简化版本
+### UE5 vs 我们的教学版本
 
 | 概念 | UE5 的做法 | 我们的做法 |
 |------|-----------|-----------|

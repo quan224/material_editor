@@ -14,11 +14,11 @@
 
 UE5 有 200+ 种表达式，我们目前只有 10 个基础数学表达式。按优先级添加：
 
-**第二优先级**（参数和纹理）：
-- ScalarParameter — 可命名的标量参数
-- VectorParameter — 可命名的向量参数
+**第二优先级**（纹理）：
 - TextureSample — 纹理采样
 - TextureCoordinate — UV 坐标
+
+> 参数节点（ScalarParameter / VectorParameter / StaticSwitch）不在"更多表达式"里做——它们牵扯 uniform 收集、同名合并、材质变体，统一放**第四部分（参数系统深度）**第一次实现。
 
 **第三优先级**（向量操作）：
 - ComponentMask — 分量掩码
@@ -58,81 +58,7 @@ UE5 材质编辑器底部有统计面板，显示：
 - 字段全部用 `ME_FIELD` 注册（无需手写 Get/Set/GetParameter）
 - 只实现引脚布局和 Compile
 
-#### 1. ScalarParameter
-
-```
-src/Expression/Public/Parameters/ExprScalarParameter.h
-```
-
-```cpp
-#pragma once
-#include "Expression/Public/Expression.h"
-#include "Reflection/Public/ReflectionMacros.h"
-#include "Compiler/Public/MaterialCompiler.h"
-
-class ExprScalarParameter : public Expression {
-public:
-    float value_ = 0.0f;
-    std::string paramName_ = "Param";
-
-    ME_BEGIN_CLASS(ExprScalarParameter)
-        ME_DISPLAY_NAME("ScalarParameter")
-        ME_CATEGORY("Parameters")
-        ME_FIELD(ExprScalarParameter, value_, 0.0f)
-        ME_FIELD(ExprScalarParameter, paramName_, "Param")
-    ME_END_CLASS(ExprScalarParameter)
-
-    std::vector<ExpressionPinDesc> GetInputPins() const override { return {}; }
-    std::vector<ExpressionPinDesc> GetOutputPins() const override {
-        return {{"Value", EValueType::Float1, ""}};
-    }
-
-    std::vector<int32_t> Compile(MaterialCompiler* c, Node*) const override {
-        return {c->Parameter(paramName_, value_)};
-    }
-};
-```
-
-> **注意**：需要在 `MaterialCompiler` 中添加 `Parameter()` 方法，生成 `uniform float ParamName;` 声明并返回引用该 uniform 的代码块。
-
-#### 2. VectorParameter
-
-```
-src/Expression/Public/Parameters/ExprVectorParameter.h
-```
-
-```cpp
-#pragma once
-#include "Expression/Public/Expression.h"
-#include "Reflection/Public/ReflectionMacros.h"
-#include "Compiler/Public/MaterialCompiler.h"
-
-class ExprVectorParameter : public Expression {
-public:
-    float r_ = 1.0f, g_ = 1.0f, b_ = 1.0f;
-    std::string paramName_ = "Color";
-
-    ME_BEGIN_CLASS(ExprVectorParameter)
-        ME_DISPLAY_NAME("VectorParameter")
-        ME_CATEGORY("Parameters")
-        ME_FIELD(ExprVectorParameter, paramName_, "Color")
-        ME_FIELD(ExprVectorParameter, r_, 1.0f)
-        ME_FIELD(ExprVectorParameter, g_, 1.0f)
-        ME_FIELD(ExprVectorParameter, b_, 1.0f)
-    ME_END_CLASS(ExprVectorParameter)
-
-    std::vector<ExpressionPinDesc> GetInputPins() const override { return {}; }
-    std::vector<ExpressionPinDesc> GetOutputPins() const override {
-        return {{"Output", EValueType::Float3, ""}};
-    }
-
-    std::vector<int32_t> Compile(MaterialCompiler* c, Node*) const override {
-        return {c->Parameter3(paramName_, r_, g_, b_)};
-    }
-};
-```
-
-#### 3. TextureSample
+#### 1. TextureSample
 
 ```
 src/Expression/Public/Texture/ExprTextureSample.h
@@ -142,7 +68,7 @@ src/Expression/Public/Texture/ExprTextureSample.h
 #pragma once
 #include "Expression/Public/Expression.h"
 #include "Reflection/Public/ReflectionMacros.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Expression/Public/MaterialCompiler.h"  // 抽象接口在 L4（课6 分层裁决）
 
 class ExprTextureSample : public Expression {
 public:
@@ -177,13 +103,13 @@ public:
 
 > **注意**：`MaterialCompiler::TextureSample()` 需要修改为接受纹理名称参数，并在 `HLSLGenerator` 中生成 `uniform sampler2D TextureName;` 声明。
 
-#### 4. TextureCoordinate
+#### 2. TextureCoordinate
 
 ```cpp
 #pragma once
 #include "Expression/Public/Expression.h"
 #include "Reflection/Public/ReflectionMacros.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Expression/Public/MaterialCompiler.h"  // 抽象接口在 L4（课6 分层裁决）
 
 class ExprTextureCoordinate : public Expression {
 public:
@@ -206,7 +132,7 @@ public:
 };
 ```
 
-#### 5. 其他简单表达式（模式相同）
+#### 3. 其他简单表达式（模式相同）
 
 ```cpp
 // ExprOneMinus
@@ -239,14 +165,10 @@ std::vector<int32_t> Compile(MaterialCompiler* c, Node* node) const override {
 }
 ```
 
-#### 6. 在 MaterialCompiler 中添加新方法
+#### 4. 在 MaterialCompiler 中添加新方法
 
 ```cpp
 // MaterialCompiler.h 添加
-
-// 参数 uniform
-int32_t Parameter(const std::string& name, float defaultValue);
-int32_t Parameter3(const std::string& name, float r, float g, float b);
 
 // 时间
 int32_t Time();
@@ -261,23 +183,6 @@ std::vector<int32_t> TextureSample(const std::string& textureName, int32_t uv);
 ```cpp
 // MaterialCompiler.cpp 实现
 
-int32_t MaterialCompiler::Parameter(const std::string& name, float defaultValue) {
-    // 记录 uniform 声明（HLSL 语法，放在 cbuffer 中）
-    uniforms_.push_back("    float " + name + " = " +
-                         std::to_string(defaultValue) + ";");
-    // 返回引用该 uniform 的代码块
-    return AddCodeChunk(EValueType::Float1, name, true);
-}
-
-int32_t MaterialCompiler::Parameter3(const std::string& name,
-                                      float r, float g, float b) {
-    uniforms_.push_back("    float3 " + name + " = float3(" +
-                         std::to_string(r) + ", " +
-                         std::to_string(g) + ", " +
-                         std::to_string(b) + ");");
-    return AddCodeChunk(EValueType::Float3, name, true);
-}
-
 int32_t MaterialCompiler::Time() {
     // 使用内置 uTime uniform
     return AddCodeChunk(EValueType::Float1, "uTime", true);
@@ -291,13 +196,11 @@ int32_t MaterialCompiler::Fresnel(int32_t exponent) {
 }
 ```
 
-#### 7. 注册新表达式
+#### 5. 注册新表达式
 
 在 `RegisterAllExpressions()` 中添加：
 
 ```cpp
-#include "Expression/Public/Parameters/ExprScalarParameter.h"
-#include "Expression/Public/Parameters/ExprVectorParameter.h"
 #include "Expression/Public/Texture/ExprTextureSample.h"
 #include "Expression/Public/Texture/ExprTextureCoordinate.h"
 #include "Expression/Public/Vector/ExprComponentMask.h"
@@ -308,8 +211,6 @@ int32_t MaterialCompiler::Fresnel(int32_t exponent) {
 
 void RegisterAllExpressions() {
     // ... 原有 10 个 ...
-    reg.Register("ExprScalarParameter", ...);
-    reg.Register("ExprVectorParameter", ...);
     reg.Register("ExprTextureSample", ...);
     reg.Register("ExprTextureCoordinate", ...);
     reg.Register("ExprComponentMask", ...);
@@ -573,7 +474,7 @@ void StatsPanel::Clear() {
 
 ### 第四部分：参数系统（深度）
 
-第一部分给的 `ScalarParameter` / `VectorParameter` 是**最小可跑**的实现——把 uniform 串拼成字符串塞进 `uniforms_` vector，编译期没有任何结构化数据。但要支持完整的参数系统（同名参数合并、纹理参数自动配 SamplerState、StaticSwitch 编出多个 shader 变体、UI 分组编辑、序列化），"参数收集"必须升级为编译器的**一等数据结构** `UniformTable`，并引入**材质变体**机制。
+参数节点（`ScalarParameter` / `VectorParameter` / `TextureParameter` / `StaticSwitch`）**在本部分第一次实现**。它们和普通算子节点有本质区别：参数不是局部变量（每次材质实例化值不同），编译期必须收集成结构化数据——同名参数合并、纹理参数自动配 SamplerState、StaticSwitch 编出多个 shader 变体、UI 分组编辑、序列化。支撑这一切的是编译器的**一等数据结构** `UniformTable`，以及**材质变体**机制。
 
 本部分对照 UE5 的 `FMaterialCompilationOutput` / `FMaterialResource` / `StaticSwitchParameter`，把参数系统讲透。深度对标课6 的编译器核心——参数系统是编译器第二大复杂块（仅次于常数折叠/类型推导）。
 
@@ -740,7 +641,7 @@ SamplerState AlbedoTexSampler;
 #pragma once
 #include "Expression/Public/Expression.h"
 #include "Reflection/Public/ReflectionMacros.h"
-#include "Compiler/Public/MaterialCompiler.h"
+#include "Expression/Public/MaterialCompiler.h"  // 抽象接口在 L4（课6 分层裁决）
 
 class ExprScalarParameter : public Expression {
 public:
@@ -779,7 +680,7 @@ public:
 };
 ```
 
-> **升级第一部分的命名**：第一部分用的字段名是 `value_`，这里改成 `defaultValue_` 更准确——这个值是 cbuffer 的**默认初始值**，运行期 UI 改了就覆盖。第一部分的实现保持向后兼容（`value_` 仍能用），深度版用 `defaultValue_`。
+> **命名说明**：字段名用 `defaultValue_` 而不是 `value_`——这个值是 cbuffer 的**默认初始值**，运行期 UI 改了就覆盖，名字要体现这一点。
 
 ##### VectorParameter（float3/float4 uniform）
 
@@ -817,7 +718,7 @@ public:
 };
 ```
 
-> **Vec4 参数**：如果需要 float4（带 alpha 的颜色），加一个 `ExprVector4Parameter`，把 `EValueType::Float4` + `Vec4` 默认值。Vec4Property 项目里已有。第一部分用三个分离的 `r_/g_/b_` 字段是另一种风格，但合并成 `Vec3 defaultValue_` 更干净（一个颜色字段在 UI 里显示成颜色选择器，三个 float 字段是三个滑块）。
+> **Vec4 参数**：如果需要 float4（带 alpha 的颜色），加一个 `ExprVector4Parameter`，把 `EValueType::Float4` + `Vec4` 默认值。Vec4Property 项目里已有。用合并的 `Vec3 defaultValue_` 而不是三个分离的 `r_/g_/b_` 字段更干净（一个颜色字段在 UI 里显示成颜色选择器，三个 float 字段是三个滑块）。
 
 ##### TextureParameter（Texture2D + SamplerState 配对）
 
@@ -1216,7 +1117,7 @@ void MainWindow::OnCompile() {
 
 - **错误诊断**（编译错误：类型不匹配 / 循环依赖 / 未连接必需引脚 / 除零，带**节点 + pin 定位**，编辑器据此高亮出错节点）→ **课19**（对照 UE 的 `HandleMaterialCompilationErrors`）。
 - **材质域 / 混合模式**（`EMaterialDomain`：Surface/Unlit/PostProcess/Decal；`EBlendMode`：Opaque/Masked/Translucent/Additive——决定 shader 结构 [课8 模板分支] + blend state）→ **课15**。
-- **参数系统深度**（uniform 收集 / `UniformTable` / StaticSwitch / 材质变体）→ **本课第四部分**（升级第一部分的最小实现）。
+- **参数系统深度**（参数节点 / uniform 收集 / `UniformTable` / StaticSwitch / 材质变体）→ **本课第四部分**（参数节点在此第一次实现）。
 
 > **搜索关键词**（UE 源码）：`MaterialExpressionFresnel`、`GetShaderInstructionCount`、`EShaderPlatform`、`EMaterialDomain`、`EBlendMode`、`HandleMaterialCompilationErrors`、`MaterialExpressionScalarParameter`、`MaterialExpressionStaticSwitchParameter`、`FMaterialResource`、`FStaticParameterSet`。
 
@@ -1224,7 +1125,6 @@ void MainWindow::OnCompile() {
 
 ## 完成标志
 
-- [ ] ScalarParameter 和 VectorParameter 可编辑和预览
 - [ ] TextureSample 可采样纹理（至少代码生成正确）
 - [ ] Time/Fresnel/OneMinus/Saturate 工作正确
 - [ ] HLSL 导出格式正确（默认格式）
@@ -1244,6 +1144,7 @@ void MainWindow::OnCompile() {
 - [ ] `MaterialCompiler` 持有 `uniformTable_` + `ReportError` / `SetStaticOverrides` / `GetStaticSwitchValue`
 - [ ] `GenerateCode` 把 `UniformTable::GenerateHLSL()` 的输出嵌入 HLSL cbuffer 段 + 纹理声明段
 - [ ] `ExprScalarParameter` / `ExprVectorParameter` / `ExprTextureParameter` / `ExprStaticSwitch` 四个节点实现 + 注册
+- [ ] 参数节点在属性面板可编辑参数名和默认值，修改后预览实时更新
 - [ ] 同名参数合并测试：图里 3 个 `BaseColor` 节点 → cbuffer 只声明 1 次
 - [ ] 类型冲突报错测试：同名 `Color` 一个 float3 一个 float1 → 编译错误
 - [ ] 纹理参数配 sampler 测试：TextureParameter 自动注册 `NameSampler`
