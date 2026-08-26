@@ -132,7 +132,8 @@ L5 应用层            ← UI / Compiler / Renderer
 - 原则：HLSL 字符串不能出现在 Types.h，破坏分层
 
 ### 编译器结构对齐 UE（课 6 教案，已定稿，不要推翻）
-设计细节（EValueType 改 bitmask / UniformExpression 表达式树替代 variant / MaterialCompiler 抽象基类 + HLSLTranslator 实现的两层结构 / 三轨判定 / 双层去重 / PromoteToType 规则）**以 lesson06.md 为唯一权威来源**，此处不复述。
+设计细节（EValueType 改 bitmask 含 LWC/纹理变体/打包三件套 / UniformExpression 表达式树替代 variant / CodeChunk 与 FShaderCodeChunk 逐字段一一对应（含导数双轨/作用域三件套） / MaterialCompiler 抽象基类 + HLSLTranslator 实现的两层结构 / 三轨判定 / 双层去重 / PromoteToType 规则）**以 lesson06.md 为唯一权威来源**，此处不复述。
+**完整度约定（2026-08-26 定）**：除「多平台编译」和「130+ 重复算子的批量复制」外不省略——LWC/导数双轨/材质函数/Custom 作用域/Substrate 完整实现（组合树+课17 GGX 求值，非桩）/多属性编译/DDC 缓存全部进教案（课 6/7/8/20）。
 
 ### 宏的命名规范
 - `ME_BEGIN_CLASS` / `ME_FIELD` / `ME_END_CLASS` / `ME_DISPLAY_NAME` / `ME_CATEGORY` / `ME_CATEGORY_COLOR`

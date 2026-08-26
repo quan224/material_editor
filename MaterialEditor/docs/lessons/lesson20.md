@@ -1131,12 +1131,37 @@ void MainWindow::OnCompile() {
 - [ ] 着色器统计面板显示指令数、纹理采样数
 - [ ] 所有新表达式注册到调色板和工厂
 
-**Substrate BSDF 节点族（课 6 `MCT_Substrate` 的节点侧消费，桩化实现）**：
+**Substrate BSDF 完整实现（课 6 `MCT_Substrate` 的节点侧消费——组合树 + 求值，非桩）**：
 
-- [ ] `SubstrateSlabBSDF` 节点（对照 UE `MaterialExpressionSubstrateSlabBSDF`）：输入 BaseColor/Roughness/Metallic，输出引脚类型 `MCT_Substrate`
-- [ ] 编译路径：`Compile()` 生成 `GetInitialisedSubstrateData()` 桩调用 chunk（对齐 UE `HLSLMaterialTranslator.cpp:12927` 的真实调用形态），类型 `MCT_Substrate`、HLSL 类型 `FSubstrateData`（课 6 ToHLSLType 已映射）
-- [ ] 桩函数定义进课 8 的 HLSL 模板公共段：`FSubstrateData GetInitialisedSubstrateData() { FSubstrateData D; /* 默认灰 BSDF */ return D; }`——**类型通路全真，BSDF 光学求值桩化**（UE 的 Substrate.ush 运行时 16k 行，教学版到课 17 的 PBR 预览用传统 Lit 路径）
+- [ ] `SubstrateSlabBSDF` 节点（对照 UE `MaterialExpressionSubstrateSlabBSDF`）：输入 BaseColor/Roughness/Metallic/FrontNormal，输出引脚类型 `MCT_Substrate`
+- [ ] `SubstrateBSDFBlend` 节点（对照 UE `MaterialExpressionSubstrateBlenderBSDFBlend`）：两个 BSDF 输入 + Weight，输出 `MCT_Substrate`——**组合树的关键节点**，多个 BSDF 叠层（清漆/尘土/水渍）
+- [ ] **BSDF 组合树编译**（对照 UE `SubstrateTreeStackPush/Pop` + `SubstrateCompilationRegisterOperator`，`MaterialCompiler.h:44-48`）：编译器维护 `substrate_operators_` 表（每个 BSDF 节点注册一条：操作类型/父子关系 GUID/参数混合开关）；`SubstrateSlabBSDF::Compile` 生成 `GetInitialisedSubstrateData()` chunk（对齐 UE `.cpp:12927`）后向表注册自己；Blend 节点注册混合算子并建立父子链——生成代码时按树结构输出 `AddSubstrateSlabBSDF(...)` / `BlendSubstrateBSDF(...)` 调用序列
+- [ ] **求值接入课 17 GGX**（去桩化的核心）：课 8 模板的 Substrate 公共段定义 `FSubstrateData`（结构：BaseColor float3 / Roughness float / Metallic float / Normal float3 / 下层指针）+ `AddSubstrateSlabBSDF()` 构造 + `BlendSubstrateBSDF(weight)` 按权重混合两层 + `EvaluateSubstrateBSDF(lightDir, viewDir)`——**求值体直接调课 17 已写好的 GGX 分布项/几何项/菲涅尔函数**（传统 Lit 路径和 Substrate 路径共用同一套 PBR 基元，这正是 UE Substrate 的设计意图：统一光照模型）
+- [ ] 材质根节点消费：`MCT_Substrate` 输出连到根时，PS 尾部生成 `SubstratePixelParams = EvaluateSubstrateBSDF(L, V)`（对照 UE `SubstrateConvertLegacyMaterial` 族的位置）
 - [ ] 算术拦截测试：`Substrate输出 + Constant` → 编译报错（课 6 `GetArithmeticResultType` 对 `MCT_Substrate` 返回 Unknown 的端到端验证）
+- [ ] 混合正确性测试：Slab(白,0.3) 与 Slab(黑,0.8) 按 Weight=0.5 混合 → 预览颜色 ≈ 两 BSDF 各自 GGX 结果的中间值
+
+**DerivativeAutogen（解析导数系统，课 6 `code_analytic` 双轨的生成端）**：
+
+- [ ] `DerivativeAutogen` 类（对照 UE `FMaterialDerivativeAutogen`，`HLSLMaterialDerivativeAutogen.h:89`）：`GenerateExpressionFunc1/Func2`（一元/二元）——当 `IsAnalyticDerivEnabled()` 时，算子的纯 HLSL 轨道不再直接 `AddCodeChunk`，而是调它生成「值 + 解析导数」的联合表达式（如 `Mul` 生成 `(a*b, da*b + a*db)` 的乘积法则实现），写进 chunk 的 `code_analytic`
+- [ ] `EDerivativeType` 三值（Value/Ddx/Ddy，对照 UE 枚举）+ 算子表 `bFunc1OpIsEnabled[op][type]`（哪些算子对哪些导数类型有解析式——UE 同款二维开关表）
+- [ ] `GetFunc1ReturnType` / `GetFunc2ReturnType`：导数运算的结果类型推导（值×值→值、值×ddx→ddx 等，对照 UE `.h:178`）
+- [ ] 本课实现一元 `Abs/Sine/Cosine` + 二元 `Add/Sub/Mul/Div` 的解析导数（链式法则：先递归子表达式导数，再按算子法则组合）——其余算子按同模式追加
+- [ ] 验证：`Sine(Time)` 的解析导数 `cos(t)` 与有限差分 `(sin(t+h)-sin(t-h))/2h` 数值对比，误差 < 1e-3（位移材质预览开关 `bAnalyticDerivatives` 切换可见效果差异）
+
+**Custom 节点 + 作用域系统（课 6 `scoped_chunks` / 作用域三件套的消费端）**：
+
+- [ ] `ExprCustom` 节点：用户输入 HLSL 代码段 + N 个命名输入 + 输出类型选择——`Compile()` 时对每个输入 `CompileInputPin`，然后 `PushScope()`（新作用域 ID，`scope_level+1`）→ `AddCodeChunk` 用户代码（此期间建的 chunk `declared_scope=当前作用域`）→ `PopScope()`，chunk 挂进父块的 `scoped_chunks`
+- [ ] 课 8 生成端消费：Custom 块的代码包成 HLSL 函数（`float3 CustomExpr_0(float3 In0, ...) { ... }`），`scoped_chunks` 里的声明进函数体而不是 PSMain——作用域三件套保证「函数体内声明的变量名不泄漏到外层」（`Local0` 在两个作用域可重名）
+- [ ] 作用域违例检测：`used_scope > declared_scope`（内层声明的量被外层引用）→ EmitError
+- [ ] 课 8 拓扑排序兜底 Custom 自引用环（教案 §4 已写好检测，本课验证真实触发）
+
+**DDC 磁盘缓存（对照 UE Derived Data Cache——「为什么编译结果可以不重算」）**：
+
+- [ ] `ShaderCache` 类：`key = SHA256(图结构 JSON + 编译选项)` → `value = CompileResult（HLSL 文本 + uniform_expressions_ 树序列化 + errors）`，存 `%LOCALAPPDATA%/MaterialEditor/DDC/`
+- [ ] 表达式树序列化（对照 UE `FMaterialUniformExpressionType` 注册系统的用途——教学版用 JSON：每节点 `{"type": "FoldedMath", "op": "Mul", "children": [...], "value": [...]}` 递归结构）+ 反序列化重建（按 type 字符串 dispatch 到构造函数）——**树的 GetTypeName 虚函数**（课 6 基类第四个虚函数的用途）
+- [ ] 命中测试：同图编译两次，第二次读缓存（日志 `DDC cache hit`），毫秒级返回；改一个节点参数 → key 变 → 重算
+- [ ] 缓存失效：`ShaderCache::Invalidate()` 清空（版本号变化时自动清）
 
 **参数系统（第四部分深度）**：
 

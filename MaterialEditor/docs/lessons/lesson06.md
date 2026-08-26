@@ -113,12 +113,23 @@ enum EValueType : uint64_t {
     MCT_ShadingModel       = 1u << 16,  // shading model 选择值
     MCT_Substrate          = 1u << 17,  // Substrate BSDF 值（新材质模型统一输出）
 
+    // LWC（Large World Coordinates）双精度坐标——位值对齐 UE（bit 18-21/34）
+    // UE5 大世界（>8km）把"世界坐标"从 float 升级为 double，材质里表现为独立类型族；
+    // LWC 值参与算术时走 WSAdd/WSMul 函数族（.hlsli 内建），不能和普通 float 混算（要显式转换）
+    MCT_LWCScalar  = 1u << 18,   // 双精度标量（世界半径等）
+    MCT_LWCVector2 = 1u << 19,   // 双精度二维（大世界 UV/平面坐标）
+    MCT_LWCVector3 = 1u << 20,   // 双精度三维（WorldPosition 在大世界下的类型）
+    MCT_LWCVector4 = 1u << 21,   // 双精度四维
+    MCT_LWCMatrix  = 1ull << 34, // 双精度矩阵（大世界变换）
+
     // 矩阵——位值对齐 UE（bit 32/33，UE 用 1ull 因为超过 32 位）
     MCT_Float3x3 = 1ull << 32,
     MCT_Float4x4 = 1ull << 33,
 
     // ===== 类别掩码（多个位的或，用于"是不是某类"的集合判断）=====
     MCT_Float   = MCT_Float1 | MCT_Float2 | MCT_Float3 | MCT_Float4,   // 任意 float 向量
+    MCT_LWCType = MCT_LWCScalar | MCT_LWCVector2 | MCT_LWCVector3 | MCT_LWCVector4,  // 任意 LWC 值（UE 同名掩码）
+    MCT_Numeric = MCT_Float | MCT_LWCType,   // 任意数值（UE 同名掩码：算术/局部变量判定用它，LWC 一并放行）
     MCT_Texture = MCT_Texture2D | MCT_TextureCube | MCT_Texture2DArray
                 | MCT_VolumeTexture | MCT_TextureExternal | MCT_TextureVirtual,  // 任意纹理
     // 打包值三件套（MaterialAttributes/ShadingModel/Substrate）不能算术、只走专门节点，
@@ -144,7 +155,11 @@ enum EValueType : uint64_t {
 | `MCT_TextureVirtual` | 虚拟纹理 | 分页流式；教学版按普通 2D 采样 + 注释说明页表机制，类型位对齐 UE |
 | `MCT_MaterialAttributes` | 材质属性打包值 | Make/Break 节点的输入输出；编译时展开成多个属性 chunk |
 | `MCT_ShadingModel` | shading model 值 | ShadingModel 节点输出（0=Unlit, 1=Lit）；决定 PS 光照分支 |
-| `MCT_Substrate` | Substrate BSDF 值 | Substrate BSDF 节点族输出；教学版桩化（类型/编译路径全真，BSDF 求值函数桩返回默认值）|
+| `MCT_Substrate` | Substrate BSDF 值 | Substrate BSDF 节点族输出；完整实现见课 20（组合树 + 课 17 GGX 求值）|
+| `MCT_LWCScalar/2/3/4` | 双精度坐标族 | 大世界 WorldPosition；算术走 WS 函数族，与 float 混算需显式转换（TruncateLWC/ToLWC）|
+| `MCT_LWCMatrix` | 双精度矩阵 | 大世界变换矩阵 |
+| `MCT_LWCType`（掩码）| LWC 集合 | UE 同名掩码 |
+| `MCT_Numeric`（掩码）| float+LWC 全数值集合 | 算术/局部变量判定（替代原「只查 MCT_Float」的写法，UE 同款）|
 | `MCT_Float`（掩码）| "任意 float 向量"集合 | `Type & MCT_Float` 判断能否声明局部变量、能否算术 |
 | `MCT_Texture`（掩码）| "任意纹理"集合 | `Type & MCT_Texture` 判断是否对象类型 |
 
@@ -157,18 +172,19 @@ enum EValueType : uint64_t {
 | `MCT_Texture*` 全族 | `GetArithmeticResultType` 返回 Unknown + `AddCodeChunk` 纹理报错分支 + `ToHLSLType` 映射（教学版纹理全族同走这三处，靠 `& MCT_Texture` 掩码自动涵盖，**加位不改消费代码**——这正是掩码设计的收益）| 课 14 TextureSample 按纹理类型分派采样签名；课 15 DX12 SRV 按 ViewDimension 建视图；课 21 各格式加载 |
 | `MCT_MaterialAttributes` | 同上三处 + `GetComponentCount` 返回 0（打包值无分量概念）| 课 18：Make/Break MaterialAttributes 节点 + 编译时展开 |
 | `MCT_ShadingModel` | 同上三处 | 课 15/17：材质根节点读 ShadingModel chunk 决定 PS 分支（Unlit 跳过光照）|
-| `MCT_Substrate` | 同上三处 + `ToHLSLType` 返回 `"FSubstrateData"`（对齐 UE `.cpp:3182`）| 课 20：Substrate BSDF 节点族，输出 `GetInitialisedSubstrateData()` 桩调用（对齐 UE `.cpp:12927`）|
+| `MCT_Substrate` | 同上三处 + `ToHLSLType` 返回 `"FSubstrateData"`（对齐 UE `.cpp:3182`）| 课 20：Substrate BSDF 节点族完整实现（BSDF 组合树 + 课 17 GGX 求值接入，非桩）|
+| `MCT_LWC*` 五位 + `MCT_LWCType`/`MCT_Numeric` 掩码 | `GetArithmeticResultType` 的 LWC 规则（见 TypeSystem 节）+ `ToHLSLType` 映射 + `GetComponentCount`（LWC1-4 同 Float1-4）+ `AddCodeChunk` 的局部变量判定改用 `MCT_Numeric` | 课 16/17：WorldPosition 节点在大世界模式下输出 `MCT_LWCVector3`；`TruncateLWC`/`ToLWC` 转换算子（对齐 UE 基类 `TruncateLWC`，`MaterialCompiler.h:222`）|
 
 ### UE 有、教学版不引入的位（对照表，避免"为什么少了"的疑问）
 
 | UE 位 | UE 用途 | 不引入的原因 |
 |-------|---------|-------------|
 | `MCT_UInt1-4`（bit 25-28）| 无符号整数运算（位操作、VT 页表）| 教学版无整数节点；UE 也没有有符号 Int 类型（反射层 IntProperty 是参数面板类型，过节点边界时 `(float)` 转换）|
-| `MCT_LWCScalar/Vector2/3/4`（bit 18-21）| Large World Coordinates 双精度坐标 | 教学版不做双精度坐标管线（LWC 是全管线工程：类型提升/截断/WSAdd 函数族）|
 | `MCT_StaticBool` / `MCT_Bool` | 静态开关 / 动态 bool | 静态开关需要 permutation 变体管理系统（每个开关组合单独编译一份 shader + 缓存）；bool 语义用 Float 0/1 表达 |
+| `MCT_TextureCubeArray` / `MCT_SparseVolumeTexture` / `MCT_VTPageTableResult`（bit 7/14/15）| 立方体贴图数组 / 稀疏体积纹理 / VT 页表内部类型 | 位值在枚举注释中保留占位说明（UE 纹理位不连续的原因），类型本身无消费节点，不引入 |
 | `MCT_LicenseeReserved`（bit 48-63）| 授权方自定义保留段 | 不适用 |
 
-> **注**：`MCT_MaterialAttributes` / `MCT_Substrate` / `MCT_ShadingModel` 和纹理变体四组**已引入**（见上方枚举和消费方索引）——策略：**类型系统完整对齐 UE，编译器层消费本课落地，节点级消费分课落地，Substrate 的 BSDF 求值桩化**（UE 的 Substrate.ush 着色器运行时 16k 行，教学版用桩函数返回默认 BSDF，类型通路全真）。
+> **注**：`MCT_MaterialAttributes` / `MCT_Substrate` / `MCT_ShadingModel` / 纹理变体 / **LWC 双精度族**均已引入（见上方枚举和消费方索引）——策略：**类型系统完整对齐 UE，编译器层消费本课落地，节点级消费分课落地**。Substrate 完整实现（组合树 + 求值）在课 20，导数双轨（`EDerivativeStatus` + `code_analytic`）随本课 CodeChunk 字段进、课 8 发射时消费、课 20 的 DerivativeAutogen 全量接通。
 
 ### 两条关键语义（从 UE 注释原样搬来，最容易踩的坑）
 
@@ -191,13 +207,14 @@ UE 源文件头两个类型的注释里藏着两条规则：
 ```cpp
 // 分量数：单值位有效；掩码/矩阵/纹理返回 0（掩码问"分量数"没有意义）
 // 注意 MCT_Float 返回 1——UE GetNumComponents 同样把 MCT_Float 当标量处理
+// LWC 族与 float 族同分量数（LWCScalar=1 ... LWCVector4=4）
 inline int GetComponentCount(EValueType t) {
     switch (t) {
-        case MCT_Float: case MCT_Float1: return 1;
-        case MCT_Float2: return 2;
-        case MCT_Float3: return 3;
-        case MCT_Float4: return 4;
-        default: return 0;   // Matrix/Texture/MaterialAttributes/ShadingModel/Substrate/Unknown
+        case MCT_Float: case MCT_Float1: case MCT_LWCScalar: return 1;
+        case MCT_Float2: case MCT_LWCVector2: return 2;
+        case MCT_Float3: case MCT_LWCVector3: return 3;
+        case MCT_Float4: case MCT_LWCVector4: return 4;
+        default: return 0;   // Matrix/LWCMatrix/Texture/MaterialAttributes/ShadingModel/Substrate/Unknown
                             // 及掩码组合不走分量逻辑（打包值无分量概念，UE 同款）
     }
 }
@@ -214,8 +231,9 @@ class TypeSystem {
 public:
     // 算术结果类型。对照 UE .cpp:4221：
     // ①非 primitive（矩阵/纹理/打包值）→ 错误；②同类型 → 原类型；
-    // ③任一方是 MCT_Float / MCT_Float1（标量）→ 另一方；
-    // ④其余（Float2 vs Float3 等）→ 错误 + Unknown
+    // ③任一方是标量 → 另一方（float 标量和 LWC 标量各自提升同族）；
+    // ④float×LWC 跨族 → LWC 侧结果（UE 语义：混合时 float 先隐转 LWC）；
+    // ⑤其余（Float2 vs Float3 等）→ 错误 + Unknown
     static EValueType GetArithmeticResultType(EValueType a, EValueType b) {
         // ① 对象类型/矩阵/未知不能算术（对照 UE IsPrimitiveType 检查）
         //   纹理全族靠 MCT_Texture 掩码一网打尽；打包三件套也在此拦截
@@ -224,14 +242,34 @@ public:
             || a == MCT_ShadingModel || b == MCT_ShadingModel
             || a == MCT_Substrate || b == MCT_Substrate) return MCT_Unknown;
         if (a == MCT_Unknown || b == MCT_Unknown) return MCT_Unknown;
-        if (GetComponentCount(a) == 0 || GetComponentCount(b) == 0) return MCT_Unknown;  // 矩阵
+        if (GetComponentCount(a) == 0 || GetComponentCount(b) == 0) return MCT_Unknown;  // 矩阵/LWCMatrix
 
         if (a == b) return a;                        // ② 同类型
-        if (a == MCT_Float || a == MCT_Float1) return b;   // ③ 标量提升
-        if (b == MCT_Float || b == MCT_Float1) return a;
-        return MCT_Unknown;                          // ④ 不兼容
+        bool aScalar = (a == MCT_Float || a == MCT_Float1);
+        bool bScalar = (b == MCT_Float || b == MCT_Float1);
+        if (aScalar && !bScalar) return b;           // ③ float 标量提升
+        if (bScalar && !aScalar) return a;
+        bool aLwcScalar = (a == MCT_LWCScalar);
+        bool bLwcScalar = (b == MCT_LWCScalar);
+        if (aLwcScalar && (b & MCT_LWCType)) return b;   // LWC 标量提升同族（UE LWCGetArithmeticResultType 同款）
+        if (bLwcScalar && (a & MCT_LWCType)) return a;
+        // ④ 跨族 float × LWC：结果取 LWC 侧（UE .cpp:4240 语义：混合运算先把 float 提升为 LWC）
+        if ((a & MCT_LWCType) && (b & MCT_Float)) return ToLWCType(b);
+        if ((b & MCT_LWCType) && (a & MCT_Float)) return ToLWCType(a);
+        return MCT_Unknown;                          // ⑤ 不兼容
         // 注意：返回 Unknown 时调用方负责 EmitError——UE 在这里 Errorf，
         // 教学版把错误上报挪到算子里（带上 node/pin 定位，见第三部分）
+    }
+
+    // float → LWC 的类型级提升（UE ToLWCType 语义；算术跨族时用）
+    static EValueType ToLWCType(EValueType t) {
+        switch (t) {
+            case MCT_Float: case MCT_Float1: return MCT_LWCScalar;
+            case MCT_Float2: return MCT_LWCVector2;
+            case MCT_Float3: return MCT_LWCVector3;
+            case MCT_Float4: return MCT_LWCVector4;
+            default: return t;
+        }
     }
 
     static const char* ToHLSLType(EValueType t) {
@@ -240,6 +278,12 @@ public:
             case MCT_Float2:   return "float2";
             case MCT_Float3:   return "float3";
             case MCT_Float4:   return "float4";
+            // LWC：HLSL 里是 double 族（UE 在 .hlsli 用 LDCA/WorldVector 等封装，教学版直接用 HLSL 内建 double）
+            case MCT_LWCScalar:  return "double";
+            case MCT_LWCVector2: return "double2";
+            case MCT_LWCVector3: return "double3";
+            case MCT_LWCVector4: return "double4";
+            case MCT_LWCMatrix:  return "double4x4";
             case MCT_Float3x3: return "float3x3";
             case MCT_Float4x4: return "float4x4";
             // 纹理声明类型（对照 UE .cpp:3141-3223 的类型名表）
@@ -275,6 +319,11 @@ public:
             case MCT_MaterialAttributes: return "MaterialAttributes";
             case MCT_ShadingModel:       return "ShadingModel";
             case MCT_Substrate:          return "Substrate";
+            case MCT_LWCScalar:  return "LWCScalar";
+            case MCT_LWCVector2: return "LWCVector2";
+            case MCT_LWCVector3: return "LWCVector3";
+            case MCT_LWCVector4: return "LWCVector4";
+            case MCT_LWCMatrix:  return "LWCMatrix";
             default: return "Unknown";
         }
     }
@@ -325,6 +374,11 @@ public:
     // 只对 IsConstant()==true 的树保证结果确定；含参数的树由参数表决定。
     virtual void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const { out = Vec4(0,0,0,0); }
 
+    // 节点类型名（"Constant"/"FoldedMath"/...，每个子类返回自己的类名）。
+    // 对照 UE GetType()（FMaterialUniformExpressionType）的**序列化用途**——
+    // DDC 存盘时写类型名字符串，读盘时按名 dispatch 重建树（课 20 ShaderCache 消费）。
+    virtual const char* GetTypeName() const { return "Unknown"; }
+
     virtual ~UniformExpression() = default;
 };
 ```
@@ -336,14 +390,15 @@ public:
 | `IsConstant()` | 同名（`.h:65`）| 递归判定子树是否纯常量 | 算子的"立即折叠"判定：两边都常量 → 编译期算成字面量，不生成运算 |
 | `IsIdentical(other)` | 同名（`.h:66`）| 语义去重 | `AddUniformExpression` 的第二层去重：相同表达式只建一个 chunk（多个材质属性共享）|
 | `GetNumberValue(ctx, out)` | 同名（`.h:70`）| CPU 端求值整棵树 | 立即折叠时算值；参数变化时运行时重求值（不重编译 shader，即 preshader 语义）|
+| `GetTypeName()` | `GetType()` 的序列化用途 | DDC 树序列化的类型标签 | 课 20 `ShaderCache`：树 → JSON → 树 的往返重建 |
 
 **UE 有、教学版不采用的基类成员**（逐个说明）：
 
 | UE 成员 | 作用 | 不采用原因 |
 |---------|------|-----------|
-| `GetType()`（`FMaterialUniformExpressionType` RTTI）| 序列化/类型分派 | 教学版用 C++ 自带的 `dynamic_cast`/`IsIdentical` 内部 `static_cast` 前的类别判断即可，不需要手写 RTTI 注册表 |
-| `WriteNumberOpcodes(FPreshaderData&)` | 把树编译成 preshader **字节码**（后序遍历写指令流）| 教学版不做字节码虚拟机——树的求值直接用 C++ 虚函数递归（`GetNumberValue`），语义等价、实现省一个 VM |
-| `GetChildren()` | 暴露子节点数组（供遍历/序列化/剔除）| 没有 bytecode 序列化和剔除 pass 就没有遍历需求 |
+| `GetType()` 返回 `FMaterialUniformExpressionType*`（手写 RTTI 注册表）| 类型分派的**运行时多态机制** | 分派本身教学版不需要（`dynamic_cast` 够用）；它服务的序列化用途已由 `GetTypeName()` 字符串版承接 |
+| `WriteNumberOpcodes(FPreshaderData&)` | 把树编译成 preshader **字节码**（后序遍历写指令流）| 教学版不做字节码虚拟机——树的求值直接用 C++ 虚函数递归（`GetNumberValue`），语义等价、实现省一个 VM；序列化走 JSON 树结构而非字节码 |
+| `GetChildren()` | 暴露子节点数组（供遍历/序列化/剔除）| 序列化按子类字段直取（每个子类自己写 toJson/fromJson），无需统一遍历接口 |
 | `UniformOffset` / `UniformIndex` / `ShaderFrequencyMask` | preshader 结果在 uniform buffer 里的布局 | 课 8 的 cbuffer 布局不需要按 UE 的对齐规则压缩 |
 
 ### 常量叶子：`UniformConstant`（对照 `FMaterialUniformExpressionConstant`，`.h:257-306`）
@@ -480,20 +535,20 @@ private:
 | UE 字段 | 作用 | 教学版 |
 |---------|------|--------|
 | `uint64 Hash` | 代码块哈希——"不同表达式生成了等价代码"时去重（默认就是代码串的 CityHash64）| ✅ `hash` |
-| `uint64 MaterialAttributeMask` | MaterialAttributes 引脚的属性位掩码——一个引脚打包多个材质属性（如 BSD 节点），记录这个 chunk 覆盖了哪些属性 | ❌ 无 MaterialAttributes 节点 |
-| `FString DefinitionFinite` | 代码定义串（**硬件有限差分**版本）——非内联时是 `float3 Local0 = ...;` 局部变量声明，内联时是直接嵌入的表达式 | ✅ `code`（教学版只有一版定义串）|
-| `FString DefinitionAnalytic` | 代码定义串（**解析偏导**版本）——导数感知材质（如曲面细分位移）需要解析导数时用这版 | ❌ 不做导数双轨（需要整套 DerivativeAutogen）|
+| `uint64 MaterialAttributeMask` | MaterialAttributes 引脚的属性位掩码——一个引脚打包多个材质属性（如 BSD 节点），记录这个 chunk 覆盖了哪些属性 | ✅ `material_attribute_mask`（课 18 Make/Break 节点消费）|
+| `FString DefinitionFinite` | 代码定义串（**硬件有限差分**版本）——非内联时是 `float3 Local0 = ...;` 局部变量声明，内联时是直接嵌入的表达式 | ✅ `code` |
+| `FString DefinitionAnalytic` | 代码定义串（**解析偏导**版本）——导数感知材质（如曲面细分位移）需要解析导数时用这版 | ✅ `code_analytic`（课 8 按变体选择发射；课 20 DerivativeAutogen 填充）|
 | `FString SymbolName` | 局部变量名（`Local0`）。**有 UniformExpression 或内联时为空**，直接用 Definition | ✅ `symbol_name` |
 | `TRefCountPtr<FMaterialUniformExpression> UniformExpression` | 挂的表达式树（常量/含参数）。**为空 = 纯 GPU 代码块** | ✅ `uniform_expression`（`Ref<UniformExpression>`）|
-| `TArray<int32> ScopedChunks` | 作用域在此 chunk 下的子块（Custom 节点函数体的块）——翻译完成后统一填充 | ❌ 无 Custom 节点作用域 |
+| `TArray<int32> ScopedChunks` | 作用域在此 chunk 下的子块（Custom 节点函数体的块）——翻译完成后统一填充 | ✅ `scoped_chunks`（课 20 Custom 节点消费）|
 | `TArray<int32> ReferencedCodeChunks` | 依赖哪些其他 chunk——生成代码时按依赖顺序输出 | ✅ `references` |
 | `EMaterialValueType Type` | 值类型（bitmask）| ✅ `type` |
-| `int32 DeclaredScopeIndex / UsedScopeIndex / ScopeLevel` | 作用域三件套：声明在哪个作用域/使用在哪个作用域/嵌套层级——Custom 函数体内声明的变量不能泄漏到外层 | ❌ 同上，无函数作用域 |
+| `int32 DeclaredScopeIndex / UsedScopeIndex / ScopeLevel` | 作用域三件套：声明在哪个作用域/使用在哪个作用域/嵌套层级——Custom 函数体内声明的变量不能泄漏到外层 | ✅ `declared_scope` / `used_scope` / `scope_level`（课 20 Custom 节点消费）|
 | `bool bInline` | 内联块：无变量名，Definition 直接嵌入使用处 | ✅ `is_inline` |
-| `bool bIntermediate` | 中间块标记——只为辅助其他 chunk 存在（如 LWC 转换辅助块），编译收尾可剔除 | ❌ 无剔除 pass |
-| `EDerivativeStatus DerivativeStatus` | 此表达式的偏导数状态（有限差分/解析/无效）| ❌ 不做导数 |
+| `bool bIntermediate` | 中间块标记——只为辅助其他 chunk 存在（如 LWC 转换辅助块），编译收尾可剔除 | ✅ `is_intermediate`（课 8 生成时剔除无引用的中间块）|
+| `EDerivativeStatus DerivativeStatus` | 此表达式的偏导数状态（NotAware/NotValid/Zero/Valid，`HLSLMaterialDerivativeAutogen.h:20`）| ✅ `derivative_status` |
 
-### 教学版 CodeChunk
+### 教学版 CodeChunk（全字段版——与 UE 逐字段一一对应）
 
 ```cpp
 #pragma once
@@ -504,15 +559,36 @@ private:
 #include <vector>
 #include <cstdint>
 
+// 偏导数状态。对照 UE EDerivativeStatus（HLSLMaterialDerivativeAutogen.h:20，四值原样）
+enum class EDerivativeStatus : uint8_t {
+    NotAware,   // 表达式不感知导数（普通路径）
+    NotValid,   // 导数无效（如分支/采样后）
+    Zero,       // 导数恒零（常量）
+    Valid,      // 解析导数有效（code_analytic 可用）
+};
+
 // 代码块：一行（或一段）HLSL 代码 + 元数据。对照 FShaderCodeChunk（HLSLMaterialTranslator.h:83）
 struct CodeChunk {
     uint64_t hash = 0;                        // 代码哈希：纯代码块去重（UE 同）
-    std::string code;                         // 定义串（= UE DefinitionFinite）
+    uint64_t material_attribute_mask = 0;     // 属性打包位掩码（UE MaterialAttributeMask）
+    std::string code;                         // 定义串·有限差分版（UE DefinitionFinite）
+    std::string code_analytic;                // 定义串·解析导数版（UE DefinitionAnalytic；空=用 code）
     std::string symbol_name;                  // 局部变量名；有 uniform_expression 时为空（UE 同）
     EValueType type = MCT_Unknown;            // 值类型（bitmask）
     bool is_inline = false;                   // 内联块：无变量名，code 直接嵌入（UE bInline）
+    bool is_intermediate = false;             // 中间块：仅辅助他块，生成时可剔除（UE bIntermediate）
+    EDerivativeStatus derivative_status = EDerivativeStatus::NotAware;
     Ref<UniformExpression> uniform_expression;// 表达式树；空 = 纯 GPU 代码块（UE 同名成员）
     std::vector<int32_t> references;          // 依赖的 chunk 索引（UE ReferencedCodeChunks）
+    std::vector<int32_t> scoped_chunks;       // 作用域挂在本块下的子块（UE ScopedChunks）
+    int32_t declared_scope = -1;              // 声明所在作用域（UE DeclaredScopeIndex）
+    int32_t used_scope = -1;                  // 使用所在作用域（UE UsedScopeIndex）
+    int32_t scope_level = 0;                  // 作用域嵌套层级（UE ScopeLevel）
+
+    // 按变体取定义串（UE AtDefinition 同款）
+    const std::string& AtCode(bool analytic) const {
+        return analytic && !code_analytic.empty() ? code_analytic : code;
+    }
 };
 ```
 
@@ -835,7 +911,10 @@ int32_t HLSLTranslator::AddCodeChunk(EValueType type, const std::string& code, b
     int32_t index = -1;
     if (is_inline) {
         index = (int32_t)chunks_.size();                      // ② 内联不去重
-    } else if (type & MCT_Float || type == MCT_Float3x3 || type == MCT_Float4x4) {
+    } else if (type & MCT_Numeric || type == MCT_Float3x3 || type == MCT_Float4x4
+            || type == MCT_LWCMatrix) {
+        // ③ 数值类型才能建局部变量块 + hash 去重
+        // （MCT_Numeric = float+LWC 全族，UE .cpp:3362 用同一掩码族判定，LWC 变量同过此门）
         // ③ 数值类型才能建局部变量块 + hash 去重
         uint64_t hash = HashString(code);
         auto it = hash_to_chunk_.find(hash);
@@ -1379,14 +1458,14 @@ assert(c.GetParameterCode(-1) == "0.0");
 
 本课真正实现的（每一条都能本课勾选）：
 
-- [ ] `EValueType` bitmask 改造（MCT_* 单值位 + `MCT_Float`/`MCT_Texture` 掩码，位值对齐 UE；含纹理变体四类 + MaterialAttributes/ShadingModel/Substrate 三类，共 17 个单值位）+ 全项目旧枚举引用迁移
-- [ ] 新类型位的编译器层消费：`GetArithmeticResultType` 拦截（纹理掩码 + 打包三件套 ==）+ `ToHLSLType` 映射（FSubstrateData 等）+ `TypeName` 可读名 + `GetComponentCount` 打包值返回 0
+- [ ] `EValueType` bitmask 改造（MCT_* 单值位 + `MCT_Float`/`MCT_LWCType`/`MCT_Numeric`/`MCT_Texture` 掩码，位值对齐 UE；含纹理变体四类 + MaterialAttributes/ShadingModel/Substrate 三类 + LWC 五类，共 22 个单值位）+ 全项目旧枚举引用迁移
+- [ ] 新类型位的编译器层消费：`GetArithmeticResultType` 拦截（纹理掩码 + 打包三件套 ==）+ LWC 推导规则（同族提升 / 跨族 float×LWC→LWC）+ `ToLWCType` + `ToHLSLType` 映射（FSubstrateData / double 族）+ `TypeName` 可读名 + `GetComponentCount`（打包值 0、LWC 同 float 分量数）
 - [ ] `GetComponentCount` 适配（`MCT_Float` 与 `MCT_Float1` 都返回 1）
-- [ ] `TypeSystem::GetArithmeticResultType`（4 步逻辑对齐 UE）+ `ToHLSLType` + `TypeName`
+- [ ] `TypeSystem::GetArithmeticResultType`（对齐 UE：含 LWC 跨族规则）+ `ToHLSLType` + `TypeName`
 - [ ] `UniformExpression` 基类（`IsConstant` / `IsIdentical` / `GetNumberValue(ctx, out)` 三个虚函数，语义对齐 UE）
 - [ ] `UniformConstant`（Vec4 4 分量 + 类型标签，对齐 `FMaterialUniformExpressionConstant`）
 - [ ] `UniformFoldedMath`（`EFoldedMathOp` 6 运算 + 递归 IsConstant/IsIdentical）+ `UniformFoldedUnary`（5 运算）
-- [ ] `CodeChunk` 全字段版：逐字段对照表 + `uniform_expression` 树指针 + 两种 chunk 来源的语义（表达式块无 SymbolName）
+- [ ] `CodeChunk` 全字段版（**与 UE 逐字段一一对应，零省略**）：`material_attribute_mask` / `code` + `code_analytic` 双轨 / `derivative_status`（EDerivativeStatus 四值）/ 作用域三件套 + `scoped_chunks` / `is_intermediate` / `AtCode(variant)` + `uniform_expression` 树指针 + 两种 chunk 来源的语义（表达式块无 SymbolName）
 - [ ] `MaterialCompiler` 抽象基类（纯虚算子接口）+ `HLSLTranslator` 实现（两层结构，依赖倒置）
 - [ ] `CompileError` / `EErrorSeverity` / `CompileResult`（errors 数组 + `HasErrors`）+ `EmitError`（SameAs 去重）+ `current_node_`/`current_pin_` 上下文
 - [ ] `AddCodeChunk`（Unknown→-1 / 内联不去重 / 数值类型限制 / 纹理报错）+ `AddInlinedCodeChunk` + `AddUniformExpression`（IsIdentical 双层去重 + 材质级表达式表）

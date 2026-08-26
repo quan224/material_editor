@@ -376,6 +376,9 @@ public:
         const std::vector<CodeChunk>* chunks = nullptr;  // 指针（结构体要默认构造）
         // uniform / texture 描述（参数系统提供，见课 20；无参数图时为空）
         UniformCollector uniforms;
+        // 导数变体选择（对照 UE ECompiledPartialDerivativeVariation）：
+        // false=有限差分（普通材质，用 chunk.code）；true=解析导数（位移材质，用 chunk.code_analytic）
+        bool bAnalyticDerivatives = false;
     };
 
     struct Result {
@@ -397,12 +400,19 @@ public:
 
         // 2. 按拓扑顺序生成非内联变量声明
         //    内联 chunk（is_inline=true）不入声明——它们在使用处直接展开
+        //    中间块（is_intermediate=true）且无引用者 → 剔除（对照 UE bIntermediate 语义：
+        //    LWC 转换辅助块等"只服务生成过程"的块不进最终代码）
+        //    导数双轨：按 params.bAnalyticDerivatives 选 code / code_analytic
+        //    （对照 UE GetDefinitions 的 Variation 参数——普通材质走有限差分版，
+        //     位移/曲面细分材质走解析导数版，两版定义串课 6 已备好字段）
         std::string declarations;
         for (int32_t idx : order) {
             const auto& chunk = (*params.chunks)[idx];
-            if (chunk.isInline) continue;
+            if (chunk.is_inline) continue;
+            if (chunk.is_intermediate && CountReferencers(idx, *params.chunks) == 0) continue;
             declarations += "    " + std::string(TypeSystem::ToHLSLType(chunk.type))
-                          + " " + chunk.symbolName + " = " + chunk.code + ";\n";
+                          + " " + chunk.symbol_name + " = "
+                          + chunk.AtCode(params.bAnalyticDerivatives) + ";\n";
         }
 
         // 3. 材质属性 → PS/VS 赋值代码
@@ -641,6 +651,8 @@ UE 的材质模板和我们用**同样的"标记注入"思路**——模板里�
 - [ ] `HLSLTemplate` 提供 VS+PS 一体模板（含双 cbuffer / `VS_INPUT`·`PS_INPUT` / PBR 辅助函数 / `VSMain`·`PSMain`）
 - [ ] `TopoSortChunks` 按 `CodeChunk::references` DFS 后序排序，生成的局部变量声明顺序合法（无 `undeclared identifier`）
 - [ ] 拓扑排序检测循环依赖，错误信息带 chunk 符号名（`Circular dependency at Local7`）
+- [ ] 导数双轨发射：`Params.bAnalyticDerivatives` 切换 `chunk.AtCode()` 的 finite/analytic 版本（字段课 6 已备好；DerivativeAutogen 课 20 接通前 analytic 为空自动回落 finite）
+- [ ] 中间块剔除：`is_intermediate` 且无引用者的 chunk 不进声明段（对照 UE bIntermediate 语义）
 - [ ] `UniformCollector` 能输出 `cbuffer MaterialParams : register(b1)` + 纹理声明（描述由参数系统提供，本课验证生成侧）
 - [ ] 所有材质属性（BaseColor/Metallic/Roughness/Normal/Emissive/Opacity/AO/WorldPositionOffset）都能正确注入对应入口
 - [ ] 生成失败（如循环依赖）通过 `Result.error` 冒泡到 `CompileResult.error_message`，不丢失

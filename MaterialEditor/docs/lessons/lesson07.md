@@ -174,6 +174,98 @@ std::vector<int32_t> HLSLTranslator::CompileExpression(Node* node) {
 }
 ```
 
+#### 3.1 材质函数编译（对照 UE `FMaterialFunctionCompileState` + `FunctionStacks`）
+
+材质函数 = 「一张子图被当成一个节点复用」。编译它的核心问题是**参数重定向**：函数体内的 `FunctionInput` 节点要接到调用处的实参上，`FunctionOutput` 的结果要变成调用节点的输出。UE 用「函数状态栈」实现——进入函数 push 一层重映射表，退出 pop：
+
+```cpp
+// HLSLTranslator.h 追加（对照 UE HLSLMaterialTranslator.h:309 FunctionStacks）
+struct MaterialFunctionState {
+    std::string function_name;                    // 报错用：错误发生在哪个函数内
+    std::map<std::string, int32_t> input_chunks;  // FunctionInput 名 → 调用处实参 chunk 索引
+    int32_t depth;                                // 递归深度（防无限递归）
+};
+std::vector<MaterialFunctionState> function_stack_;
+static constexpr int32_t MAX_FUNCTION_DEPTH = 8;  // UE 同款限制（嵌套函数调用深度上限）
+
+// HLSLTranslator.cpp 追加
+std::vector<int32_t> HLSLTranslator::CompileMaterialFunctionCall(
+    Node* callNode, Graph* functionGraph,
+    const std::vector<int32_t>& argumentChunks) {
+
+    if ((int32_t)function_stack_.size() >= MAX_FUNCTION_DEPTH) {
+        EmitError("Material function recursion exceeds depth " +
+                  std::to_string(MAX_FUNCTION_DEPTH) + " (circular function reference?)");
+        return {-1};
+    }
+
+    // push：建立形参名 → 实参 chunk 的重映射（对照 UE PushFunction）
+    MaterialFunctionState state;
+    state.function_name = callNode->typeName;
+    state.depth = (int32_t)function_stack_.size();
+    // argumentChunks 与 functionGraph 里 FunctionInput 节点按名配对
+    for (auto* fnNode : functionGraph->GetNodesInCompileOrder()) {
+        if (fnNode->typeName == "ExprFunctionInput") {
+            std::string inputName = fnNode->parameters["name"];
+            state.input_chunks[inputName] = /* 对应实参索引，未连则用默认值 chunk */;
+        }
+    }
+    function_stack_.push_back(state);
+
+    // 编译函数体的 Output 节点（正常的 CompileExpression 递归；
+    // 遇到 ExprFunctionInput 时查栈顶的 input_chunks 直接返回实参索引——零拷贝转发）
+    std::vector<int32_t> results;
+    for (auto* outNode : functionGraph->GetOutputNodes()) {
+        results.push_back(CompileExpression(outNode)[0]);
+    }
+
+    function_stack_.pop_back();   // 对照 UE PopFunction
+    return results;
+}
+```
+
+`ExprFunctionInput::Compile` 的实现就是查表转发（这是整个机制的关键——函数体内对输入的每次引用，都直接指向调用处的同一个 chunk，去重/折叠天然跨函数生效）：
+
+```cpp
+std::vector<int32_t> ExprFunctionInput::Compile(MaterialCompiler* c, Node* n) const {
+    // 经接口暴露的函数栈查询（基类追加：virtual int32_t GetFunctionInputChunk(const std::string&) = 0;）
+    return { c->GetFunctionInputChunk(name_) };
+}
+```
+
+#### 3.2 多属性编译循环（对照 UE `SharedPropertyCodeChunks` + 属性间共享）
+
+一个材质不止 BaseColor——Normal/Roughness/Emissive 各是一条子图，但它们可能**共享子表达式**（比如同一张噪声贴图既影响 Normal 又影响 Roughness）。UE 的做法：逐属性编译，但 chunk 表和去重表跨属性复用，第二个属性用到相同子图时直接命中 hash/IsIdentical 去重，**只生成一次代码**：
+
+```cpp
+// HLSLTranslator 追加：Compile 的属性循环骨架（完整 Compile(Graph*) 主流程）
+struct CompileResult HLSLTranslator::Compile(Graph* graph) {
+    current_graph_ = graph;
+    CompileResult result;
+
+    // 课7 主流程：环检测 / 必需引脚检查（见下文 3.3）
+    if (DetectCycles(graph)) { /* 填 errors，短路 */ }
+
+    // 逐属性编译（对照 UE CompileProperty 逐 MP_XXX 调用）
+    // chunks_ / hash_to_chunk_ / uniform_expressions_ / node_cache_ 都是成员——
+    // 跨属性天然存活，共享子表达式靠课6 的双层去重自动复用（UE SharedPropertyCodeChunks 的语义）
+    for (EMaterialProperty prop : {MP_BaseColor, MP_Normal, MP_Roughness, MP_Emissive}) {
+        current_property_ = prop;                     // EmitError 上下文用
+        Node* outputPin = graph->GetOutputNode(prop); // 该属性连的输出根
+        if (outputPin) {
+            int32_t chunk = CompileInputPin(outputPin, PropertyPinName(prop));
+            result.property_chunks[prop] = chunk;     // 课8 GenerateCode 按属性取
+        }
+    }
+
+    result.errors = errors_;
+    result.success = !result.HasErrors();
+    return result;
+}
+```
+
+**跨属性共享的验证点**：BaseColor 和 Emissive 各连一个 `Multiply(NoiseTex, 2)`（参数完全相同）→ 生成代码里 `NoiseTex` 采样只出现**一次**——因为第二个属性编译时，`AddCodeChunk` 的 hash 去重直接返回了第一个属性建的 chunk 索引。这就是课 6 双层去重在属性维度的收益，与 UE `SharedPropertyCodeChunks` 同语义（UE 用独立数组存，教学版复用同一张 chunk 表，效果等价）。
+
 ### 4. 表达式实现 —— 统一反射模式
 
 #### 4.1 数学表达式（无字段，只有 Compile 逻辑）
@@ -470,3 +562,5 @@ int32 UMaterialExpressionAdd::Compile(FMaterialCompiler* Compiler, int32 OutputI
 - [ ] 端到端编译：Graph → Compiler → HLSL 代码输出
 - [ ] 常数折叠工作：Constant(2)+Constant(3) 不生成加法代码
 - [ ] 所有表达式都通过 ME_BEGIN_CLASS/ME_END_CLASS 注册反射元数据，没有手写参数虚函数
+- [ ] 材质函数编译：FunctionInput 查表转发实参 chunk（零拷贝）、函数栈 push/pop、递归深度超 8 报错（对照 UE FMaterialFunctionCompileState）
+- [ ] 多属性编译循环：BaseColor/Normal/Roughness/Emissive 逐属性编译 + property_chunks 结果表；跨属性共享子表达式只生成一次代码（hash 去重命中，对照 UE SharedPropertyCodeChunks 语义）
