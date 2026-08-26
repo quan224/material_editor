@@ -17,15 +17,15 @@ void NodeFactory::RegisterBuiltins()
     using Dir = EPinDataDirection;
     Register("MaterialOutput", "Material Output", "Output",
         {
-            {"BaseColor",           EValueType::Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 0.0})},
-            {"Metallic",            EValueType::Float1, Dir::Input, 0.0},
-            {"Specular",            EValueType::Float1, Dir::Input, 0.5},
-            {"Roughness",           EValueType::Float1, Dir::Input, 0.5},
-            {"Normal",              EValueType::Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 1.0})},
-            {"EmissiveColor",       EValueType::Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 0.0})},
-            {"Opacity",             EValueType::Float1, Dir::Input, 1.0},
-            {"AmbientOcclusion",    EValueType::Float1, Dir::Input, 1.0},
-            {"WorldPositionOffset", EValueType::Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 0.0})},
+            {"BaseColor",           MCT_Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 0.0})},
+            {"Metallic",            MCT_Float,  Dir::Input, 0.0},
+            {"Specular",            MCT_Float,  Dir::Input, 0.5},
+            {"Roughness",           MCT_Float,  Dir::Input, 0.5},
+            {"Normal",              MCT_Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 1.0})},
+            {"EmissiveColor",       MCT_Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 0.0})},
+            {"Opacity",             MCT_Float,  Dir::Input, 1.0},
+            {"AmbientOcclusion",    MCT_Float,  Dir::Input, 1.0},
+            {"WorldPositionOffset", MCT_Float3, Dir::Input, nlohmann::json::array({0.0, 0.0, 0.0})},
         },
         /*hidden=*/true);
 }

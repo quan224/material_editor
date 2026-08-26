@@ -10,7 +10,7 @@ class Pin
 public:
     UUID id = UUID::Invalid();
     std::string name;                                       // 端口名
-    EValueType type = EValueType::Unknown;                  // 端口类型
+    EValueType type = MCT_Unknown;                          // 端口类型
     EPinDataDirection direction = EPinDataDirection::Input; // 端口方向
     UUID ownerNodeId = UUID::Invalid();                     // 所在节点ID
     nlohmann::json defaultValue;                           // 未连接时的默认值（json：0.5 / [0,0,1] / [1,0,0,1]）

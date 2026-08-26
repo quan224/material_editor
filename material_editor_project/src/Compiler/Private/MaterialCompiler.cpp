@@ -113,7 +113,7 @@ EValueType MaterialCompiler::GetType(int32_t index)const {
     if (index < 0 || index >= chunks_.size()) {
         ME_LOG_ERROR("GetType错误,index超出限制 %d", index);
         assert(false);
-        return EValueType::Unknown;
+        return MCT_Unknown;
     }
     return chunks_[index].type;
 }
