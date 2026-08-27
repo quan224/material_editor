@@ -1141,6 +1141,69 @@ inline D3D12_SRV_DIMENSION GetSRVDimension(EValueType t) {
 
 ---
 
+## 前向链接：贴图元数据表达式（课 6 树的贴图族补全）
+
+`FMaterialUniformExpression` 家族里有一支**贴图元数据表达式**——不采样颜色，查询贴图自身的属性（尺寸/纹素/RVT/SVT 向量），全部 CPU 可求值。本课随纹理系统一并实现（`src/Expression/Public/UniformExpression.h` 追加）：
+
+```cpp
+// 贴图属性查询。对照 FMaterialUniformExpressionTextureProperty（.h:1880）：
+// TMTM_TextureSize 返回 float2(W,H)；TMTM_TexelSize 返回 float2(1/W, 1/H)
+class UniformTextureProperty : public UniformExpression {
+public:
+    enum EProperty { TextureSize, TexelSize };
+    UniformTextureProperty(UniformExpression* tex, EProperty prop)
+        : tex_(tex), prop_(prop) {}
+    bool IsConstant() const override { return false; }   // 换贴图后值变
+    bool IsIdentical(const UniformExpression* other) const override {
+        auto* o = dynamic_cast<const UniformTextureProperty*>(other);
+        return o && prop_ == o->prop_ && tex_->IsIdentical(o->tex_.get());
+    }
+    void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const override {
+        // 从 ctx 按贴图索引查实际贴图资源（渲染器注册进来的），读宽高
+        Vec4 t; tex_->GetNumberValue(ctx, t);            // t.x = 贴图表索引
+        auto size = ctx.GetTextureSize((int32_t)t.x);
+        out = prop_ == TextureSize ? Vec4(size.x, size.y, 0, 0)
+                                   : Vec4(1.f/size.x, 1.f/size.y, 0, 0);
+    }
+    const char* GetTypeName() const override { return "TextureProperty"; }
+private:
+    Ref<UniformExpression> tex_;
+    EProperty prop_;
+};
+
+// RVT 元数据查询。对照 FMaterialUniformExpressionRuntimeVirtualTextureUniform（.h:1976）：
+// 按 VectorIndex 从 RuntimeVirtualTexture 取 4 个 uniform 向量之一（页面大小/边界等）
+class UniformRVTUniform : public UniformExpression {
+public:
+    UniformRVTUniform(int32_t texIndex, int32_t vectorIndex)
+        : texIndex_(texIndex), vectorIndex_(vectorIndex) {}
+    bool IsConstant() const override { return false; }
+    bool IsIdentical(const UniformExpression* other) const override {
+        auto* o = dynamic_cast<const UniformRVTUniform*>(other);
+        return o && texIndex_ == o->texIndex_ && vectorIndex_ == o->vectorIndex_;
+    }
+    void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const override {
+        out = ctx.GetRVTUniform(texIndex_, vectorIndex_);   // 渲染器侧 RVT 对象提供
+    }
+    const char* GetTypeName() const override { return "RVTUniform"; }
+private:
+    int32_t texIndex_, vectorIndex_;
+};
+
+// SVT 元数据查询。对照 FMaterialUniformExpressionSparseVolumeTextureUniform（.h:2007）——结构同 RVT 版
+class UniformSVTUniform : public UniformExpression { /* 同上，ctx.GetSVTUniform */ };
+```
+
+**剩余贴图族叶子**（同文件追加，结构同上模板）：
+
+- `UniformTextureCollection` / `UniformTextureCollectionParameter`（对照 `.h:140/181`）：贴图集合——一批贴图打包成数组按索引采样；叶子存集合索引 + 类型前缀索引（VT 集合的物理贴图绑定名 `TextureCollectionPhysical_N` 用）
+- `UniformExternalTextureBase`（对照 `.h:213`）：外部纹理叶子的基类（教学版直接一个类）——存外部纹理 GUID/索引
+- `UniformExternalTextureCoordinateScaleRotation` / `UniformExternalTextureCoordinateOffset`（对照 `.h:1932/1954`）：外部纹理的 UV 变换对——视频源可能有旋转/缩放/偏移，采样前对 uv 应用 `ScaleRotation` 再加 `Offset`，两者配对出现
+
+**这些叶子的共同点**：全部 `IsConstant() == false`（贴图换绑后值会变），全部 CPU 可求值（`GetNumberValue` 从渲染器注册的资源表查）——「贴图也是 uniform」的完整表达。
+
+---
+
 ## 完成标志
 
 - [ ] DX12 设备创建成功，日志输出 "DX12 device initialized"

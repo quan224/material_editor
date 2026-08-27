@@ -501,6 +501,75 @@ void StatsPanel::Clear() {
 
 > **UE 对照**：UE 的 `StaticSwitchParameter` / `StaticComponentMaskParameter` 都生成材质变体（`FMaterialResource` 按 `FMaterialCompilationOutput::StaticParams` 组织）。UE 的"材质实例"（`UMaterialInstance`）允许每个实例有不同静态参数组合，引擎按需编译对应变体并缓存。位置：`Engine/Source/Runtime/Engine/Private/Materials/MaterialInstance.cpp` 的 `FMaterialResource::IsSameWithId` / `FindStaticParameterDerived`。
 
+#### 参数的表达式树叶子（课 6 树的参数族补全）
+
+参数节点 `Compile()` 时在树上挂的叶子类——课 6 树 API 的直接子类（`src/Expression/Public/UniformExpression.h` 追加）：
+
+```cpp
+// 数值参数叶子。对照 FMaterialUniformExpressionNumericParameter（MaterialUniformExpressions.h:351）：
+// IsConstant() = false（参数值编译期未知）——这一个返回值决定了含参数的树永不折叠
+class UniformNumericParameter : public UniformExpression {
+public:
+    UniformNumericParameter(const std::string& name, int32_t index)
+        : name_(name), index_(index) {}
+    bool IsConstant() const override { return false; }   // UE .h:370 同款
+    bool IsIdentical(const UniformExpression* other) const override {
+        auto* o = dynamic_cast<const UniformNumericParameter*>(other);
+        return o && index_ == o->index_;                 // 同一参数 = 同一叶子
+    }
+    // 求值：从渲染上下文查参数表当前值（MaterialRenderContext 此课起携带参数表）
+    void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const override {
+        out = ctx.GetParameter(index_);                  // 未找到时返回默认值
+    }
+    const char* GetTypeName() const override { return "NumericParameter"; }
+private:
+    std::string name_;
+    int32_t index_;   // 在 UniformTable 里的下标（编译期分配，运行期按它查表）
+};
+
+// 静态 bool 参数叶子。对照 FMaterialUniformExpressionStaticBoolParameter（.h:402）：
+// 静态开关的值编译期已定（变体选择的瞬间）——所以 IsConstant 可以返回 true 且值已知
+class UniformStaticBoolParameter : public UniformExpression {
+public:
+    UniformStaticBoolParameter(const std::string& name, bool value, int32_t index)
+        : name_(name), value_(value), index_(index) {}
+    bool IsConstant() const override { return true; }    // 变体内已定死
+    bool IsIdentical(const UniformExpression* other) const override {
+        auto* o = dynamic_cast<const UniformStaticBoolParameter*>(other);
+        return o && index_ == o->index_ && value_ == o->value_;
+    }
+    void GetNumberValue(const MaterialRenderContext&, Vec4& out) const override {
+        out = Vec4(value_ ? 1.f : 0.f, 0, 0, 0);
+    }
+    const char* GetTypeName() const override { return "StaticBoolParameter"; }
+private:
+    std::string name_; bool value_; int32_t index_;
+};
+
+// 泛型常量。对照 FMaterialUniformExpressionGenericConstant（.h:310）：
+// UE 为支持 UInt/Bool 等新类型的常量开的 FValue 版（老 Constant 的 FLinearColor 装不下）
+class UniformGenericConstant : public UniformExpression {
+public:
+    UniformGenericConstant(const Vec4& v, EValueType type) : value_(v), type_(type) {}
+    bool IsConstant() const override { return true; }
+    bool IsIdentical(const UniformExpression* other) const override {
+        auto* o = dynamic_cast<const UniformGenericConstant*>(other);
+        return o && type_ == o->type_
+            && memcmp(&value_, &o->value_, sizeof(Vec4)) == 0;   // 位级比较（含 -0.0 区分）
+    }
+    void GetNumberValue(const MaterialRenderContext&, Vec4& out) const override { out = value_; }
+    const char* GetTypeName() const override { return "GenericConstant"; }
+private:
+    Vec4 value_; EValueType type_;   // type_ 可为 UInt/Bool 族（与 UniformConstant 的 float 族互补）
+};
+```
+
+**贴图参数族**（挂 `MCT_Texture*` chunk 的叶子，对照 UE）：
+
+- `UniformTextureParameter`（对照 `FMaterialUniformExpressionTextureParameter`，`.h:486`）：存参数名 + 贴图索引 + 采样器类型——`GetTextureUniformExpression()` 式的类型自报（教学版用 `dynamic_cast` 探测），TextureSample 编译时经它定位具体贴图
+- `UniformExternalTextureParameter`（对照 `.h:569`）：外部纹理参数——额外携带 UV ScaleRotation/Offset 的应用（采样前对 uv 做 `uv * scale + offset` 变换，视频帧的旋转/裁剪就靠它）
+- `UniformFlipBookTextureParameter`（对照 `.h:551`）：翻书动画——叶子存行列数 + 帧率，`GetNumberValue` 按当前时间算出 `(col,row)` 子 UV，采样子矩形
+
 #### UniformTable：编译期的参数收集
 
 **文件**：`src/Compiler/Public/UniformTable.h`（**编译器层 L5**——它生成 HLSL cbuffer，不能放 Types.h）

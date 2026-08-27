@@ -477,12 +477,27 @@ private:
 };
 ```
 
-### 一元运算节点：独立子类（对照 UE 每运算一类）
+### 一元运算节点：独立子类（对照 UE 每运算一类，全集）
 
-UE 为每个一元运算**单独建类**（`FMaterialUniformExpressionRcp`——Div 的倒数优化用，见 `.cpp:9696`；`FMaterialUniformExpressionSine`、`...Abs`、`...Periodic` 等）。教学版同构，课 6 先实现算子用到的前五个（Negate/Abs/Sine/Cosine/Rcp），其余一元运算（Sqrt/Length/Normalize/Floor/Ceil/Round/Truncate/Sign/Frac/Fmod/Modulo/Log 族/Exp 族）在对应算子进教案时按同一模板追加：
+UE 为每个一元运算**单独建类**。教学版同构实现**全部一元子类**（UE `MaterialUniformExpressions.h` 逐一对应，`GetNumberValue` 换数学函数即可）：
+
+| 教学版类 | UE 对应（行号）| 求值函数 | 进课时机 |
+|---|---|---|---|
+| UniformNeg | （UE 无独立类，Neg opcode `Preshader.h:66`）| `-x` | 课 6（Negate 算子）|
+| UniformAbs | `...Abs`（1839）| `abs` | 课 6 |
+| UniformSine / UniformCosine | `...Sine`（593）| `sin` / `cos` | 课 6 |
+| UniformRcp | `...Rcp`（756）| `1/x` | 课 6（Divide 的 rcp 优化）|
+| UniformSquareRoot | `...SquareRoot`（715）| `sqrt` | 课 7（Sqrt 算子）|
+| UniformLength / UniformNormalize | `...Length`（797）/ `...Normalize`（840）| `length` / `normalize` | 课 7 |
+| UniformFloor / UniformCeil / UniformRound / UniformTruncate / UniformSign / UniformFrac | `...Floor`（1504）/ `...Ceil`（1545）/ `...Round`（1586）/ `...Truncate`（1627）/ `...Sign`（1668）/ `...Frac`（1709）| `floor` / `ceil` / `round` / `trunc` / `sign` 逻辑 / `x-floor(x)` | 课 7（Round 族算子）|
+| UniformExponential / UniformExponential2 | `...Exponential`（880）/ `...Exponential2`（923）| `exp` / `exp2` | 课 7（Exp 算子）|
+| UniformLogarithm / UniformLogarithm2 / UniformLogarithm10 | `...Logarithm`（966）/ `...Logarithm2`（1009）/ `...Logarithm10`（1051）| `log` / `log2` / `log10` | 课 7（Log 算子）|
+| UniformTrigMath | `...TrigMath`（649）| 按 `ETrigMathOperation` 七值分派：sin/cos/tan/asin/acos/atan/atan2（atan2 是二元，单独构造函数重载）| 课 7（TrigMath 算子族）|
+| UniformPeriodic | `...Periodic`（1163）| frac（"只有小数部分有意义"的提示语义）| 课 7 |
+| UniformFmod / UniformModulo | `...Fmod`（1750）/ `...Modulo`（1794）| `fmod` / 整数取模（二元，双 Ref 子树）| 课 7 |
 
 ```cpp
-// 模板（五个类同构，只列两个，其余照抄换函数）
+// 一元模板（全部类同构，列两个代表，其余照抄换函数）
 class UniformNeg : public UniformExpression {
 public:
     UniformNeg(UniformExpression* x) : x_(x) {}
@@ -500,23 +515,43 @@ private:
     Ref<UniformExpression> x_;
 };
 
-class UniformRcp : public UniformExpression {   // 对照 FMaterialUniformExpressionRcp（.h:756）
+// 二元一元混合示例：TrigMath 的 atan2（ETrigMathOperation 对照 UE .h:636 七值枚举）
+class UniformTrigMath : public UniformExpression {
 public:
-    UniformRcp(UniformExpression* x) : x_(x) {}
-    bool IsConstant() const override { return x_->IsConstant(); }
+    UniformTrigMath(UniformExpression* x, int op) : x_(x), op_(op) {}          // 一元六种
+    UniformTrigMath(UniformExpression* y, UniformExpression* x, int op)        // TMO_Atan2
+        : x_(x), y_(y), op_(op) {}
+    bool IsConstant() const override {
+        return x_->IsConstant() && (!y_ || y_->IsConstant());
+    }
     bool IsIdentical(const UniformExpression* other) const override {
-        auto* o = dynamic_cast<const UniformRcp*>(other);
-        return o && x_->IsIdentical(o->x_.get());
+        auto* o = dynamic_cast<const UniformTrigMath*>(other);
+        return o && op_ == o->op_ && x_->IsIdentical(o->x_.get())
+            && ((!y_ && !o->y_) || (y_ && o->y_ && y_->IsIdentical(o->y_.get())));
     }
     void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const override {
-        x_->GetNumberValue(ctx, out);
-        out = Vec4(1.f/out.x, 1.f/out.y, 1.f/out.z, 1.f/out.w);
+        Vec4 v; x_->GetNumberValue(ctx, v);
+        Vec4 vy{0,0,0,0};
+        if (y_) y_->GetNumberValue(ctx, vy);
+        switch (op_) {   // TMO_Sin..TMO_Atan2 逐分量
+            case 0: out = Apply1(v, std::sin);  break;
+            case 1: out = Apply1(v, std::cos);  break;
+            case 2: out = Apply1(v, std::tan);  break;
+            case 3: out = Apply1(v, std::asin); break;
+            case 4: out = Apply1(v, std::acos); break;
+            case 5: out = Apply1(v, std::atan); break;
+            case 6: out = Vec4(std::atan2(vy.x, v.x), std::atan2(vy.y, v.y),
+                               std::atan2(vy.z, v.z), std::atan2(vy.w, v.w)); break;
+        }
     }
-    const char* GetTypeName() const override { return "Rcp"; }
+    const char* GetTypeName() const override { return "TrigMath"; }
 private:
-    Ref<UniformExpression> x_;
+    static Vec4 Apply1(const Vec4& v, float(*f)(float)) {
+        return Vec4(f(v.x), f(v.y), f(v.z), f(v.w));
+    }
+    Ref<UniformExpression> x_, y_;   // y_ 仅 atan2 用
+    int op_;                          // ETrigMathOperation
 };
-// UniformAbs / UniformSine / UniformCosine 同模板（GetNumberValue 换 abs/sin/cos）
 ```
 
 ### 三种形态在这棵树上怎么统一（回看背景知识的表）
