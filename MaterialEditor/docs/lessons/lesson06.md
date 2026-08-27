@@ -330,6 +330,34 @@ public:
 
 > UE 版里错误上报（`Errorf`）在 `GetArithmeticResultType` 内部；教学版挪到算子里发，因为 EmitError 需要 node/pin 上下文（第三部分），而 TypeSystem 是无状态的静态工具类。
 
+### 文件：`src/MaterialGraph/Public/Types.h` —— `CanImplicitConvert` 升级（连线检查）
+
+`CanImplicitConvert`（连线合法性，`Pin::CanConnectTo` 用）与 `GetArithmeticResultType`（编译期算术推导）是**两个职责**，UE 也分开（`CanConnectMaterialValueTypes` vs 同名推导）。关键差异——**同一个类型对故意给不同答案**：
+
+| 类型对 | 连线检查 | 算术推导 | 为什么 |
+|---|---|---|---|
+| Float2 × Float3 | ✅ 让连 | ❌ Unknown+报错 | 连线宽松（用户可能 mid-编辑），编译严格 |
+| Unknown 引脚 | ✅ 全放行 | ❌ 报错 | 没连东西的引脚不卡用户 |
+| LWC × Float | ✅ 让连 | ✅ LWC | 连线放行，运算有明确规则 |
+
+对照 UE `CanConnectMaterialValueTypes`（`MaterialExpressions.cpp:554-585`）升级——**课 3 的三条显式规则表（Float1→Float2/3/4）替换为 UE 的三条掩码规则**：
+
+```cpp
+// 连线合法性检查（对照 UE CanConnectMaterialValueTypes, MaterialExpressions.cpp:554）
+inline bool CanImplicitConvert(EValueType from, EValueType to)
+{
+    if (from == MCT_Unknown || to == MCT_Unknown)
+        return true;                                   // ① 没连东西的引脚全放行
+    if (from & to)
+        return true;                                   // ② 位重叠（同类型/掩码相交）
+    if ((from & MCT_Numeric) && (to & MCT_Numeric))
+        return true;                                   // ③ 双方是数值（float/LWC/UInt 跨族也放行）
+    return false;
+}
+```
+
+规则 ③ 就是「Float2 能连 Float3 引脚」的来源：编辑期放行，编译期 `GetArithmeticResultType` 报具体错误（带节点定位）——**错误延后但不消失**。
+
 ---
 
 ## 第二部分：UniformExpression——常量/参数表达式树
@@ -1489,6 +1517,7 @@ assert(c.GetParameterCode(-1) == "0.0");
 - [ ] `EValueType` bitmask 改造（MCT_* 单值位 + `MCT_Float`/`MCT_LWCType`/`MCT_Numeric`/`MCT_Texture` 掩码，位值对齐 UE；含纹理变体四类 + MaterialAttributes/ShadingModel/Substrate 三类 + LWC 五类，共 22 个单值位）+ 全项目旧枚举引用迁移
 - [ ] 新类型位的编译器层消费：`GetArithmeticResultType` 拦截（纹理掩码 + 打包三件套 ==）+ LWC 推导规则（同族提升 / 跨族 float×LWC→LWC）+ `ToLWCType` + `ToHLSLType` 映射（FSubstrateData / double 族）+ `TypeName` 可读名 + `GetComponentCount`（打包值 0、LWC 同 float 分量数）
 - [ ] `GetComponentCount` 适配（`MCT_Float` 与 `MCT_Float1` 都返回 1）
+- [ ] `CanImplicitConvert` 升级为 UE 三规则（Unknown 放行 / 位重叠 / 双 Numeric 放行）——课 3 的 Float1→FloatN 显式规则表退役
 - [ ] `TypeSystem::GetArithmeticResultType`（对齐 UE：含 LWC 跨族规则）+ `ToHLSLType` + `TypeName`
 - [ ] `UniformExpression` 基类（`IsConstant` / `IsIdentical` / `GetNumberValue(ctx, out)` 三个虚函数，语义对齐 UE）
 - [ ] `UniformConstant`（Vec4 4 分量 + 类型标签，对齐 `FMaterialUniformExpressionConstant`）
