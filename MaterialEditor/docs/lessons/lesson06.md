@@ -13,7 +13,7 @@
 
 **本课范围（自给自足，不挖坑）**：
 - 类型系统 bitmask 改造（Float1-4 / 矩阵 / 纹理 + 类别掩码）+ 算术推导规则
-- `UniformExpression` 树：基类 + `UniformConstant` + `UniformFoldedMath` + `UniformFoldedUnary`
+- `UniformExpression` 树：基类 + `UniformConstant` + `UniformFoldedMath` + 一元独立子类（UniformNeg/UniformAbs/UniformSine/UniformCosine/UniformRcp）
 - `CodeChunk` 全字段版 + 常量/参数表达式 chunk 的构建与**双层去重**（代码 hash + `IsIdentical`）
 - 双层编译器：`MaterialCompiler`（抽象接口）+ `HLSLTranslator`（实现）
 - 算子 API：算术 / 三角 / 向量 / 标量常量 / 类型转换（共 ~20 个），按 UE 真实的**三轨判定**实现（错误检查 → 表达式树/立即折叠 → HLSL 发射）
@@ -151,8 +151,8 @@ enum EValueType : uint64_t {
 | `MCT_TextureCube` | 立方体纹理 | 环境贴图反射采样 |
 | `MCT_Texture2DArray` | 贴图数组 | uv + layer 索引采样；DX12 SRV 用 `TEXTURE2DARRAY` 维度 |
 | `MCT_VolumeTexture` | 3D 纹理 | uvw 三维采样（体积雾/3D 数据）；SRV `TEXTURE3D` |
-| `MCT_TextureExternal` | 外部纹理 | 视频帧采样；教学版按普通 2D 采样路径，类型位对齐 UE |
-| `MCT_TextureVirtual` | 虚拟纹理 | 分页流式；教学版按普通 2D 采样 + 注释说明页表机制，类型位对齐 UE |
+| `MCT_TextureExternal` | 外部纹理 | 视频帧采样；`ToHLSLType` 返回 `"TextureExternal"`（UE `.cpp:3172` 同名），采样走外部纹理绑定路径（UniformExternalTextureExpressions 表 + 采样时 UV 变换，课 14）|
+| `MCT_TextureVirtual` | 虚拟纹理 | 分页流式；采样生成**页表二次采样**代码——`VirtualTexturePhysical_N` 物理图块 + 页表查询（对照 UE `.cpp:7220-7262` 的 VT 分支），`NumVtSamples` 计数 + `NUM_VIRTUALTEXTURE_SAMPLES` 环境定义（`.cpp:2349`），课 14 |
 | `MCT_MaterialAttributes` | 材质属性打包值 | Make/Break 节点的输入输出；编译时展开成多个属性 chunk |
 | `MCT_ShadingModel` | shading model 值 | ShadingModel 节点输出（0=Unlit, 1=Lit）；决定 PS 光照分支 |
 | `MCT_Substrate` | Substrate BSDF 值 | Substrate BSDF 节点族输出；完整实现见课 20（组合树 + 课 17 GGX 求值）|
@@ -179,12 +179,10 @@ enum EValueType : uint64_t {
 
 | UE 位 | UE 用途 | 不引入的原因 |
 |-------|---------|-------------|
-| `MCT_UInt1-4`（bit 25-28）| 无符号整数运算（位操作、VT 页表）| 教学版无整数节点；UE 也没有有符号 Int 类型（反射层 IntProperty 是参数面板类型，过节点边界时 `(float)` 转换）|
-| `MCT_StaticBool` / `MCT_Bool` | 静态开关 / 动态 bool | 静态开关需要 permutation 变体管理系统（每个开关组合单独编译一份 shader + 缓存）；bool 语义用 Float 0/1 表达 |
-| `MCT_TextureCubeArray` / `MCT_SparseVolumeTexture` / `MCT_VTPageTableResult`（bit 7/14/15）| 立方体贴图数组 / 稀疏体积纹理 / VT 页表内部类型 | 位值在枚举注释中保留占位说明（UE 纹理位不连续的原因），类型本身无消费节点，不引入 |
 | `MCT_LicenseeReserved`（bit 48-63）| 授权方自定义保留段 | 不适用 |
+| `MCT_MeshPaint`/`MCT_MaterialCache` 等 UE 私有内部位 | 引擎内部贴图流（MeshPaint/MaterialCache 特殊路径）| 无对应系统 |
 
-> **注**：`MCT_MaterialAttributes` / `MCT_Substrate` / `MCT_ShadingModel` / 纹理变体 / **LWC 双精度族**均已引入（见上方枚举和消费方索引）——策略：**类型系统完整对齐 UE，编译器层消费本课落地，节点级消费分课落地**。Substrate 完整实现（组合树 + 求值）在课 20，导数双轨（`EDerivativeStatus` + `code_analytic`）随本课 CodeChunk 字段进、课 8 发射时消费、课 20 的 DerivativeAutogen 全量接通。
+> **注**：其余全部位已引入——float/LWC/UInt/Bool/StaticBool/Execution 族、纹理全族（含 CubeArray/SparseVolumeTexture/VTPageTableResult/External/Virtual）、MaterialAttributes/ShadingModel/Substrate、矩阵族、Unexposed。位值与 UE `MaterialValueType.h` 逐位一致（22+ 位）。`MCT_Numeric` 含 UInt（对齐 UE 的 `MCT_Float|MCT_LWCType|MCT_Bool` 组合方式，教学版 Bool 单独判）。Substrate 完整实现（组合树 + 求值）在课 20，导数双轨（`EDerivativeStatus` + `code_analytic`）随本课 CodeChunk 字段进、课 8 发射时消费、课 20 的 DerivativeAutogen 全量接通。
 
 ### 两条关键语义（从 UE 注释原样搬来，最容易踩的坑）
 
@@ -291,8 +289,8 @@ public:
             case MCT_TextureCube:    return "TextureCube";
             case MCT_Texture2DArray: return "Texture2DArray";
             case MCT_VolumeTexture:  return "Texture3D";
-            case MCT_TextureExternal:case MCT_TextureVirtual:
-                                      return "Texture2D";   // 教学版按 2D 采样路径（见消费方索引）
+            case MCT_TextureExternal: return "TextureExternal";
+            case MCT_TextureVirtual:  return "TextureVirtual";
             // 打包/模型类型（对照 UE：FSubstrateData 见 .cpp:3182）
             case MCT_MaterialAttributes: return "FMaterialAttributes";
             case MCT_ShadingModel:       return "uint";      // 枚举当整数流动（UE 同款语义）
@@ -392,12 +390,12 @@ public:
 | `GetNumberValue(ctx, out)` | 同名（`.h:70`）| CPU 端求值整棵树 | 立即折叠时算值；参数变化时运行时重求值（不重编译 shader，即 preshader 语义）|
 | `GetTypeName()` | `GetType()` 的序列化用途 | DDC 树序列化的类型标签 | 课 20 `ShaderCache`：树 → JSON → 树 的往返重建 |
 
-**UE 有、教学版不采用的基类成员**（逐个说明）：
+**UE 基类成员的教学版对照**：
 
-| UE 成员 | 作用 | 不采用原因 |
-|---------|------|-----------|
-| `GetType()` 返回 `FMaterialUniformExpressionType*`（手写 RTTI 注册表）| 类型分派的**运行时多态机制** | 分派本身教学版不需要（`dynamic_cast` 够用）；它服务的序列化用途已由 `GetTypeName()` 字符串版承接 |
-| `WriteNumberOpcodes(FPreshaderData&)` | 把树编译成 preshader **字节码**（后序遍历写指令流）| 教学版不做字节码虚拟机——树的求值直接用 C++ 虚函数递归（`GetNumberValue`），语义等价、实现省一个 VM；序列化走 JSON 树结构而非字节码 |
+| UE 成员 | 作用 | 教学版 |
+|---------|------|--------|
+| `GetType()` 返回 `FMaterialUniformExpressionType*`（手写 RTTI 注册表）| 类型分派的**运行时多态机制** | 分派用 `dynamic_cast`；序列化用途由 `GetTypeName()` 字符串版承接 |
+| `WriteNumberOpcodes(FPreshaderData&)` | 把树编译成 preshader **字节码**（后序遍历写指令流）| ✅ 课 20 完整实现（`WriteOpcodes` + 栈式 VM `Evaluate`，与 `GetNumberValue` 双路径并存）|
 | `GetChildren()` | 暴露子节点数组（供遍历/序列化/剔除）| 序列化按子类字段直取（每个子类自己写 toJson/fromJson），无需统一遍历接口 |
 | `UniformOffset` / `UniformIndex` / `ShaderFrequencyMask` | preshader 结果在 uniform buffer 里的布局 | 课 8 的 cbuffer 布局不需要按 UE 的对齐规则压缩 |
 
@@ -479,48 +477,52 @@ private:
 };
 ```
 
-### 一元运算节点：`UniformFoldedUnary`
+### 一元运算节点：独立子类（对照 UE 每运算一类）
 
-UE 为每个一元运算**单独建类**（如 `FMaterialUniformExpressionRcp`——Div 的倒数优化用，见 `.cpp:9696`；`FMaterialUniformExpressionPeriodic` 等）。教学版合并成一个类 + op 枚举，**语义完全一致**（IsConstant 递归 / IsIdentical 递归 / GetNumberValue 逐分量）：
+UE 为每个一元运算**单独建类**（`FMaterialUniformExpressionRcp`——Div 的倒数优化用，见 `.cpp:9696`；`FMaterialUniformExpressionSine`、`...Abs`、`...Periodic` 等）。教学版同构，课 6 先实现算子用到的前五个（Negate/Abs/Sine/Cosine/Rcp），其余一元运算（Sqrt/Length/Normalize/Floor/Ceil/Round/Truncate/Sign/Frac/Fmod/Modulo/Log 族/Exp 族）在对应算子进教案时按同一模板追加：
 
 ```cpp
-enum class EFoldedUnaryOp : uint8_t { Neg, Abs, Sine, Cosine, Rcp };
-
-class UniformFoldedUnary : public UniformExpression {
+// 模板（五个类同构，只列两个，其余照抄换函数）
+class UniformNeg : public UniformExpression {
 public:
-    UniformFoldedUnary(UniformExpression* x, EFoldedUnaryOp op) : x_(x), op_(op) {}
-
-    bool IsConstant() const override { return x_->IsConstant(); }   // 递归
-
+    UniformNeg(UniformExpression* x) : x_(x) {}
+    bool IsConstant() const override { return x_->IsConstant(); }
     bool IsIdentical(const UniformExpression* other) const override {
-        auto* o = dynamic_cast<const UniformFoldedUnary*>(other);
-        return o && op_ == o->op_ && x_->IsIdentical(o->x_.get());
+        auto* o = dynamic_cast<const UniformNeg*>(other);
+        return o && x_->IsIdentical(o->x_.get());
     }
-
     void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const override {
-        Vec4 v; x_->GetNumberValue(ctx, v);
-        switch (op_) {
-            case EFoldedUnaryOp::Neg:    out = Vec4(-v.x, -v.y, -v.z, -v.w); break;
-            case EFoldedUnaryOp::Abs:    out = Vec4(std::abs(v.x), std::abs(v.y),
-                                                    std::abs(v.z), std::abs(v.w)); break;
-            case EFoldedUnaryOp::Sine:   out = Vec4(std::sin(v.x), std::sin(v.y),
-                                                    std::sin(v.z), std::sin(v.w)); break;
-            case EFoldedUnaryOp::Cosine: out = Vec4(std::cos(v.x), std::cos(v.y),
-                                                    std::cos(v.z), std::cos(v.w)); break;
-            case EFoldedUnaryOp::Rcp:    out = Vec4(1.f/v.x, 1.f/v.y, 1.f/v.z, 1.f/v.w); break;
-        }
+        x_->GetNumberValue(ctx, out);
+        out = Vec4(-out.x, -out.y, -out.z, -out.w);
     }
-
+    const char* GetTypeName() const override { return "Neg"; }
 private:
     Ref<UniformExpression> x_;
-    EFoldedUnaryOp op_;
 };
+
+class UniformRcp : public UniformExpression {   // 对照 FMaterialUniformExpressionRcp（.h:756）
+public:
+    UniformRcp(UniformExpression* x) : x_(x) {}
+    bool IsConstant() const override { return x_->IsConstant(); }
+    bool IsIdentical(const UniformExpression* other) const override {
+        auto* o = dynamic_cast<const UniformRcp*>(other);
+        return o && x_->IsIdentical(o->x_.get());
+    }
+    void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const override {
+        x_->GetNumberValue(ctx, out);
+        out = Vec4(1.f/out.x, 1.f/out.y, 1.f/out.z, 1.f/out.w);
+    }
+    const char* GetTypeName() const override { return "Rcp"; }
+private:
+    Ref<UniformExpression> x_;
+};
+// UniformAbs / UniformSine / UniformCosine 同模板（GetNumberValue 换 abs/sin/cos）
 ```
 
 ### 三种形态在这棵树上怎么统一（回看背景知识的表）
 
 - `Constant3(1,0,0)` → 建 `UniformConstant(Vec4(1,0,0,0), MCT_Float3)` 叶子
-- `Add(Constant(1), Constant(2))` → 两边都 `IsConstant()` → **不建树，立即求值**成 `UniformConstant(3)`（见第七部分"立即折叠 vs 建树"）
+- `Add(Constant(1), Constant(2))` → 两边都有表达式 → **建 FoldedMath 树**，求值推迟（见第七部分"立即折叠 vs 建树"）
 - `Add(param, Constant(2))`（参数，课 20）→ 建子树，运行时 `GetNumberValue` 求值
 - `Add(texSample结果, x)` → 无表达式 → 纯 HLSL 代码串 chunk
 
@@ -1113,7 +1115,7 @@ int32_t HLSLTranslator::Constant4(float x, float y, float z, float w) {
 
 为什么 Mul/Div 特殊？因为它们的**代数化简**（x*0、x*1、x/1）需要先知道"是不是常量 0/1"，顺手就把纯常量算了；Add/Sub 没有化简需求，UE 就把求值推迟给 preshader。
 
-**教学版规则**：没有 preshader 字节码运行时，统一采用 Mul/Div 的模式——**两边 `IsConstant()` → 立即求值折叠；两边有表达式（至少一边含参数）→ 建 FoldedMath 树**（树的 `GetNumberValue` 是 C++ 直接求值，语义与 preshader 等价）。三个机制（`IsConstant` 递归判定、`ConstResultValue`、`FoldedMath` 树）与 UE 一一对应。
+**教学版规则**：与 UE 完全同构——**Add/Sub 两边都有表达式（含纯常量）→ 建 FoldedMath 树**（求值推迟到 `GetNumberValue`，语义与 preshader 等价）；**Mul/Div 纯常量 → 立即折叠**（代数化简需要值，`ConstResultValue`）。哪些算子折叠、哪些建树，照 UE 原文的分工表执行。
 
 ### Add——黄金模板（对照 `.cpp:9484-9518`，删去 LWC/导数分支）
 
@@ -1129,21 +1131,10 @@ int32_t HLSLTranslator::Add(int32_t a, int32_t b) {
         return -1;
     }
 
-    // 段 2：表达式三轨（UE .cpp:9491-9498 的 ExpressionA && ExpressionB 分支）
+    // 段 2：表达式轨道（UE .cpp:9491-9498：两边都有表达式 → 一律建树，求值推迟）
     UniformExpression* ea = GetParameterUniformExpression(a);
     UniformExpression* eb = GetParameterUniformExpression(b);
     if (ea && eb) {
-        if (ea->IsConstant() && eb->IsConstant()) {
-            // 纯常量 → 立即求值折叠（Mul/Div 模式）
-            MaterialRenderContext ctx;
-            Vec4 va, vb;
-            ea->GetNumberValue(ctx, va);
-            eb->GetNumberValue(ctx, vb);
-            // 维度对齐：标量广播到较宽的分量（Float1+Float3 → 3 分量）
-            AlignComponents(va, GetType(a), vb, GetType(b), resultType);
-            return ConstResultValue(resultType, va + vb);
-        }
-        // 含参数 → 建树（UE .cpp:9497：new FoldedMath(A, B, FMO_Add)）
         return AddUniformExpression(
             new UniformFoldedMath(ea, eb, EFoldedMathOp::Add, resultType),
             resultType,
@@ -1258,7 +1249,7 @@ int32_t HLSLTranslator::Divide(int32_t a, int32_t b) {
     // "Division is often optimized as multiplication by reciprocal"（UE 注释原话）
     if (eb && !eb->IsConstant()) {
         int32_t rcpB = AddUniformExpression(
-            new UniformFoldedUnary(eb, EFoldedUnaryOp::Rcp), GetType(b),
+            new UniformRcp(eb), GetType(b),
             "rcp(" + GetParameterCode(b) + ")");
         return Multiply(a, rcpB);
     }
@@ -1273,7 +1264,7 @@ int32_t HLSLTranslator::Divide(int32_t a, int32_t b) {
 | 算子 | 表达式树轨道 | HLSL 轨道 | 备注 |
 |------|-------------|-----------|------|
 | `Power` | 两边常量 → 求值 `pow`；`pow(x,0)→1`、`pow(x,1)→x` 化简 | `AddCodeChunk`（函数调用非内联）：`pow(a, b)` | UE `Power`（`.cpp:9817`）|
-| `Abs`/`Negate`/`Sine`/`Cosine` | 常量 → `UniformFoldedUnary` 求值 | 一元短表达式内联：`abs(x)`/`-x`/`sin(x)`/`cos(x)` | 一元树节点用 |
+| `Abs`/`Negate`/`Sine`/`Cosine` | 常量 → 独立一元子类（UniformAbs/UniformNeg/UniformSine/UniformCosine）求值 | 一元短表达式内联：`abs(x)`/`-x`/`sin(x)`/`cos(x)` | 对照 UE 每运算一类 |
 | `Lerp(a,b,alpha)` | 三元无化简，HLSL 直接发 | `AddCodeChunk`：`lerp(a, b, alpha)` | 结果类型 = GetArithmeticResultType(a,b) |
 | `Clamp(x,min,max)` | 同上 | `AddCodeChunk`：`clamp(x, min, max)` | 类型同 x |
 | `Dot(a,b)` | 两边有表达式 → `FoldedMath(FMO_Dot, 维度标签)`（UE `.cpp:9742` 连 ValueType 都传了）| 内联 `dot(a, b)`，结果 `MCT_Float` | UE `.cpp:9713`：标量×标量退化为 Mul |
@@ -1306,7 +1297,7 @@ int32_t HLSLTranslator::Divide(int32_t a, int32_t b) {
 1. **Types.h 改造**：`EValueType` 换 bitmask（MCT_* 单值位 + 类别掩码）；`GetComponentCount` 适配；全项目 `EValueType::Float3` 等旧引用改 `MCT_Float3`（编译器会逐个报错，正好逐个改）。
    > 注意：这是类型系统的**最终形态升级**（课 3 的普通 enum 是它课 6 之前的形态，UE 对应物从一开始就是 bitmask）——`EValueType` 这个概念、它在 Types.h 的位置、`GetComponentCount`/`CanImplicitConvert` 的职责全部不变，变的是表示方式。
 2. **TypeSystem**：`GetArithmeticResultType`（对齐 UE 4 步逻辑）+ `ToHLSLType` + `TypeName`
-3. **UniformExpression.h**（`src/Expression/Public/`，L4）：基类 → `UniformConstant` → `EFoldedMathOp` + `UniformFoldedMath` → `EFoldedUnaryOp` + `UniformFoldedUnary`（`MaterialRenderContext` 空壳结构体）
+3. **UniformExpression.h**（`src/Expression/Public/`，L4）：基类 → `UniformConstant` → `EFoldedMathOp` + `UniformFoldedMath` → 一元独立子类 UniformNeg/UniformAbs/UniformSine/UniformCosine/UniformRcp（`MaterialRenderContext` 空壳结构体）
 4. **CodeChunk.h**：全字段版（含 `uniform_expression`）
 5. **CompileError.h**：`EErrorSeverity` / `CompileError` / `CompileResult`（纯数据，无实现文件）
 6. **MaterialCompiler.h**（`src/Expression/Public/`，L4）：抽象基类（纯虚接口，无 .cpp）
@@ -1338,24 +1329,26 @@ struct CompilerTestAccess {
 };
 MaterialRenderContext ctx;   // 求值上下文
 
-// 1. 标量折叠：Constant(1) + Constant(2) → 折叠成常量 3（无加法代码）
+// 1. 标量：Constant(1) + Constant(2) → 建 FoldedMath(Add) 树（UE 原版行为：求值推迟）
 HLSLTranslator c;
 int s = c.Add(c.Constant(1.0f), c.Constant(2.0f));
-assert(c.IsConstant(s));
+assert(c.IsConstant(s));                    // 树递归判定：两个常量叶子 → true
 UniformExpression* se = c.GetParameterUniformExpression(s);
 Vec4 v; se->GetNumberValue(ctx, v);
-assert(v.x == 3.0f);
-// 折叠后是"纯常量叶子"而非 FoldedMath 树：和 UniformConstant(3) 语义相等
-assert(se->IsIdentical(UniformConstant(Vec4(3,3,3,3), MCT_Float)));
+assert(v.x == 3.0f);                        // 求值时才算出 3
 
-// 2. 向量折叠：Constant3(1,0,0) + Constant3(0,1,0) → (1,1,0)
+// 2. 向量：Constant3(1,0,0) + Constant3(0,1,0) → 树求值 (1,1,0)
 int a = c.Constant3(1,0,0);
 int b = c.Constant3(0,1,0);
 int vec = c.Add(a, b);
 assert(c.IsConstant(vec));
 c.GetParameterUniformExpression(vec)->GetNumberValue(ctx, v);
 assert(v.x == 1.0f && v.y == 1.0f && v.z == 0.0f);
-assert(c.GetParameterCode(vec) == "float3(1.000000, 1.000000, 0.000000)");  // 字面量直接可用
+
+// 2b. Mul 才立即折叠：Constant(2) * Constant(3) → 直接 UniformConstant(6) 叶子
+int m = c.Multiply(c.Constant(2.0f), c.Constant(3.0f));
+assert(c.IsExpressionConstantValue(m, 6.0f));
+assert(c.GetParameterUniformExpression(m)->IsIdentical(UniformConstant(Vec4(6,6,6,6), MCT_Float)));
 
 // 3. x*1 直通 + 标量提升（UE 的 while-AppendVector 路径）
 int raw = CompilerTestAccess::MakeRawChunk(c, MCT_Float, "View.GameTime");  // 非表达式块
@@ -1365,7 +1358,7 @@ int vec3c = c.Constant3(1,1,1);
 int m2 = c.Multiply(raw, vec3c);                  // Float1 * Float3(1,1,1)
 assert(c.GetType(m2) == MCT_Float3);              // 类型提升到位（AppendVector 补分量）
 
-// 4. x*0 → 0；嵌套 2*3+4 → 10
+// 4. x*0 → 0；嵌套 2*3+4 → 10（Mul 折叠成 6，Add 建树，树求值 = 10）
 assert(c.IsExpressionConstantValue(c.Multiply(c.Constant(2.0f), c.Constant(0.0f)), 0.0f));
 int n = c.Add(c.Multiply(c.Constant(2.0f), c.Constant(3.0f)), c.Constant(4.0f));
 assert(c.IsExpressionConstantValue(n, 10.0f));
@@ -1446,7 +1439,7 @@ assert(c.GetParameterCode(-1) == "0.0");
 | `MCT_Float` 和 `MCT_Float1` 混用 | 标量表达式返回 `MCT_Float`（UE 规则），只判 `Float1` 会漏 | 推导/分量数两处都同时接受两者（UE `.cpp:4250`、`GetNumComponents` 同款）|
 | ×1 直通直接返回索引 | `Float1 * Float3` 直通后下游分量不足 | 走 `PromoteToType` 的 while-AppendVector（UE `.cpp:9608`）|
 | 表达式块给 SymbolName | UE 带表达式的构造函数根本没有 SymbolName 参数 | 有表达式 → 定义串直接用，`GetParameterCode` 第一判 |
-| 纯常量 Add/Sub 建树不折叠 | 输出 `(1.0 + 2.0)` 而非 `3.0` | 教学版统一"纯常量立即折"（Mul/Div 模式），见第七部分分工说明 |
+| 纯常量 Add/Sub 建树不折叠 | 输出 `(1.0 + 2.0)` 而非 `3.0` | UE 原版行为即如此（求值推迟给 preshader）；教学版同构，求值走 GetNumberValue |
 | `dynamic_cast` 没开 RTTI | `IsIdentical` 全返回假 | CMake 确认编译选项含 RTTI（MSVC 默认开）|
 | 除零返回 inf/nan 常量 | HLSL 编译器拒绝 inf 字面量（UE 注释原话）| 除零不折 + Warning + 建树（对齐 UE `.cpp:9675` 原版行为）|
 | 递归错误重复报告 | 错误列表刷屏 | `EmitError` 里 `SameAs` 去重 + 下游不重复 emit |
@@ -1464,7 +1457,7 @@ assert(c.GetParameterCode(-1) == "0.0");
 - [ ] `TypeSystem::GetArithmeticResultType`（对齐 UE：含 LWC 跨族规则）+ `ToHLSLType` + `TypeName`
 - [ ] `UniformExpression` 基类（`IsConstant` / `IsIdentical` / `GetNumberValue(ctx, out)` 三个虚函数，语义对齐 UE）
 - [ ] `UniformConstant`（Vec4 4 分量 + 类型标签，对齐 `FMaterialUniformExpressionConstant`）
-- [ ] `UniformFoldedMath`（`EFoldedMathOp` 6 运算 + 递归 IsConstant/IsIdentical）+ `UniformFoldedUnary`（5 运算）
+- [ ] `UniformFoldedMath`（`EFoldedMathOp` 6 运算 + 递归 IsConstant/IsIdentical）+ 一元独立子类（UniformNeg/UniformAbs/UniformSine/UniformCosine/UniformRcp，对照 UE 每运算一类）
 - [ ] `CodeChunk` 全字段版（**与 UE 逐字段一一对应，零省略**）：`material_attribute_mask` / `code` + `code_analytic` 双轨 / `derivative_status`（EDerivativeStatus 四值）/ 作用域三件套 + `scoped_chunks` / `is_intermediate` / `AtCode(variant)` + `uniform_expression` 树指针 + 两种 chunk 来源的语义（表达式块无 SymbolName）
 - [ ] `MaterialCompiler` 抽象基类（纯虚算子接口）+ `HLSLTranslator` 实现（两层结构，依赖倒置）
 - [ ] `CompileError` / `EErrorSeverity` / `CompileResult`（errors 数组 + `HasErrors`）+ `EmitError`（SameAs 去重）+ `current_node_`/`current_pin_` 上下文

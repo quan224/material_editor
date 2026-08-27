@@ -1156,10 +1156,12 @@ void MainWindow::OnCompile() {
 - [ ] 作用域违例检测：`used_scope > declared_scope`（内层声明的量被外层引用）→ EmitError
 - [ ] 课 8 拓扑排序兜底 Custom 自引用环（教案 §4 已写好检测，本课验证真实触发）
 
-**DDC 磁盘缓存（对照 UE Derived Data Cache——「为什么编译结果可以不重算」）**：
+**DDC 磁盘缓存 + preshader 字节码 VM（对照 UE Derived Data Cache + FPreshaderData）**：
 
 - [ ] `ShaderCache` 类：`key = SHA256(图结构 JSON + 编译选项)` → `value = CompileResult（HLSL 文本 + uniform_expressions_ 树序列化 + errors）`，存 `%LOCALAPPDATA%/MaterialEditor/DDC/`
 - [ ] 表达式树序列化（对照 UE `FMaterialUniformExpressionType` 注册系统的用途——教学版用 JSON：每节点 `{"type": "FoldedMath", "op": "Mul", "children": [...], "value": [...]}` 递归结构）+ 反序列化重建（按 type 字符串 dispatch 到构造函数）——**树的 GetTypeName 虚函数**（课 6 基类第四个虚函数的用途）
+- [ ] **preshader 字节码**（对照 UE `EPreshaderOpcode`，`Engine/Public/Shader/Preshader.h:19`，55 个 opcode）：每个树节点加 `WriteOpcodes(PreshaderData&)` 虚函数（后序遍历：先子树后自身操作码 → 逆波兰指令流）；教学版实现本项目树用到的 opcode 子集（ConstantZero/Constant/Parameter/Add/Sub/Mul/Div/Dot/Cross/Sin/Cos/Sqrt/Rcp/Length/Normalize/Saturate/Abs/Neg/ComponentSwizzle/AppendVector）
+- [ ] **栈式字节码 VM**（对照 UE `FPreshaderData::Evaluate`，`Preshader.h:110`）：`PreshaderData`（`vector<uint8_t>` 字节流 + Write 系列方法）+ `Evaluate(context)` —— 遍历字节码，操作数压栈、运算符弹栈求值，`FPreshaderStack` 同款；`GetNumberValue` 解释求值与 VM 求值**双路径并存且结果一致**（测试断言两者对同一棵树求值相等——即 UE 编辑器预览走解释、运行时走字节码的双轨结构）
 - [ ] 命中测试：同图编译两次，第二次读缓存（日志 `DDC cache hit`），毫秒级返回；改一个节点参数 → key 变 → 重算
 - [ ] 缓存失效：`ShaderCache::Invalidate()` 清空（版本号变化时自动清）
 

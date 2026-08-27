@@ -1121,7 +1121,8 @@ UE5 的 DX12 封装比我们的复杂得多，但核心结构是一样的：
 | `MCT_TextureCube` | `D3D12_SRV_DIMENSION_TEXTURECUBE` | `TextureCube` | float3 方向 |
 | `MCT_Texture2DArray` | `D3D12_SRV_DIMENSION_TEXTURE2DARRAY` | `Texture2DArray` | float2 uv + layer |
 | `MCT_VolumeTexture` | `D3D12_SRV_DIMENSION_TEXTURE3D` | `Texture3D` | float3 uvw |
-| `MCT_TextureExternal` / `MCT_TextureVirtual` | 同 Texture2D 路径 | `Texture2D` | float2 uv（教学版简化路径，类型位对齐 UE）|
+| `MCT_TextureExternal` | `D3D12_SRV_DIMENSION_TEXTURE2D` | `TextureExternal` | float2 uv（外部纹理：CPU 侧维护外部资源句柄绑定，采样时带 UV 缩放/偏移变换——对照 UE UniformExternalTextureExpressions + ExternalTextureCoordinateScaleRotation/Offset 两个表达式）|
+| `MCT_TextureVirtual` | 物理图块用 `D3D12_SRV_DIMENSION_TEXTURE2DARRAY`（每页一个 array slice）+ 页表单独 `TEXTURE2D`（`R32_UINT`）| `TextureVirtual` | float2 uv → 页表查询得 (pageX,pageY,layer,mip) → 二次采样物理图块（对照 UE `.cpp:7220-7262`：`VirtualTexturePhysical_N` + 共享采样器 + `NumVtSamples` 计数驱动 `NUM_VIRTUALTEXTURE_SAMPLES` 环境定义 `.cpp:2349`）|
 
 ```cpp
 // DX12Device/描述符辅助：由编译器类型位直接决定 SRV 形状（课 15 CreateShaderResourceView 用）
@@ -1130,7 +1131,8 @@ inline D3D12_SRV_DIMENSION GetSRVDimension(EValueType t) {
         case MCT_TextureCube:    return D3D12_SRV_DIMENSION_TEXTURECUBE;
         case MCT_Texture2DArray: return D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         case MCT_VolumeTexture:  return D3D12_SRV_DIMENSION_TEXTURE3D;
-        default:                 return D3D12_SRV_DIMENSION_TEXTURE2D;  // 2D/External/Virtual
+        case MCT_TextureVirtual: return D3D12_SRV_DIMENSION_TEXTURE2DARRAY;  // 物理图块：页 = array slice
+        default:                 return D3D12_SRV_DIMENSION_TEXTURE2D;      // 2D/External
     }
 }
 ```

@@ -28,9 +28,13 @@ enum EValueType : uint64_t
 
     // 纹理变体
     MCT_Texture2DArray = 1u<<6,  // 贴图数组
+    MCT_TextureCubeArray = 1u<<7,  // 立方体贴图数组
     MCT_VolumeTexture = 1u<<8,  // 3D纹理
+    MCT_StaticBool = 1u<<9,  // 静态开关
     MCT_TextureExternal = 1u<<12,  // 外部纹理
     MCT_TextureVirtual = 1u<<13,  // 虚拟纹理
+    MCT_SparseVolumeTexture = 1u<<14,  // 稀疏体积纹理
+    MCT_VTPageTableResult = 1u<<15,  // VT页表查询结果(内部类型)
 
     // 打包/模型类型
     MCT_MaterialAttributes = 1u<<11,  // 材质属性打包值
@@ -42,17 +46,27 @@ enum EValueType : uint64_t
     MCT_LWCVector2 = 1u<<19,  // 双精度二维
     MCT_LWCVector3 = 1u<<20,  // 双精度三维
     MCT_LWCVector4 = 1u<<21,  // 双精度四维
+    MCT_Execution = 1u<<22,  // 执行流引脚(静态开关分支)
+    MCT_Bool = 1u<<24,  // 动态bool
     MCT_LWCMatrix = 1ull<<34,  // 双精度矩阵(大世界变换)
+
+    // 无符号整数
+    MCT_UInt1 = 1u<<25,
+    MCT_UInt2 = 1u<<26,
+    MCT_UInt3 = 1u<<27,
+    MCT_UInt4 = 1u<<28,
 
     // 矩阵
     MCT_Float3x3 = 1ull<<32,
     MCT_Float4x4 = 1ull<<33,
+    MCT_Unexposed = 1ull<<36,  // 不暴露给用户的内部类型
 
     // 类别掩码
     MCT_Float = MCT_Float1|MCT_Float2|MCT_Float3|MCT_Float4, // 任意float
     MCT_LWCType = MCT_LWCScalar|MCT_LWCVector2|MCT_LWCVector3|MCT_LWCVector4,  // 任意LWC值
-    MCT_Numeric = MCT_Float|MCT_LWCType,  // 任意数值
-    MCT_Texture = MCT_Texture2D|MCT_TextureCube|MCT_Texture2DArray|MCT_VolumeTexture|MCT_TextureExternal|MCT_TextureVirtual,  // 任意纹理
+    MCT_UInt = MCT_UInt1|MCT_UInt2|MCT_UInt3|MCT_UInt4,  // 任意无符号整数
+    MCT_Numeric = MCT_Float|MCT_LWCType|MCT_UInt,  // 任意数值(对齐UE含UInt; UE还含Bool,教学版Bool单独判)
+    MCT_Texture = MCT_Texture2D|MCT_TextureCube|MCT_Texture2DArray|MCT_TextureCubeArray|MCT_VolumeTexture|MCT_TextureExternal|MCT_TextureVirtual|MCT_SparseVolumeTexture,  // 任意纹理(对齐UE掩码成员,不含VTPageTableResult内部类型)
 
 };
 
@@ -80,10 +94,11 @@ inline bool CanImplicitConvert(EValueType from, EValueType to)
 // LWC 族与 float 族同分量数；掩码/矩阵/纹理/打包值返回 0（掩码问"分量数"没有意义）
 inline int GetComponentCount(const EValueType& t){
     switch(t){
-        case MCT_Float: case MCT_Float1: case MCT_LWCScalar: return 1;
-        case MCT_Float2: case MCT_LWCVector2: return 2;
-        case MCT_Float3: case MCT_LWCVector3: return 3;
-        case MCT_Float4: case MCT_LWCVector4: return 4;
+        case MCT_Float: case MCT_Float1: case MCT_LWCScalar:
+        case MCT_UInt1: case MCT_Bool: case MCT_StaticBool: return 1;
+        case MCT_Float2: case MCT_LWCVector2: case MCT_UInt2: return 2;
+        case MCT_Float3: case MCT_LWCVector3: case MCT_UInt3: return 3;
+        case MCT_Float4: case MCT_LWCVector4: case MCT_UInt4: return 4;
         default: return 0;
     }
 }

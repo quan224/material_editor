@@ -78,13 +78,21 @@ public:
         case MCT_LWCMatrix:  return "double4x4";
         case MCT_Float3x3: return "float3x3";
         case MCT_Float4x4: return "float4x4";
+        // 无符号整数
+        case MCT_UInt1: return "uint";
+        case MCT_UInt2: return "uint2";
+        case MCT_UInt3: return "uint3";
+        case MCT_UInt4: return "uint4";
+        case MCT_Bool: return "bool";
         // 纹理声明类型
         case MCT_Texture2D:      return "Texture2D";
         case MCT_TextureCube:    return "TextureCube";
         case MCT_Texture2DArray: return "Texture2DArray";
+        case MCT_TextureCubeArray: return "TextureCubeArray";
         case MCT_VolumeTexture:  return "Texture3D";
-        case MCT_TextureExternal: case MCT_TextureVirtual:
-                                  return "Texture2D";  // 教学版按 2D 采样路径
+        case MCT_TextureExternal: return "TextureExternal";
+        case MCT_TextureVirtual:  return "TextureVirtual";
+        case MCT_SparseVolumeTexture: return "SparseVolumeTexture";
         // 打包/模型类型
         case MCT_MaterialAttributes: return "FMaterialAttributes";
         case MCT_ShadingModel:       return "uint";
@@ -108,12 +116,23 @@ public:
         case MCT_LWCMatrix:  return "LWCMatrix";
         case MCT_Float3x3: return "Float3x3";
         case MCT_Float4x4: return "Float4x4";
+        case MCT_UInt1: return "UInt1";
+        case MCT_UInt2: return "UInt2";
+        case MCT_UInt3: return "UInt3";
+        case MCT_UInt4: return "UInt4";
+        case MCT_Bool: return "Bool";
+        case MCT_StaticBool: return "StaticBool";
+        case MCT_Execution: return "Execution";
         case MCT_Texture2D:      return "Texture2D";
         case MCT_TextureCube:    return "TextureCube";
         case MCT_Texture2DArray: return "Texture2DArray";
+        case MCT_TextureCubeArray: return "TextureCubeArray";
         case MCT_VolumeTexture:  return "VolumeTexture";
         case MCT_TextureExternal:return "TextureExternal";
         case MCT_TextureVirtual: return "TextureVirtual";
+        case MCT_SparseVolumeTexture: return "SparseVolumeTexture";
+        case MCT_VTPageTableResult: return "VTPageTableResult";
+        case MCT_Unexposed: return "Unexposed";
         case MCT_MaterialAttributes: return "MaterialAttributes";
         case MCT_ShadingModel:       return "ShadingModel";
         case MCT_Substrate:          return "Substrate";
