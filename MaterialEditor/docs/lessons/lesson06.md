@@ -252,6 +252,17 @@ inline bool IsPrimitiveType(EValueType t) {
     return t & (MCT_Float | MCT_LWCType | MCT_UInt | MCT_ShadingModel
               | MCT_Bool | MCT_StaticBool);
 }
+
+// float → LWC 的类型对应（对照 UE MakeLWCType, MaterialShared.h:278——UE 也放类型公共层）
+inline EValueType ToLWCType(EValueType t) {
+    switch (t) {
+        case MCT_Float: case MCT_Float1: return MCT_LWCScalar;
+        case MCT_Float2: return MCT_LWCVector2;
+        case MCT_Float3: return MCT_LWCVector3;
+        case MCT_Float4: return MCT_LWCVector4;
+        default: return t;
+    }
+}
 ```
 
 分层原则不变：**纯类型属性查询留 Types.h，HLSL 字符串/推导规则进编译器层 TypeSystem**。
@@ -285,16 +296,7 @@ public:
         return MCT_Unknown;   // 兜底：不兼容（Float2×Float3 等）——调用方 EmitError
     }
 
-    // float → LWC 的类型级提升（UE MakeLWCType 语义）
-    static EValueType ToLWCType(EValueType t) {
-        switch (t) {
-            case MCT_Float: case MCT_Float1: return MCT_LWCScalar;
-            case MCT_Float2: return MCT_LWCVector2;
-            case MCT_Float3: return MCT_LWCVector3;
-            case MCT_Float4: return MCT_LWCVector4;
-            default: return t;
-        }
-    }
+    // ToLWCType 在 Types.h（类型对应关系，见上节——UE MakeLWCType 同样在 MaterialShared.h）
 
     static const char* ToHLSLType(EValueType t) {
         switch (t) {
