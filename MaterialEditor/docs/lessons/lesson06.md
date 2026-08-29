@@ -246,49 +246,44 @@ inline int GetComponentCount(EValueType t) {
 
 ### 文件：`src/Compiler/Public/TypeSystem.h`（推导规则）
 
-对照 UE `FHLSLMaterialTranslator::GetArithmeticResultType`（`.cpp:4221-4261`，逐行对齐）：
+对照 UE `FHLSLMaterialTranslator::GetArithmeticResultType`（`.cpp:4221-4261`，逐行对齐）。**先看 UE 的两个前置判定**（`MaterialShared.h:254-264`）——白名单思路，不枚举"谁不行"，只问"你是不是数值/primitive"：
 
 ```cpp
 class TypeSystem {
 public:
-    // 算术结果类型。对照 UE .cpp:4221：
-    // ①非 primitive（矩阵/纹理/打包值）→ 错误；②同类型 → 原类型；
-    // ③任一方是标量 → 另一方（float 标量和 LWC 标量各自提升同族）；
-    // ④float×LWC 跨族 → LWC 侧结果（UE 语义：混合时 float 先隐转 LWC）；
-    // ⑤其余（Float2 vs Float3 等）→ 错误 + Unknown
-    static EValueType GetArithmeticResultType(EValueType a, EValueType b) {
-        // ① 对象类型/矩阵/未知不能算术（对照 UE IsPrimitiveType 检查）
-        //   纹理全族靠 MCT_Texture 掩码一网打尽；打包三件套也在此拦截
-        if (a & MCT_Texture || b & MCT_Texture) return MCT_Unknown;
-        if (a == MCT_MaterialAttributes || b == MCT_MaterialAttributes
-            || a == MCT_ShadingModel || b == MCT_ShadingModel
-            || a == MCT_Substrate || b == MCT_Substrate) return MCT_Unknown;
-        if (a == MCT_Unknown || b == MCT_Unknown) return MCT_Unknown;
-        if (GetComponentCount(a) == 0 || GetComponentCount(b) == 0) return MCT_Unknown;  // 矩阵/LWCMatrix
-
-        if (a == b) return a;                        // ② 同类型
-        bool aScalar = (a == MCT_Float || a == MCT_Float1);
-        bool bScalar = (b == MCT_Float || b == MCT_Float1);
-        if (aScalar && !bScalar) return b;           // ③ float 标量提升
-        if (bScalar && !aScalar) return a;
-        bool aLwcScalar = (a == MCT_LWCScalar);
-        bool bLwcScalar = (b == MCT_LWCScalar);
-        if (aLwcScalar && (b & MCT_LWCType)) return b;   // LWC 标量提升同族（UE LWCGetArithmeticResultType 同款）
-        if (bLwcScalar && (a & MCT_LWCType)) return a;
-        // ④ LWC 规则（UE .cpp:4232-4251 原文结构：两侧先升 LWC 再比较）
-        if (a & MCT_LWCType || b & MCT_LWCType) {
-            EValueType aL = ToLWCType(a), bL = ToLWCType(b);
-            if (aL == bL) return aL;                          // 同宽（含 float×LWC 同宽升级）
-            if (aL == MCT_LWCScalar) return bL;               // 标量广播
-            if (bL == MCT_LWCScalar) return aL;
-            return MCT_Unknown;                               // 异宽非标量 → 报错
-        }
-        return MCT_Unknown;                          // ⑤ 不兼容
-        // 注意：返回 Unknown 时调用方负责 EmitError——UE 在这里 Errorf，
-        // 教学版把错误上报挪到算子里（带上 node/pin 定位，见第三部分）
+    // 数值类型判定（对照 UE IsNumericType, MaterialShared.h:254）
+    static bool IsNumericType(EValueType t) {
+        return t & (MCT_Float | MCT_LWCType | MCT_UInt | MCT_ShadingModel);
     }
 
-    // float → LWC 的类型级提升（UE ToLWCType 语义；算术跨族时用）
+    // primitive 判定 = 数值 + bool（对照 UE IsPrimitiveType, MaterialShared.h:260）
+    static bool IsPrimitiveType(EValueType t) {
+        return t & (MCT_Float | MCT_LWCType | MCT_UInt | MCT_ShadingModel
+                  | MCT_Bool | MCT_StaticBool);
+    }
+
+    // 算术结果类型（对照 UE .cpp:4221 结构：一条拦截 + 成立规则逐条筛 + 兜底）
+    static EValueType GetArithmeticResultType(EValueType a, EValueType b) {
+        if (!IsPrimitiveType(a) || !IsPrimitiveType(b)) return MCT_Unknown;
+
+        if (a == b) return a;
+
+        // LWC 规则（.cpp:4232-4251：两侧先升 LWC 再比较，四种情况自动归一）
+        if (a & MCT_LWCType || b & MCT_LWCType) {
+            EValueType aL = ToLWCType(a), bL = ToLWCType(b);
+            if (aL == bL) return aL;
+            if (aL == MCT_LWCScalar && IsNumericType(bL)) return bL;
+            if (bL == MCT_LWCScalar && IsNumericType(aL)) return aL;
+            return MCT_Unknown;
+        }
+
+        if (a == MCT_Float || a == MCT_Float1) return b;   // 标量提升
+        if (b == MCT_Float || b == MCT_Float1) return a;
+
+        return MCT_Unknown;   // 兜底：不兼容（Float2×Float3 等）——调用方 EmitError
+    }
+
+    // float → LWC 的类型级提升（UE MakeLWCType 语义）
     static EValueType ToLWCType(EValueType t) {
         switch (t) {
             case MCT_Float: case MCT_Float1: return MCT_LWCScalar;
