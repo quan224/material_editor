@@ -275,14 +275,14 @@ public:
         bool bLwcScalar = (b == MCT_LWCScalar);
         if (aLwcScalar && (b & MCT_LWCType)) return b;   // LWC 标量提升同族（UE LWCGetArithmeticResultType 同款）
         if (bLwcScalar && (a & MCT_LWCType)) return a;
-        // ④ 跨族 float × LWC：标量广播 / 同宽升级 / 异宽报错
-        auto crossLWC = [](EValueType lwc, EValueType f) -> EValueType {
-            if (lwc == MCT_LWCScalar) return ToLWCType(f);
-            if (f == MCT_Float || f == MCT_Float1) return lwc;
-            return GetComponentCount(lwc) == GetComponentCount(f) ? lwc : MCT_Unknown;
-        };
-        if ((a & MCT_LWCType) && (b & MCT_Float)) return crossLWC(a, b);
-        if ((b & MCT_LWCType) && (a & MCT_Float)) return crossLWC(b, a);
+        // ④ LWC 规则（UE .cpp:4232-4251 原文结构：两侧先升 LWC 再比较）
+        if (a & MCT_LWCType || b & MCT_LWCType) {
+            EValueType aL = ToLWCType(a), bL = ToLWCType(b);
+            if (aL == bL) return aL;                          // 同宽（含 float×LWC 同宽升级）
+            if (aL == MCT_LWCScalar) return bL;               // 标量广播
+            if (bL == MCT_LWCScalar) return aL;
+            return MCT_Unknown;                               // 异宽非标量 → 报错
+        }
         return MCT_Unknown;                          // ⑤ 不兼容
         // 注意：返回 Unknown 时调用方负责 EmitError——UE 在这里 Errorf，
         // 教学版把错误上报挪到算子里（带上 node/pin 定位，见第三部分）
