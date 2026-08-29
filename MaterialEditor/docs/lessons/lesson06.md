@@ -336,7 +336,7 @@ public:
     }
 
     // 类型可读名（EmitError 的报错信息用；对照 UE DescribeType .cpp:3141）
-    static const char* TypeName(EValueType t) {
+    static const char* DescribeType(EValueType t) {
         switch (t) {
             case MCT_Float: case MCT_Float1: return "Float";
             case MCT_Float2:   return "Float2";
@@ -450,7 +450,7 @@ public:
     // 节点类型名（"Constant"/"FoldedMath"/...，每个子类返回自己的类名）。
     // 对照 UE GetType()（FMaterialUniformExpressionType）的**序列化用途**——
     // DDC 存盘时写类型名字符串，读盘时按名 dispatch 重建树（课 20 ShaderCache 消费）。
-    virtual const char* GetTypeName() const { return "Unknown"; }
+    virtual const char* GetDescribeType() const { return "Unknown"; }
 
     virtual ~UniformExpression() = default;
 };
@@ -463,13 +463,13 @@ public:
 | `IsConstant()` | 同名（`.h:65`）| 递归判定子树是否纯常量 | 算子的"立即折叠"判定：两边都常量 → 编译期算成字面量，不生成运算 |
 | `IsIdentical(other)` | 同名（`.h:66`）| 语义去重 | `AddUniformExpression` 的第二层去重：相同表达式只建一个 chunk（多个材质属性共享）|
 | `GetNumberValue(ctx, out)` | 同名（`.h:70`）| CPU 端求值整棵树 | 立即折叠时算值；参数变化时运行时重求值（不重编译 shader，即 preshader 语义）|
-| `GetTypeName()` | `GetType()` 的序列化用途 | DDC 树序列化的类型标签 | 课 20 `ShaderCache`：树 → JSON → 树 的往返重建 |
+| `GetDescribeType()` | `GetType()` 的序列化用途 | DDC 树序列化的类型标签 | 课 20 `ShaderCache`：树 → JSON → 树 的往返重建 |
 
 **UE 基类成员的教学版对照**：
 
 | UE 成员 | 作用 | 教学版 |
 |---------|------|--------|
-| `GetType()` 返回 `FMaterialUniformExpressionType*`（手写 RTTI 注册表）| 类型分派的**运行时多态机制** | 分派用 `dynamic_cast`；序列化用途由 `GetTypeName()` 字符串版承接 |
+| `GetType()` 返回 `FMaterialUniformExpressionType*`（手写 RTTI 注册表）| 类型分派的**运行时多态机制** | 分派用 `dynamic_cast`；序列化用途由 `GetDescribeType()` 字符串版承接 |
 | `WriteNumberOpcodes(FPreshaderData&)` | 把树编译成 preshader **字节码**（后序遍历写指令流）| ✅ 课 20 完整实现（`WriteOpcodes` + 栈式 VM `Evaluate`，与 `GetNumberValue` 双路径并存）|
 | `GetChildren()` | 暴露子节点数组（供遍历/序列化/剔除）| 序列化按子类字段直取（每个子类自己写 toJson/fromJson），无需统一遍历接口 |
 | `UniformOffset` / `UniformIndex` / `ShaderFrequencyMask` | preshader 结果在 uniform buffer 里的布局 | 课 8 的 cbuffer 布局不需要按 UE 的对齐规则压缩 |
@@ -585,7 +585,7 @@ public:
         x_->GetNumberValue(ctx, out);
         out = Vec4(-out.x, -out.y, -out.z, -out.w);
     }
-    const char* GetTypeName() const override { return "Neg"; }
+    const char* GetDescribeType() const override { return "Neg"; }
 private:
     Ref<UniformExpression> x_;
 };
@@ -619,7 +619,7 @@ public:
                                std::atan2(vy.z, v.z), std::atan2(vy.w, v.w)); break;
         }
     }
-    const char* GetTypeName() const override { return "TrigMath"; }
+    const char* GetDescribeType() const override { return "TrigMath"; }
 private:
     static Vec4 Apply1(const Vec4& v, float(*f)(float)) {
         return Vec4(f(v.x), f(v.y), f(v.z), f(v.w));
@@ -823,7 +823,7 @@ void HLSLTranslator::EmitError(const std::string& msg, EErrorSeverity sev,
 
 **课 6 阶段** `current_node_` 是 nullptr，EmitError 的 nodeId 落到 `UUID::Invalid()`——正常，课 7 接 `CompileInputPin` 后自动有上下文。测试用显式 `overrideNodeId` 参数或友元访问。
 
-> **调试 helper**：错误信息用的 `TypeName(EValueType)` 已定义在 TypeSystem（第一部分），单值位查表。
+> **调试 helper**：错误信息用的 `DescribeType(EValueType)` 已定义在 TypeSystem（第一部分），单值位查表。
 
 ---
 
@@ -1047,7 +1047,7 @@ int32_t HLSLTranslator::AddCodeChunk(EValueType type, const std::string& code, b
         EmitError("Operation not supported on a Texture");
         return -1;                                            // ④ 对照 UE .cpp:3390
     } else {
-        EmitError("Operation not supported for type " + TypeName(type));
+        EmitError("Operation not supported for type " + DescribeType(type));
         return -1;
     }
     chunks_[index].references = {};   // 调用方按需填
@@ -1235,8 +1235,8 @@ int32_t HLSLTranslator::Add(int32_t a, int32_t b) {
     if (a < 0 || b < 0) return -1;
     EValueType resultType = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
     if (resultType == MCT_Unknown) {
-        EmitError("Add inputs incompatible: A=" + TypeName(GetType(a))
-                  + ", B=" + TypeName(GetType(b)), EErrorSeverity::Error,
+        EmitError("Add inputs incompatible: A=" + DescribeType(GetType(a))
+                  + ", B=" + DescribeType(GetType(b)), EErrorSeverity::Error,
                   current_node_ ? current_node_->id : UUID::Invalid(), "A/B");
         return -1;
     }
@@ -1400,13 +1400,13 @@ int32_t HLSLTranslator::Divide(int32_t a, int32_t b) {
 | `MaterialCompiler.h/.cpp`（旧单层版，含 `TextureSample/If/Cast/Compile(Graph*)` 声明）| **拆掉重写** | 纯虚算子接口 → `src/Expression/Public/MaterialCompiler.h`（删去 `TextureSample/If`（课14/15）、`Cast` → `ValidCast`、`Compile(Graph*)`（课7）、`Negative` → 改名 `Negate` 对齐 UE）|
 | `CodeChunk.h`（variant 版）| **字段升级** | 换全字段版：`is_constant`+`constant_value` → `uniform_expression` 树指针，加 `references` |
 | `ConstantFolding.h`（variant 折叠）| **退役** | 折叠逻辑成为 `UniformFoldedMath/Unary::GetNumberValue` 的一部分（树求值即折叠），不再需要独立文件 |
-| `TypeSystem.h/.cpp` | **保留扩展** | `GetArithmeticResultType` 重写为 UE 4 步逻辑 + 加 `TypeName`；`ToHLSLType` 不变 |
+| `TypeSystem.h/.cpp` | **保留扩展** | `GetArithmeticResultType` 重写为 UE 4 步逻辑 + 加 `DescribeType`；`ToHLSLType` 不变 |
 | `CompileError.h` | **保留扩展** | `EmitError` 挪进 HLSLTranslator；`CompileResult` 移到本文件成为最终版 |
 | `MaterialGraph/Public/GraphCompiler.h/.cpp`（课 3 遗留）| **废弃** | 它是数据模型层的旧遍历器，职责被课 7 的 `HLSLTranslator::Compile(Graph*)` 完全取代；课 6 起不再引用，文件可删（若课 4 的测试还引用它，把测试一并退役）|
 
 1. **Types.h 改造**：`EValueType` 换 bitmask（MCT_* 单值位 + 类别掩码）；`GetComponentCount` 适配；全项目 `EValueType::Float3` 等旧引用改 `MCT_Float3`（编译器会逐个报错，正好逐个改）。
    > 注意：这是类型系统的**最终形态升级**（课 3 的普通 enum 是它课 6 之前的形态，UE 对应物从一开始就是 bitmask）——`EValueType` 这个概念、它在 Types.h 的位置、`GetComponentCount`/`CanImplicitConvert` 的职责全部不变，变的是表示方式。
-2. **TypeSystem**：`GetArithmeticResultType`（对齐 UE 4 步逻辑）+ `ToHLSLType` + `TypeName`
+2. **TypeSystem**：`GetArithmeticResultType`（对齐 UE 4 步逻辑）+ `ToHLSLType` + `DescribeType`
 3. **UniformExpression.h**（`src/Expression/Public/`，L4）：基类 → `UniformConstant` → `EFoldedMathOp` + `UniformFoldedMath` → 一元独立子类 UniformNeg/UniformAbs/UniformSine/UniformCosine/UniformRcp（`MaterialRenderContext` 空壳结构体）
 4. **CodeChunk.h**：全字段版（含 `uniform_expression`）
 5. **CompileError.h**：`EErrorSeverity` / `CompileError` / `CompileResult`（纯数据，无实现文件）
@@ -1562,10 +1562,10 @@ assert(c.GetParameterCode(-1) == "0.0");
 本课真正实现的（每一条都能本课勾选）：
 
 - [ ] `EValueType` bitmask 改造（MCT_* 单值位 + `MCT_Float`/`MCT_LWCType`/`MCT_Numeric`/`MCT_Texture` 掩码，位值对齐 UE；含纹理变体四类 + MaterialAttributes/ShadingModel/Substrate 三类 + LWC 五类，共 22 个单值位）+ 全项目旧枚举引用迁移
-- [ ] 新类型位的编译器层消费：`GetArithmeticResultType` 拦截（纹理掩码 + 打包三件套 ==）+ LWC 推导规则（同族提升 / 跨族 float×LWC→LWC）+ `ToLWCType` + `ToHLSLType` 映射（FSubstrateData / double 族）+ `TypeName` 可读名 + `GetComponentCount`（打包值 0、LWC 同 float 分量数）
+- [ ] 新类型位的编译器层消费：`GetArithmeticResultType` 拦截（纹理掩码 + 打包三件套 ==）+ LWC 推导规则（同族提升 / 跨族 float×LWC→LWC）+ `ToLWCType` + `ToHLSLType` 映射（FSubstrateData / double 族）+ `DescribeType` 可读名 + `GetComponentCount`（打包值 0、LWC 同 float 分量数）
 - [ ] `GetComponentCount` 适配（`MCT_Float` 与 `MCT_Float1` 都返回 1）
 - [ ] `CanImplicitConvert` 升级为 UE 三规则（Unknown 放行 / 位重叠 / 双 Numeric 放行）——课 3 的 Float1→FloatN 显式规则表退役
-- [ ] `TypeSystem::GetArithmeticResultType`（对齐 UE：含 LWC 跨族规则）+ `ToHLSLType` + `TypeName`
+- [ ] `TypeSystem::GetArithmeticResultType`（对齐 UE：含 LWC 跨族规则）+ `ToHLSLType` + `DescribeType`
 - [ ] `UniformExpression` 基类（`IsConstant` / `IsIdentical` / `GetNumberValue(ctx, out)` 三个虚函数，语义对齐 UE）
 - [ ] `UniformConstant`（Vec4 4 分量 + 类型标签，对齐 `FMaterialUniformExpressionConstant`）
 - [ ] `UniformFoldedMath`（`EFoldedMathOp` 6 运算 + 递归 IsConstant/IsIdentical）+ 一元独立子类（UniformNeg/UniformAbs/UniformSine/UniformCosine/UniformRcp，对照 UE 每运算一类）
