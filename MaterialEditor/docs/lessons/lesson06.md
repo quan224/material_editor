@@ -1480,8 +1480,8 @@ assert(!c.GetErrors().empty());
 assert(c.GetErrors().back().severity == EErrorSeverity::Warning);
 assert(c.GetErrors().back().pinName == "B");      // 精确到除数引脚
 
-// 6. 表达式树构建 + 双层去重（除零路径：本课没有参数节点，
-//    纯常量一律立即折叠——树只在"除零跳过折叠"时出现，UE 同款行为）
+// 6. 表达式树构建 + 双层去重（Add/Sub 建树是常规路径（见第七部分分工表），
+//    本测试用除零再验证一次：Divide 跳过折叠也走建树）
 int t1 = c.Divide(c.Constant(1.0f), c.Constant(0.0f));   // 建 FoldedMath(Div) 树（跳过折叠）
 int t2 = c.Divide(c.Constant(1.0f), c.Constant(0.0f));   // 再来一次同样的
 assert(t1 == t2);   // IsIdentical 去重：同一棵树只建一个 chunk
@@ -1571,7 +1571,7 @@ assert(c.GetParameterCode(-1) == "0.0");
 - [ ] `AddCodeChunk`（Unknown→-1 / 内联不去重 / 数值类型限制 / 纹理报错）+ `AddInlinedCodeChunk` + `AddUniformExpression`（IsIdentical 双层去重 + 材质级表达式表）
 - [ ] `Constant/2/3/4` 全走表达式路径（`UniformConstant` 叶子）
 - [ ] 查询四件套 + `IsConstant`（树递归）+ `IsExpressionConstantValue` + assert + 边界保护
-- [ ] `Add`/`Subtract`/`Multiply`/`Divide` 三轨判定 + 立即折叠 + 代数化简（x*0/x*1/0/x/x/1）+ `PromoteToType` 标量提升 + 除零 Warning + rcp 技巧
+- [ ] `Add`/`Subtract`/`Multiply`/`Divide` 三轨判定 + UE 折叠分工（Add/Sub 建树、Mul/Div 立即折叠）+ 代数化简（x*0/x*1/0/x/x/1）+ `PromoteToType` 标量提升 + 除零 Warning + rcp 技巧
 - [ ] `Power`/`Lerp`/`Clamp`/`Abs`/`Negate`/`Sine`/`Cosine`/`Dot`/`Cross`/`Normalize`/`Length`/`ComponentMask`/`AppendVector`/`ValidCast`
 - [ ] `compiler_test.cpp` 全部断言通过：标量/向量折叠、×1 直通+标量提升、×0 归零、嵌套折叠、除零 Warning、树构建+IsIdentical 去重、类型不匹配 Error+哨兵、非表达式 HLSL 路径、边界保护
 
