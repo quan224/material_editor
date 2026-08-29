@@ -21,10 +21,10 @@ public:
             if (al == bl){
                 return al;
             }
-            if(al==MCT_LWCScalar || IsFloatNumericType(bl)){
+            if(al==MCT_LWCScalar && IsFloatNumericType(bl)){
                 return bl;
             }
-            if(bl==MCT_LWCScalar || IsFloatNumericType(al)){
+            if(bl==MCT_LWCScalar && IsFloatNumericType(al)){
                 return al;
             }
 
