@@ -275,9 +275,16 @@ public:
         bool bLwcScalar = (b == MCT_LWCScalar);
         if (aLwcScalar && (b & MCT_LWCType)) return b;   // LWC 标量提升同族（UE LWCGetArithmeticResultType 同款）
         if (bLwcScalar && (a & MCT_LWCType)) return a;
-        // ④ 跨族 float × LWC：结果取 LWC 侧（UE .cpp:4240 语义：混合运算先把 float 提升为 LWC）
-        if ((a & MCT_LWCType) && (b & MCT_Float)) return ToLWCType(b);
-        if ((b & MCT_LWCType) && (a & MCT_Float)) return ToLWCType(a);
+        // ④ 跨族 float × LWC：先族升级（float→LWC），再宽度取 max
+        //   （只取 LWC 侧宽度会错：LWCVector4 × Float2 应为 LWCVector4，不是 LWCVector2）
+        if ((a & MCT_LWCType) && (b & MCT_Float)) {
+            EValueType aL = a, bL = ToLWCType(b);
+            return GetComponentCount(aL) >= GetComponentCount(bL) ? aL : bL;
+        }
+        if ((b & MCT_LWCType) && (a & MCT_Float)) {
+            EValueType bL = b, aL = ToLWCType(a);
+            return GetComponentCount(aL) >= GetComponentCount(bL) ? aL : bL;
+        }
         return MCT_Unknown;                          // ⑤ 不兼容
         // 注意：返回 Unknown 时调用方负责 EmitError——UE 在这里 Errorf，
         // 教学版把错误上报挪到算子里（带上 node/pin 定位，见第三部分）
