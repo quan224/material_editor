@@ -240,6 +240,18 @@ inline int GetComponentCount(EValueType t) {
                             // Substrate/Unexposed/Unknown 及掩码组合不走分量逻辑（UE 同款）
     }
 }
+
+// 类型分类谓词（对照 UE MaterialShared.h:254-264，UE 也放在类型公共层而非翻译器）
+// 描述"类型是什么分类"，与 GetComponentCount 同层
+inline bool IsNumericType(EValueType t) {
+    return t & (MCT_Float | MCT_LWCType | MCT_UInt | MCT_ShadingModel);
+}
+
+// primitive = 数值 + bool
+inline bool IsPrimitiveType(EValueType t) {
+    return t & (MCT_Float | MCT_LWCType | MCT_UInt | MCT_ShadingModel
+              | MCT_Bool | MCT_StaticBool);
+}
 ```
 
 分层原则不变：**纯类型属性查询留 Types.h，HLSL 字符串/推导规则进编译器层 TypeSystem**。
@@ -251,18 +263,8 @@ inline int GetComponentCount(EValueType t) {
 ```cpp
 class TypeSystem {
 public:
-    // 数值类型判定（对照 UE IsNumericType, MaterialShared.h:254）
-    static bool IsNumericType(EValueType t) {
-        return t & (MCT_Float | MCT_LWCType | MCT_UInt | MCT_ShadingModel);
-    }
-
-    // primitive 判定 = 数值 + bool（对照 UE IsPrimitiveType, MaterialShared.h:260）
-    static bool IsPrimitiveType(EValueType t) {
-        return t & (MCT_Float | MCT_LWCType | MCT_UInt | MCT_ShadingModel
-                  | MCT_Bool | MCT_StaticBool);
-    }
-
     // 算术结果类型（对照 UE .cpp:4221 结构：一条拦截 + 成立规则逐条筛 + 兜底）
+    // IsNumericType / IsPrimitiveType 在 Types.h（类型分类谓词，见上节）
     static EValueType GetArithmeticResultType(EValueType a, EValueType b) {
         if (!IsPrimitiveType(a) || !IsPrimitiveType(b)) return MCT_Unknown;
 
