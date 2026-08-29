@@ -100,13 +100,16 @@ enum EValueType : uint64_t {
     MCT_Texture2D   = 1u << 4,
     MCT_TextureCube = 1u << 5,
 
-    // 纹理变体——位值对齐 UE（散布在 bit 6/8/12/13，UE 的纹理位本来就不连续：
-    // bit 7=TextureCubeArray、bit 9=StaticBool、bit 10=Unknown（UE 的 Unknown 位，
-    // 教学版 MCT_Unknown 用 0）教学版均未引入，bit 11=MaterialAttributes 在下面引入）
-    MCT_Texture2DArray  = 1u << 6,   // 贴图数组：uv + layer 索引采样
-    MCT_VolumeTexture   = 1u << 8,   // 3D 纹理：uvw 采样（体积雾等）——UE 原名即 VolumeTexture
-    MCT_TextureExternal = 1u << 12,  // 外部纹理（视频帧直采）
-    MCT_TextureVirtual  = 1u << 13,  // 虚拟纹理（分页流式，页表间接采样）
+    // 纹理变体——位值对齐 UE（散布在 bit 6-15，UE 的纹理位本来就不连续：
+    // bit 10=Unknown 是 UE 的 Unknown 位，教学版 MCT_Unknown 用 0，不引入该位）
+    MCT_Texture2DArray       = 1u << 6,   // 贴图数组：uv + layer 索引采样
+    MCT_TextureCubeArray     = 1u << 7,   // 立方体贴图数组
+    MCT_VolumeTexture        = 1u << 8,   // 3D 纹理：uvw 采样（体积雾等）——UE 原名即 VolumeTexture
+    MCT_StaticBool           = 1u << 9,   // 静态开关（变体选择）
+    MCT_TextureExternal      = 1u << 12,  // 外部纹理（视频帧直采）
+    MCT_TextureVirtual       = 1u << 13,  // 虚拟纹理（分页流式，页表间接采样）
+    MCT_SparseVolumeTexture  = 1u << 14,  // 稀疏体积纹理
+    MCT_VTPageTableResult    = 1u << 15,  // VT 页表查询结果（编译器内部类型，不暴露给用户）
 
     // 打包/模型类型——位值对齐 UE（bit 11/16/17）
     MCT_MaterialAttributes = 1u << 11,  // 材质属性打包值（一个 struct 流动）
@@ -120,18 +123,29 @@ enum EValueType : uint64_t {
     MCT_LWCVector2 = 1u << 19,   // 双精度二维（大世界 UV/平面坐标）
     MCT_LWCVector3 = 1u << 20,   // 双精度三维（WorldPosition 在大世界下的类型）
     MCT_LWCVector4 = 1u << 21,   // 双精度四维
+    MCT_Execution  = 1u << 22,   // 执行流引脚（静态开关分支接线）
+    MCT_Bool       = 1u << 24,   // 动态 bool
     MCT_LWCMatrix  = 1ull << 34, // 双精度矩阵（大世界变换）
+
+    // 无符号整数——位值对齐 UE（bit 25-28）
+    MCT_UInt1 = 1u << 25,
+    MCT_UInt2 = 1u << 26,
+    MCT_UInt3 = 1u << 27,
+    MCT_UInt4 = 1u << 28,
 
     // 矩阵——位值对齐 UE（bit 32/33，UE 用 1ull 因为超过 32 位）
     MCT_Float3x3 = 1ull << 32,
     MCT_Float4x4 = 1ull << 33,
+    MCT_Unexposed = 1ull << 36,  // 编译器内部类型（不暴露给用户）
 
     // ===== 类别掩码（多个位的或，用于"是不是某类"的集合判断）=====
     MCT_Float   = MCT_Float1 | MCT_Float2 | MCT_Float3 | MCT_Float4,   // 任意 float 向量
     MCT_LWCType = MCT_LWCScalar | MCT_LWCVector2 | MCT_LWCVector3 | MCT_LWCVector4,  // 任意 LWC 值（UE 同名掩码）
-    MCT_Numeric = MCT_Float | MCT_LWCType,   // 任意数值（UE 同名掩码：算术/局部变量判定用它，LWC 一并放行）
-    MCT_Texture = MCT_Texture2D | MCT_TextureCube | MCT_Texture2DArray
-                | MCT_VolumeTexture | MCT_TextureExternal | MCT_TextureVirtual,  // 任意纹理
+    MCT_UInt    = MCT_UInt1 | MCT_UInt2 | MCT_UInt3 | MCT_UInt4,   // 任意无符号整数（UE 同名掩码）
+    MCT_Numeric = MCT_Float | MCT_LWCType | MCT_UInt,   // 任意数值（UE 同名掩码；UE 的 Numeric 还含 Bool，教学版 Bool 单独判）
+    MCT_Texture = MCT_Texture2D | MCT_TextureCube | MCT_Texture2DArray | MCT_TextureCubeArray
+                | MCT_VolumeTexture | MCT_TextureExternal | MCT_TextureVirtual
+                | MCT_SparseVolumeTexture,  // 任意纹理（UE 掩码成员；VTPageTableResult 是内部类型不进掩码）
     // 打包值三件套（MaterialAttributes/ShadingModel/Substrate）不能算术、只走专门节点，
     // UE 也没有给它们统一掩码——用 == 单值判断，同款
 };
@@ -150,16 +164,25 @@ enum EValueType : uint64_t {
 | `MCT_Texture2D` | 2D 纹理对象 | TextureSample 的输入，**不能算术** |
 | `MCT_TextureCube` | 立方体纹理 | 环境贴图反射采样 |
 | `MCT_Texture2DArray` | 贴图数组 | uv + layer 索引采样；DX12 SRV 用 `TEXTURE2DARRAY` 维度 |
+| `MCT_TextureCubeArray` | 立方体贴图数组 | cube 的数组：方向 + layer 采样；SRV `TEXTURECUBEARRAY` |
 | `MCT_VolumeTexture` | 3D 纹理 | uvw 三维采样（体积雾/3D 数据）；SRV `TEXTURE3D` |
+| `MCT_StaticBool` | 静态开关 bool | StaticSwitch 的接线类型；值编译期定（变体内）——课 20 StaticSwitch 消费 |
 | `MCT_TextureExternal` | 外部纹理 | 视频帧采样；`ToHLSLType` 返回 `"TextureExternal"`（UE `.cpp:3172` 同名），采样走外部纹理绑定路径（UniformExternalTextureExpressions 表 + 采样时 UV 变换，课 14）|
 | `MCT_TextureVirtual` | 虚拟纹理 | 分页流式；采样生成**页表二次采样**代码——`VirtualTexturePhysical_N` 物理图块 + 页表查询（对照 UE `.cpp:7220-7262` 的 VT 分支），`NumVtSamples` 计数 + `NUM_VIRTUALTEXTURE_SAMPLES` 环境定义（`.cpp:2349`），课 14 |
+| `MCT_SparseVolumeTexture` | 稀疏体积纹理 | SVT：体素按需驻留；元数据查询走 UniformSVTUniform（课 14）|
+| `MCT_VTPageTableResult` | VT 页表查询结果 | 编译器内部类型（页表采样产生的中间值，不暴露给用户）|
 | `MCT_MaterialAttributes` | 材质属性打包值 | Make/Break 节点的输入输出；编译时展开成多个属性 chunk |
 | `MCT_ShadingModel` | shading model 值 | ShadingModel 节点输出（0=Unlit, 1=Lit）；决定 PS 光照分支 |
 | `MCT_Substrate` | Substrate BSDF 值 | Substrate BSDF 节点族输出；完整实现见课 20（组合树 + 课 17 GGX 求值）|
 | `MCT_LWCScalar/2/3/4` | 双精度坐标族 | 大世界 WorldPosition；算术走 WS 函数族，与 float 混算需显式转换（TruncateLWC/ToLWC）|
+| `MCT_Execution` | 执行流引脚 | StaticSwitch 的执行流接线（哪条分支在跑）；连线检查里 exec 只连 exec（UE `CanConnectMaterialValueTypes` 首规则）|
+| `MCT_Bool` | 动态 bool | 运行期 bool 值（If 节点条件）；`MCT_Bool` 可连 `MCT_StaticBool` 引脚，反向不行（UE 单向规则）|
 | `MCT_LWCMatrix` | 双精度矩阵 | 大世界变换矩阵 |
+| `MCT_UInt1-4` | 无符号整数族 | 位操作/VT 页表坐标/整数参数；`ToHLSLType` 返回 `uint/uint2/3/4` |
+| `MCT_Unexposed` | 编译器内部类型 | 不暴露给用户的中间值（如 VT 页表 uniform 的声明类型）|
 | `MCT_LWCType`（掩码）| LWC 集合 | UE 同名掩码 |
-| `MCT_Numeric`（掩码）| float+LWC 全数值集合 | 算术/局部变量判定（替代原「只查 MCT_Float」的写法，UE 同款）|
+| `MCT_UInt`（掩码）| 无符号整数集合 | UE 同名掩码 |
+| `MCT_Numeric`（掩码）| float+LWC+UInt 全数值集合 | 算术/局部变量判定（替代原「只查 MCT_Float」的写法，UE 同款；UE 的 Numeric 还含 Bool）|
 | `MCT_Float`（掩码）| "任意 float 向量"集合 | `Type & MCT_Float` 判断能否声明局部变量、能否算术 |
 | `MCT_Texture`（掩码）| "任意纹理"集合 | `Type & MCT_Texture` 判断是否对象类型 |
 
@@ -208,12 +231,13 @@ UE 源文件头两个类型的注释里藏着两条规则：
 // LWC 族与 float 族同分量数（LWCScalar=1 ... LWCVector4=4）
 inline int GetComponentCount(EValueType t) {
     switch (t) {
-        case MCT_Float: case MCT_Float1: case MCT_LWCScalar: return 1;
-        case MCT_Float2: case MCT_LWCVector2: return 2;
-        case MCT_Float3: case MCT_LWCVector3: return 3;
-        case MCT_Float4: case MCT_LWCVector4: return 4;
-        default: return 0;   // Matrix/LWCMatrix/Texture/MaterialAttributes/ShadingModel/Substrate/Unknown
-                            // 及掩码组合不走分量逻辑（打包值无分量概念，UE 同款）
+        case MCT_Float: case MCT_Float1: case MCT_LWCScalar:
+        case MCT_UInt1: case MCT_Bool: case MCT_StaticBool: return 1;
+        case MCT_Float2: case MCT_LWCVector2: case MCT_UInt2: return 2;
+        case MCT_Float3: case MCT_LWCVector3: case MCT_UInt3: return 3;
+        case MCT_Float4: case MCT_LWCVector4: case MCT_UInt4: return 4;
+        default: return 0;   // Matrix/LWCMatrix/Texture/Execution/MaterialAttributes/ShadingModel/
+                            // Substrate/Unexposed/Unknown 及掩码组合不走分量逻辑（UE 同款）
     }
 }
 ```
@@ -284,13 +308,21 @@ public:
             case MCT_LWCMatrix:  return "double4x4";
             case MCT_Float3x3: return "float3x3";
             case MCT_Float4x4: return "float4x4";
+            // 无符号整数 + bool
+            case MCT_UInt1: return "uint";
+            case MCT_UInt2: return "uint2";
+            case MCT_UInt3: return "uint3";
+            case MCT_UInt4: return "uint4";
+            case MCT_Bool: return "bool";
             // 纹理声明类型（对照 UE .cpp:3141-3223 的类型名表）
             case MCT_Texture2D:      return "Texture2D";
             case MCT_TextureCube:    return "TextureCube";
             case MCT_Texture2DArray: return "Texture2DArray";
+            case MCT_TextureCubeArray: return "TextureCubeArray";
             case MCT_VolumeTexture:  return "Texture3D";
             case MCT_TextureExternal: return "TextureExternal";
             case MCT_TextureVirtual:  return "TextureVirtual";
+            case MCT_SparseVolumeTexture: return "SparseVolumeTexture";
             // 打包/模型类型（对照 UE：FSubstrateData 见 .cpp:3182）
             case MCT_MaterialAttributes: return "FMaterialAttributes";
             case MCT_ShadingModel:       return "uint";      // 枚举当整数流动（UE 同款语义）
@@ -306,14 +338,25 @@ public:
             case MCT_Float2:   return "Float2";
             case MCT_Float3:   return "Float3";
             case MCT_Float4:   return "Float4";
+            case MCT_UInt1: return "UInt1";
+            case MCT_UInt2: return "UInt2";
+            case MCT_UInt3: return "UInt3";
+            case MCT_UInt4: return "UInt4";
+            case MCT_Bool: return "Bool";
+            case MCT_StaticBool: return "StaticBool";
+            case MCT_Execution: return "Execution";
             case MCT_Float3x3: return "Float3x3";
             case MCT_Float4x4: return "Float4x4";
             case MCT_Texture2D:      return "Texture2D";
             case MCT_TextureCube:    return "TextureCube";
             case MCT_Texture2DArray: return "Texture2DArray";
+            case MCT_TextureCubeArray: return "TextureCubeArray";
             case MCT_VolumeTexture:  return "VolumeTexture";
             case MCT_TextureExternal:return "TextureExternal";
             case MCT_TextureVirtual: return "TextureVirtual";
+            case MCT_SparseVolumeTexture: return "SparseVolumeTexture";
+            case MCT_VTPageTableResult: return "VTPageTableResult";
+            case MCT_Unexposed: return "Unexposed";
             case MCT_MaterialAttributes: return "MaterialAttributes";
             case MCT_ShadingModel:       return "ShadingModel";
             case MCT_Substrate:          return "Substrate";
