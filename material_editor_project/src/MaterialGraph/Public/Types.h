@@ -70,28 +70,62 @@ enum EValueType : uint64_t
 
 };
 
-// 类型是否可以隐式转换（如从float1->floatN）
+// 类型是否可以隐式转换
 inline bool CanImplicitConvert(EValueType from, EValueType to)
 {
-    if (from == to)
+    // 流只能和流
+    if(from&MCT_Execution && to&MCT_Execution){
+        return from == to;
+    }
+    // 未知放行
+    if(from&MCT_Unknown){
         return true;
-
-    static const std::pair<EValueType, EValueType> rules[] = {
-        {MCT_Float1, MCT_Float2},
-        {MCT_Float1, MCT_Float3},
-        {MCT_Float1, MCT_Float4},
-    };
-    for (auto &[f, t] : rules)
-    {
-        if (from == f && to == t)
-            return true;
+    }
+    if(to&MCT_Unknown){
+        return true;
+    }
+    // 同族放行
+    if(from&to){
+        return true;
+    }
+    // 数值放宽(float2 -> float3)
+    if(from&MCT_Numeric && to&MCT_Numeric){
+        return true;
+    }
+    if(from == MCT_Bool && to == MCT_StaticBool){
+        return true;
     }
     return false;
 }
 
-// 获取类型的分量数（纯查询，与编译器/HLSL 无关）
-// 注意 MCT_Float 返回 1——UE GetNumComponents 同样把 MCT_Float 当标量处理
-// LWC 族与 float 族同分量数；掩码/矩阵/纹理/打包值返回 0（掩码问"分量数"没有意义）
+// 能否算术运算
+inline bool IsNumericType(EValueType t){
+    return t & (MCT_Float|MCT_LWCType|MCT_UInt|MCT_ShadingModel);
+}
+
+// 能否运算
+inline bool IsPrimitiveType(EValueType t){
+    return t & (MCT_Float|MCT_LWCType|MCT_UInt|MCT_ShadingModel|MCT_Bool|MCT_StaticBool);
+}
+
+// float/lwc 族
+inline bool IsFloatNumericType(EValueType t){
+    return t & (MCT_Float|MCT_LWCType);
+}
+
+// float->LWC
+inline EValueType ToLWCType(EValueType f){
+    switch(f){
+        case MCT_Float:case MCT_Float1: return MCT_LWCScalar;
+        case MCT_Float2: return MCT_LWCVector2;
+        case MCT_Float3: return MCT_LWCVector3;
+        case MCT_Float4: return MCT_LWCVector4;
+        default: return f;
+    }
+}
+
+
+// 获取类型的分量数
 inline int GetComponentCount(const EValueType& t){
     switch(t){
         case MCT_Float: case MCT_Float1: case MCT_LWCScalar:
@@ -103,6 +137,42 @@ inline int GetComponentCount(const EValueType& t){
     }
 }
 
-// 注：类型 → HLSL 字符串的映射原本也在这里（ValueTypeToString），
-// 但 HLSL 是编译器概念，违反"Types.h 零编译器知识"原则。
-// 已移到 Compiler/Public/TypeSystem.h::ToHLSLType()，由编译器独占。
+
+// 类型可读名（报错信息用；对照 UE DescribeType）
+inline const char* DescribeType(EValueType type){
+    switch (type)
+    {
+    case MCT_Float: case MCT_Float1: return "Float";
+    case MCT_Float2:   return "Float2";
+    case MCT_Float3:   return "Float3";
+    case MCT_Float4:   return "Float4";
+    case MCT_LWCScalar:  return "LWCScalar";
+    case MCT_LWCVector2: return "LWCVector2";
+    case MCT_LWCVector3: return "LWCVector3";
+    case MCT_LWCVector4: return "LWCVector4";
+    case MCT_LWCMatrix:  return "LWCMatrix";
+    case MCT_Float3x3: return "Float3x3";
+    case MCT_Float4x4: return "Float4x4";
+    case MCT_UInt1: return "UInt1";
+    case MCT_UInt2: return "UInt2";
+    case MCT_UInt3: return "UInt3";
+    case MCT_UInt4: return "UInt4";
+    case MCT_Bool: return "Bool";
+    case MCT_StaticBool: return "StaticBool";
+    case MCT_Execution: return "Execution";
+    case MCT_Texture2D:      return "Texture2D";
+    case MCT_TextureCube:    return "TextureCube";
+    case MCT_Texture2DArray: return "Texture2DArray";
+    case MCT_TextureCubeArray: return "TextureCubeArray";
+    case MCT_VolumeTexture:  return "VolumeTexture";
+    case MCT_TextureExternal:return "TextureExternal";
+    case MCT_TextureVirtual: return "TextureVirtual";
+    case MCT_SparseVolumeTexture: return "SparseVolumeTexture";
+    case MCT_VTPageTableResult: return "VTPageTableResult";
+    case MCT_Unexposed: return "Unexposed";
+    case MCT_MaterialAttributes: return "MaterialAttributes";
+    case MCT_ShadingModel:       return "ShadingModel";
+    case MCT_Substrate:          return "Substrate";
+    default: return "Unknown";
+    }
+}
