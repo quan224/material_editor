@@ -432,7 +432,9 @@ static_assert(sizeof(Vec4) == 4 * sizeof(float), "Vec4 must be tightly packed fl
 struct MaterialRenderContext {};
 
 // 表达式树基类。对照 FMaterialUniformExpression（MaterialUniformExpressions.h:56）
-class UniformExpression : public RefCounted {
+// UE 继承 FRefCountedObject（侵入式计数）；教学版用 Ref<> = shared_ptr（非侵入式），
+// 不继承任何基类，生命周期全靠 Ref 管理——语义等价
+class UniformExpression {
 public:
     // 这棵子树是否编译期常量（整棵子树无参数节点才为真）。
     // 基类默认 false——只有 Constant 叶子/Folded 递归判定才返回 true。
@@ -530,7 +532,7 @@ enum class EFoldedMathOp : uint8_t {
 //   IsIdentical = A/B/Op/ValueType 四者递归相等（.h:1138-1146）
 class UniformFoldedMath : public UniformExpression {
 public:
-    UniformFoldedMath(UniformExpression* a, UniformExpression* b,
+    UniformFoldedMath(const Ref<UniformExpression>& a, const Ref<UniformExpression>& b,
                       EFoldedMathOp op, EValueType type)
         : a_(a), b_(b), op_(op), type_(type) {}
 
@@ -589,7 +591,7 @@ UE 为每个一元运算**单独建类**。教学版同构实现**全部一元�
 // 一元模板（全部类同构，列两个代表，其余照抄换函数）
 class UniformNeg : public UniformExpression {
 public:
-    UniformNeg(UniformExpression* x) : x_(x) {}
+    UniformNeg(const Ref<UniformExpression>& x) : x_(x) {}
     bool IsConstant() const override { return x_->IsConstant(); }
     bool IsIdentical(const UniformExpression* other) const override {
         auto* o = dynamic_cast<const UniformNeg*>(other);
@@ -607,8 +609,8 @@ private:
 // 二元一元混合示例：TrigMath 的 atan2（ETrigMathOperation 对照 UE .h:636 七值枚举）
 class UniformTrigMath : public UniformExpression {
 public:
-    UniformTrigMath(UniformExpression* x, int op) : x_(x), op_(op) {}          // 一元六种
-    UniformTrigMath(UniformExpression* y, UniformExpression* x, int op)        // TMO_Atan2
+    UniformTrigMath(const Ref<UniformExpression>& x, int op) : x_(x), op_(op) {}          // 一元六种
+    UniformTrigMath(const Ref<UniformExpression>& y, const Ref<UniformExpression>& x, int op)        // TMO_Atan2
         : x_(x), y_(y), op_(op) {}
     bool IsConstant() const override {
         return x_->IsConstant() && (!y_ || y_->IsConstant());
@@ -1081,31 +1083,28 @@ int32_t HLSLTranslator::AddInlinedCodeChunk(EValueType type, const std::string& 
 ```cpp
 // 表达式块。对照 UE AddUniformExpressionInner 的两层 IsIdentical 去重：
 //  第一层（.cpp:3646-3673）：扫材质级 UniformExpressions 表，IsIdentical 命中 →
-//    若当前 chunks 里已有同表达式的块 → 直接复用那个块（delete 新表达式）
+//    若当前 chunks 里已有同表达式的块 → 直接复用那个块（丢弃新表达式）
 //  第二层（.cpp:3709-3719）：没命中 → 新块 + 表达式登记进材质级表
 //
 // ★ 所有权契约：调用方 new 出裸指针传入 = 所有权转移给本函数。
 //   三条出口：①第一层命中 → delete（丢弃新树）；②第二层命中 → delete（复用登记树）；
 //   ③没命中 → 被新 chunk 的 Ref 接管。任何路径都不泄漏、不双删。
-int32_t HLSLTranslator::AddUniformExpression(UniformExpression* expr,
+int32_t HLSLTranslator::AddUniformExpression(Ref<UniformExpression> expr,
                                              EValueType type,
                                              const std::string& code) {
-    if (type == MCT_Unknown) { delete expr; return -1; }
+    if (type == MCT_Unknown) { return -1; }   // expr 是 shared_ptr，直接丢弃即释放
 
     // 第一层：材质级表达式表 + chunk 级复用
     for (int32_t i = 0; i < (int32_t)chunks_.size(); ++i) {
         UniformExpression* existing = chunks_[i].uniform_expression.get();
-        if (existing && existing->IsIdentical(expr)) {
-            delete expr;              // UE .cpp:3662：语义相同 → 丢弃新树，复用旧块
-            return i;
+        if (existing && existing->IsIdentical(expr.get())) {
+            return i;              // UE .cpp:3662：语义相同 → 丢弃新树，复用旧块（shared_ptr 离开作用域自动释放）
         }
     }
     for (const auto& registered : uniform_expressions_) {
-        if (registered->IsIdentical(expr)) {
-            // 材质级已有此表达式（chunk 在别的属性下）——复用登记树，仍建新块。
-            // 原 new 的树作废，必须 delete（否则泄漏——裸指针没人接管了）
-            delete expr;
-            expr = registered.get();
+        if (registered->IsIdentical(expr.get())) {
+            // 材质级已有此表达式（chunk 在别的属性下）——复用登记树，仍建新块
+            expr = registered;
             break;
         }
     }
@@ -1115,7 +1114,7 @@ int32_t HLSLTranslator::AddUniformExpression(UniformExpression* expr,
     chunk.code = code;                          // 表达式块：code 直接嵌（无 SymbolName）
     chunk.type = type;
     chunk.is_inline = false;                    // UE 带表达式构造 bInline=false
-    chunk.uniform_expression = expr;            // 挂树（chunk 持引用；若是登记树，两处 Ref 共享，计数保命）
+    chunk.uniform_expression = expr;            // 挂树（chunk 的 Ref 与登记表共享计数）
     chunks_.push_back(chunk);
     int32_t index = (int32_t)chunks_.size() - 1;
 
@@ -1136,7 +1135,7 @@ int32_t HLSLTranslator::AddUniformExpression(UniformExpression* expr,
 ```cpp
 // 折叠出的常量 → 常量块（对照 UE ConstResultValue：new FMaterialUniformExpressionConstant + AddUniformExpression）
 int32_t HLSLTranslator::ConstResultValue(EValueType type, const Vec4& value) {
-    return AddUniformExpression(new UniformConstant(value, type), type,
+    return AddUniformExpression(MakeRef<UniformConstant>(value, type), type,
                                 FormatConstantCode(type, value));
 }
 
@@ -1210,19 +1209,19 @@ UE 的 `Constant` 一行建 `FMaterialUniformExpressionConstant`（`FLinearColor
 ```cpp
 int32_t HLSLTranslator::Constant(float v) {
     // UE .cpp:5214：FLinearColor(X,X,X,X)——标量也填满 4 分量，类型标签 MCT_Float
-    return AddUniformExpression(new UniformConstant(Vec4(v, v, v, v), MCT_Float),
+    return AddUniformExpression(MakeRef<UniformConstant>(Vec4(v, v, v, v), MCT_Float),
                                 MCT_Float, FormatConstantCode(MCT_Float, Vec4(v,v,v,v)));
 }
 int32_t HLSLTranslator::Constant2(float x, float y) {
-    return AddUniformExpression(new UniformConstant(Vec4(x, y, 0, 0), MCT_Float2),
+    return AddUniformExpression(MakeRef<UniformConstant>(Vec4(x, y, 0, 0), MCT_Float2),
                                 MCT_Float2, FormatConstantCode(MCT_Float2, Vec4(x,y,0,0)));
 }
 int32_t HLSLTranslator::Constant3(float x, float y, float z) {
-    return AddUniformExpression(new UniformConstant(Vec4(x, y, z, 0), MCT_Float3),
+    return AddUniformExpression(MakeRef<UniformConstant>(Vec4(x, y, z, 0), MCT_Float3),
                                 MCT_Float3, FormatConstantCode(MCT_Float3, Vec4(x,y,z,0)));
 }
 int32_t HLSLTranslator::Constant4(float x, float y, float z, float w) {
-    return AddUniformExpression(new UniformConstant(Vec4(x, y, z, w), MCT_Float4),
+    return AddUniformExpression(MakeRef<UniformConstant>(Vec4(x, y, z, w), MCT_Float4),
                                 MCT_Float4, FormatConstantCode(MCT_Float4, Vec4(x,y,z,w)));
 }
 ```
@@ -1256,11 +1255,11 @@ int32_t HLSLTranslator::Add(int32_t a, int32_t b) {
     }
 
     // 段 2：表达式轨道（UE .cpp:9491-9498：两边都有表达式 → 一律建树，求值推迟）
-    UniformExpression* ea = GetParameterUniformExpression(a);
-    UniformExpression* eb = GetParameterUniformExpression(b);
+    const Ref<UniformExpression>& ea = chunks_[a].uniform_expression;
+    const Ref<UniformExpression>& eb = chunks_[b].uniform_expression;
     if (ea && eb) {
         return AddUniformExpression(
-            new UniformFoldedMath(ea, eb, EFoldedMathOp::Add, resultType),
+            MakeRef<UniformFoldedMath>(ea, eb, EFoldedMathOp::Add, resultType),
             resultType,
             "(" + GetParameterCode(a) + " + " + GetParameterCode(b) + ")");
     }
@@ -1295,8 +1294,8 @@ int32_t HLSLTranslator::Multiply(int32_t a, int32_t b) {
     if (IsExpressionConstantValue(a, 1.0f)) return PromoteToType(b, resultType);
 
     // === 表达式三轨（UE .cpp:9616-9632）===
-    UniformExpression* ea = GetParameterUniformExpression(a);
-    UniformExpression* eb = GetParameterUniformExpression(b);
+    const Ref<UniformExpression>& ea = chunks_[a].uniform_expression;
+    const Ref<UniformExpression>& eb = chunks_[b].uniform_expression;
     if (ea && eb) {
         if (ea->IsConstant() && eb->IsConstant()) {
             MaterialRenderContext ctx;
@@ -1305,7 +1304,7 @@ int32_t HLSLTranslator::Multiply(int32_t a, int32_t b) {
             return ConstResultValue(resultType, va * vb);   // UE .cpp:9626：ValueA * ValueB
         }
         return AddUniformExpression(
-            new UniformFoldedMath(ea, eb, EFoldedMathOp::Mul, resultType), resultType,
+            MakeRef<UniformFoldedMath>(ea, eb, EFoldedMathOp::Mul, resultType), resultType,
             "(" + GetParameterCode(a) + " * " + GetParameterCode(b) + ")");
     }
     return AddInlinedCodeChunk(resultType,
@@ -1344,8 +1343,8 @@ int32_t HLSLTranslator::Divide(int32_t a, int32_t b) {
     if (IsExpressionConstantValue(b, 1.0f))
         return PromoteToType(a, resultType);
 
-    UniformExpression* ea = GetParameterUniformExpression(a);
-    UniformExpression* eb = GetParameterUniformExpression(b);
+    const Ref<UniformExpression>& ea = chunks_[a].uniform_expression;
+    const Ref<UniformExpression>& eb = chunks_[b].uniform_expression;
     if (ea && eb) {
         // 除零：UE 不折（.cpp:9675 注释"hlsl compiler does not like inf"）——
         // 跳过立即折叠、落到建树分支，但先记 Warning（错误进 errors_ 列表，课 19 UI 才能高亮）。
@@ -1364,7 +1363,7 @@ int32_t HLSLTranslator::Divide(int32_t a, int32_t b) {
             return ConstResultValue(resultType, va / vb);
         }
         return AddUniformExpression(
-            new UniformFoldedMath(ea, eb, EFoldedMathOp::Div, resultType), resultType,
+            MakeRef<UniformFoldedMath>(ea, eb, EFoldedMathOp::Div, resultType), resultType,
             "(" + GetParameterCode(a) + " / " + GetParameterCode(b) + ")");
     }
 
@@ -1373,7 +1372,7 @@ int32_t HLSLTranslator::Divide(int32_t a, int32_t b) {
     // "Division is often optimized as multiplication by reciprocal"（UE 注释原话）
     if (eb && !eb->IsConstant()) {
         int32_t rcpB = AddUniformExpression(
-            new UniformRcp(eb), GetType(b),
+            MakeRef<UniformRcp>(eb), GetType(b),
             "rcp(" + GetParameterCode(b) + ")");
         return Multiply(a, rcpB);
     }
