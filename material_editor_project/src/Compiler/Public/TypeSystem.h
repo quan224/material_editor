@@ -1,4 +1,5 @@
 #pragma once
+#include "Core/Public/Logger.h"
 #include "MaterialGraph/Public/Types.h"
 #include <cstdint>
 

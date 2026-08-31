@@ -77,7 +77,7 @@ inline bool CanImplicitConvert(EValueType from, EValueType to)
     if(from&MCT_Execution && to&MCT_Execution){
         return from == to;
     }
-    // 未知放行
+    // 未知放行（未知更多是还没连线）
     if(from&MCT_Unknown){
         return true;
     }
