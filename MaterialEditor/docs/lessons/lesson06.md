@@ -452,6 +452,17 @@ public:
     // DDC 存盘时写类型名字符串，读盘时按名 dispatch 重建树（课 20 ShaderCache 消费）。
     virtual const char* GetDescribeType() const { return "Unknown"; }
 
+    // 类型探测钩子（对照 UE .h:59-61 三件套）：基类返回 nullptr，对应子类 override 返回 this。
+    // UE 不用 dynamic_cast 是历史原因（UE3 时代禁 RTTI），教学版保留虚函数形式对齐结构。
+    // 消费方：TextureSample 编译时从树里提取贴图引用（课 14/20）。
+    virtual class UniformTexture* GetTextureUniformExpression() { return nullptr; }
+    virtual class UniformExternalTexture* GetExternalTextureUniformExpression() { return nullptr; }
+    virtual class UniformTextureCollection* GetTextureCollectionUniformExpression() { return nullptr; }
+
+    // 子节点遍历（对照 UE GetChildren, .h:73）：泛型遍历树的接口。
+    // 消费方：DDC 序列化遍历、树可视化调试、未引用表达式剔除（课 20）。
+    virtual std::vector<const UniformExpression*> GetChildren() const { return {}; }
+
     virtual ~UniformExpression() = default;
 };
 ```
@@ -464,6 +475,8 @@ public:
 | `IsIdentical(other)` | 同名（`.h:66`）| 语义去重 | `AddUniformExpression` 的第二层去重：相同表达式只建一个 chunk（多个材质属性共享）|
 | `GetNumberValue(ctx, out)` | 同名（`.h:70`）| CPU 端求值整棵树 | 立即折叠时算值；参数变化时运行时重求值（不重编译 shader，即 preshader 语义）|
 | `GetDescribeType()` | `GetType()` 的序列化用途 | DDC 树序列化的类型标签 | 课 20 `ShaderCache`：树 → JSON → 树 的往返重建 |
+| `GetTexture/ExternalTexture/TextureCollectionUniformExpression()` | 同名三件套（`.h:59-61`）| 类型探测：从树根问「里面是不是贴图/哪种贴图」| TextureSample 提取贴图索引（课 14）、贴图参数（课 20）|
+| `GetChildren()` | 同名（`.h:73`）| 泛型子节点遍历 | DDC 序列化、树调试可视化、剔除 pass（课 20）|
 
 **UE 基类成员的教学版对照**：
 
@@ -471,7 +484,8 @@ public:
 |---------|------|--------|
 | `GetType()` 返回 `FMaterialUniformExpressionType*`（手写 RTTI 注册表）| 类型分派的**运行时多态机制** | 分派用 `dynamic_cast`；序列化用途由 `GetDescribeType()` 字符串版承接 |
 | `WriteNumberOpcodes(FPreshaderData&)` | 把树编译成 preshader **字节码**（后序遍历写指令流）| ✅ 课 20 完整实现（`WriteOpcodes` + 栈式 VM `Evaluate`，与 `GetNumberValue` 双路径并存）|
-| `GetChildren()` | 暴露子节点数组（供遍历/序列化/剔除）| 序列化按子类字段直取（每个子类自己写 toJson/fromJson），无需统一遍历接口 |
+| `GetTexture/ExternalTexture/TextureCollectionUniformExpression()` 三件套 | 类型探测：外部问「这树里是不是贴图/哪种」| ✅ 基类同款三钩子（贴图族叶子 override 返回 this），TextureSample/贴图参数用 |
+| `GetChildren()` | 暴露子节点数组（供遍历/序列化/剔除）| ✅ 基类同款（返回 `vector<const UniformExpression*>`），DDC 遍历/树调试/剔除 pass 用 |
 | `UniformOffset` / `UniformIndex` / `ShaderFrequencyMask` | preshader 结果在 uniform buffer 里的布局 | 课 8 的 cbuffer 布局不需要按 UE 的对齐规则压缩 |
 
 ### 常量叶子：`UniformConstant`（对照 `FMaterialUniformExpressionConstant`，`.h:257-306`）
