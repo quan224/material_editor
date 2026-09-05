@@ -7,7 +7,7 @@
 class TypeSystem{
 public:
 
-    static EValueType GetArithmeticResultType(EValueType a, EValueType b){
+    static EMaterialValueType GetArithmeticResultType(EMaterialValueType a, EMaterialValueType b){
         if(!IsPrimitiveType(a) || !IsPrimitiveType(b)){
             ME_LOG_ERROR("Attempting to perform arithmetic on non-primitive types: %s %s",DescribeType(a), DescribeType(b));
             return MCT_Unknown;
@@ -17,8 +17,8 @@ public:
         }
 
         if (a&MCT_LWCType || b&MCT_LWCType){
-            EValueType al = ToLWCType(a);
-            EValueType bl = ToLWCType(b);
+            EMaterialValueType al = ToLWCType(a);
+            EMaterialValueType bl = ToLWCType(b);
             if (al == bl){
                 return al;
             }
@@ -42,7 +42,7 @@ public:
     }
 
     // 类型到 HLSL 类型名（对照 UE .cpp:3141-3223 的类型名表）
-    static const char* ToHLSLType(EValueType type){
+    static const char* ToHLSLType(EMaterialValueType type){
         switch (type)
         {
         case MCT_Float: case MCT_Float1: return "float";

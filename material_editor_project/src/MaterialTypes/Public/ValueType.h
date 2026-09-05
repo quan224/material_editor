@@ -12,7 +12,7 @@ enum class EPinDataDirection
 // 注意：故意用弱类型 enum（不带 class）——对齐 UE EMaterialValueType 的用法，
 // bitmask 成员（MCT_Float3 等）可以裸名直接用，写起来短；
 // 代价是无隐式 int 转换保护，但底层类型已显式锁定 uint64_t，位运算是安全的
-enum EValueType : uint64_t
+enum EMaterialValueType : uint64_t
 {
     MCT_Unknown = 0,
 
@@ -71,7 +71,7 @@ enum EValueType : uint64_t
 };
 
 // 类型是否可以隐式转换
-inline bool CanImplicitConvert(EValueType from, EValueType to)
+inline bool CanImplicitConvert(EMaterialValueType from, EMaterialValueType to)
 {
     // 流只能和流
     if(from&MCT_Execution && to&MCT_Execution){
@@ -99,22 +99,22 @@ inline bool CanImplicitConvert(EValueType from, EValueType to)
 }
 
 // 能否算术运算
-inline bool IsNumericType(EValueType t){
+inline bool IsNumericType(EMaterialValueType t){
     return t & (MCT_Float|MCT_LWCType|MCT_UInt|MCT_ShadingModel);
 }
 
 // 能否运算
-inline bool IsPrimitiveType(EValueType t){
+inline bool IsPrimitiveType(EMaterialValueType t){
     return t & (MCT_Float|MCT_LWCType|MCT_UInt|MCT_ShadingModel|MCT_Bool|MCT_StaticBool);
 }
 
 // float/lwc 族
-inline bool IsFloatNumericType(EValueType t){
+inline bool IsFloatNumericType(EMaterialValueType t){
     return t & (MCT_Float|MCT_LWCType);
 }
 
 // float->LWC
-inline EValueType ToLWCType(EValueType f){
+inline EMaterialValueType ToLWCType(EMaterialValueType f){
     switch(f){
         case MCT_Float:case MCT_Float1: return MCT_LWCScalar;
         case MCT_Float2: return MCT_LWCVector2;
@@ -126,7 +126,7 @@ inline EValueType ToLWCType(EValueType f){
 
 
 // 获取类型的分量数
-inline int GetComponentCount(const EValueType& t){
+inline int GetComponentCount(const EMaterialValueType& t){
     switch(t){
         case MCT_Float: case MCT_Float1: case MCT_LWCScalar:
         case MCT_UInt1: case MCT_Bool: case MCT_StaticBool: return 1;
@@ -139,7 +139,7 @@ inline int GetComponentCount(const EValueType& t){
 
 
 // 类型可读名（报错信息用；对照 UE DescribeType）
-inline const char* DescribeType(EValueType type){
+inline const char* DescribeType(EMaterialValueType type){
     switch (type)
     {
     case MCT_Float: case MCT_Float1: return "Float";

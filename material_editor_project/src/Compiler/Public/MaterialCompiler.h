@@ -66,25 +66,25 @@ public:
     int32_t TextureCoordinate();
     int32_t TextureSample(int32_t texture, int32_t coordinate);
     int32_t If(int32_t condition, int32_t true_val, int32_t false_val);
-    int32_t Cast(int32_t code, EValueType target_type);
+    int32_t Cast(int32_t code, EMaterialValueType target_type);
 
 
     // === 查询（常量值返回variant）===
     std::string GetParameterCode(int32_t index) const;
-    EValueType GetType(int32_t index) const;
+    EMaterialValueType GetType(int32_t index) const;
     bool IsConstant(int32_t index) const;
     ConstValue GetConstantValue(int32_t index) const;
 
 
 private:
-    int32_t AddCodeChunk(EValueType type, const std::string& code, bool is_inline = false);
-    int32_t AddInlineCodeChunk(EValueType type, const std::string& code);
-    int32_t AddConstantChunk(EValueType type, const ConstValue& value);
+    int32_t AddCodeChunk(EMaterialValueType type, const std::string& code, bool is_inline = false);
+    int32_t AddInlineCodeChunk(EMaterialValueType type, const std::string& code);
+    int32_t AddConstantChunk(EMaterialValueType type, const ConstValue& value);
     std::string FormatConstantCode(const ConstValue& value);
 
     // 接收variant
     std::string MakeSymbolName();
-    int32_t ParseDefaultValue(const nlohmann::json& default_value, EValueType type);
+    int32_t ParseDefaultValue(const nlohmann::json& default_value, EMaterialValueType type);
     std::vector<int32_t> CompileExpression(Node* node);
     std::string GenerateCode(const std::map<std::string, int32_t>& outputs);
 

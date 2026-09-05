@@ -18,7 +18,7 @@ public:
     struct PinTemplate
     {
         std::string name;
-        EValueType type;
+        EMaterialValueType type;
         EPinDataDirection direction;
         nlohmann::json defaultValue;
     };

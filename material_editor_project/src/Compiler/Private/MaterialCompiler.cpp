@@ -7,7 +7,7 @@ int32_t MaterialCompiler::Add(int32_t a, int32_t b){
         assert(false);
         return -1;
     }
-    EValueType result_type = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
+    EMaterialValueType result_type = TypeSystem::GetArithmeticResultType(GetType(a), GetType(b));
     if(IsConstant(a)||IsConstant(b)){
         auto folded = ConstFolding::FoldBinary("+", GetConstantValue(a), GetConstantValue(b));
         if (folded){
@@ -34,7 +34,7 @@ std::string MaterialCompiler::MakeSymbolName(){
 // 通用代码块: 产生真实指令的表达式用（函数调用、纹理采样、复杂算数）
 // 非内嵌时产生 “float3 Local0 = ...;” 声明；内嵌时不生命，直接嵌入使用处
 
-int32_t MaterialCompiler::AddCodeChunk(EValueType type, const std::string& code, bool is_inline){
+int32_t MaterialCompiler::AddCodeChunk(EMaterialValueType type, const std::string& code, bool is_inline){
     uint64_t hash = HashString(code);
     auto it = hash_to_chunk_.find(hash);
     if(it != hash_to_chunk_.end()) return it->second;
@@ -51,11 +51,11 @@ int32_t MaterialCompiler::AddCodeChunk(EValueType type, const std::string& code,
     return index;
 }
 
-int32_t MaterialCompiler::AddInlineCodeChunk(EValueType type, const std::string& code){
+int32_t MaterialCompiler::AddInlineCodeChunk(EMaterialValueType type, const std::string& code){
     return AddCodeChunk(type, code, /*is_inline*/true);
 }
 
-int32_t MaterialCompiler::AddConstantChunk(EValueType type, const ConstValue& value){
+int32_t MaterialCompiler::AddConstantChunk(EMaterialValueType type, const ConstValue& value){
     std::string const_code = FormatConstantCode(value);
     
     uint64_t hash = HashString("const_" + const_code);
@@ -109,7 +109,7 @@ std::string MaterialCompiler::GetParameterCode(int32_t index) const {
     }
     return chunks_[index].is_inline ? chunks_[index].code : chunks_[index].symbol_name;
 }
-EValueType MaterialCompiler::GetType(int32_t index)const {
+EMaterialValueType MaterialCompiler::GetType(int32_t index)const {
     if (index < 0 || index >= chunks_.size()) {
         ME_LOG_ERROR("GetType错误,index超出限制 %d", index);
         assert(false);

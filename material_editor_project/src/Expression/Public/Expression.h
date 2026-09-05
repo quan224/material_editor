@@ -14,7 +14,7 @@ class Node;  // 双参数 Compile 用到
 struct ExpressionPinDesc
 {
     std::string name;
-    EValueType type;
+    EMaterialValueType type;
     nlohmann::json default_value;
 };
 
