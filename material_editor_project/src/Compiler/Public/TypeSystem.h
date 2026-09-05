@@ -1,6 +1,6 @@
 #pragma once
 #include "Core/Public/Logger.h"
-#include "MaterialGraph/Public/Types.h"
+#include "MaterialTypes/Public/ValueType.h"
 #include <cstdint>
 
 

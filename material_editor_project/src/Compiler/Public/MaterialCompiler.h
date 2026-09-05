@@ -5,7 +5,7 @@
 #include "MaterialGraph/Public/Graph.h"
 #include "Compiler/Public/CodeChunk.h"
 #include "Compiler/Public/ConstantFolding.h"
-#include "MaterialGraph/Public/Types.h"
+#include "MaterialTypes/Public/ValueType.h"
 #include "Core/Public/Hash.h"
 #include "Compiler/Public/TypeSystem.h"
 #include "Compiler/Public/CompileError.h"

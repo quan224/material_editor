@@ -1,7 +1,7 @@
 #include <QApplication>
 #include "Expression/Public/Expression.h"
 #include "Reflection/Public/ReflectionMacros.h"
-#include "MaterialGraph/Public/Types.h"
+#include "MaterialTypes/Public/ValueType.h"
 #include "Core/Public/MathTypes.h"
 #include "Demos/ReflectionDemo/ReflectionDemoWidget.h"
 

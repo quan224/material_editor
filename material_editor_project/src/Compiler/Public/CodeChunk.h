@@ -1,5 +1,5 @@
 #pragma once
-#include "MaterialGraph/Public/Types.h"
+#include "MaterialTypes/Public/ValueType.h"
 #include "Core/Public/MathTypes.h"   // Vec2/3/4（constant_value variant 用）
 #include <string>
 #include <vector>

@@ -1,5 +1,5 @@
 #pragma once
-#include "MaterialGraph/Public/Types.h"
+#include "MaterialTypes/Public/ValueType.h"
 #include "Core/Public/UUID.h"
 #include <string>
 #include <vector>
