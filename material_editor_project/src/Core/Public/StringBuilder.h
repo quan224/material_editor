@@ -7,9 +7,9 @@
 
 // 栈缓冲字符串拼装机（对照 UE TStringBuilder<N>, Misc/StringBuilder.h）
 // 缓冲在对象内，未超容量前零堆分配；超容量退化到堆（对照 UE 的 ResizeToGrow）
-class StackStringBuilder {
+class FStringBuilderBase {
 public:
-    explicit StackStringBuilder(size_t capacity = 256)
+    explicit FStringBuilderBase(size_t capacity = 256)
         : capacity_(capacity) {
         if (capacity_ > FIXED_) {          // 大容量开堆
             heap_ = new char[capacity_];
@@ -20,12 +20,12 @@ public:
         data_[0] = '\0';
     }
 
-    ~StackStringBuilder() { delete[] heap_; }
+    ~FStringBuilderBase() { delete[] heap_; }
 
-    StackStringBuilder(const StackStringBuilder&) = delete;
-    StackStringBuilder& operator=(const StackStringBuilder&) = delete;
+    FStringBuilderBase(const FStringBuilderBase&) = delete;
+    FStringBuilderBase& operator=(const FStringBuilderBase&) = delete;
 
-    StackStringBuilder& Append(const char* s) {
+    FStringBuilderBase& Append(const char* s) {
         size_t n = std::strlen(s);
         Ensure(len_ + n + 1);
         std::memcpy(data_ + len_, s, n + 1);
@@ -33,16 +33,16 @@ public:
         return *this;
     }
 
-    StackStringBuilder& Append(char c) {
+    FStringBuilderBase& Append(char c) {
         Ensure(len_ + 2);
         data_[len_++] = c;
         data_[len_] = '\0';
         return *this;
     }
 
-    StackStringBuilder& Append(const std::string& s) { return Append(s.c_str()); }
+    FStringBuilderBase& Append(const std::string& s) { return Append(s.c_str()); }
 
-    StackStringBuilder& Appendf(const char* fmt, ...) {
+    FStringBuilderBase& Appendf(const char* fmt, ...) {
         va_list args;
         va_start(args, fmt);
         va_list copy;
@@ -59,7 +59,7 @@ public:
     }
 
     template<typename T>
-    StackStringBuilder& operator<<(const T& v) { return Append(v); }
+    FStringBuilderBase& operator<<(const T& v) { return Append(v); }
 
     const char* GetData() const { return data_; }
     size_t Len() const { return len_; }

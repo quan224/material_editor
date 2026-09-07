@@ -2,31 +2,38 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "Core/Public/StringBuilder.h"
 
 namespace shader{
 
-struct FType{
 
-    FType():value_type(EValueType::Void){}
-    FType(EValueType in_value_type): value_type(in_value_type){
-        // check( value_type != EValueType::Struct && value_type != EValuetype::Object);
-    }
-    FType(const FStructType* in_struct_type): struct_type(in_struct_type), value_type(struct_type? EValueType::Struct : EValueType::Void){}
-    FType(const std::string& in_object_type): object_name(in_object_type), value_type(object_name.empty()? EValueType::Void : EValueType::Object){}
+union FValueComponent{
+    FValueComponent():packed(0u){}
+    FValueComponent(double in_double):packed(0u){_double=in_double;}
+    FValueComponent(float in_float):packed(0u){_float=in_float;}
+    FValueComponent(int32_t in_int):packed(0u){_int=in_int;}
+    FValueComponent(bool in_bool):packed(0u){ in_bool?_bool=1u:_bool=0u; }
 
-    const char* GetName() const;
-    FType GetDerivativeType() const;
+    // 转回bool用
+    bool AsBool(){return _bool != 0u; }
 
-    bool IsVoid() const {return value_type == EValueType::Void;}
-    bool IsStruct() const {return value_type == EValueType::Struct;}
-    bool IsObject() const {return value_type == EValueType::Object;}
-    bool IsAny() const {return value_type == EValueType::Any;}
+    const char* ToString(EValueComponentType type, FStringBuilderBase& out_string) const;
 
-    
+    uint64_t packed;
+    double _double;
+    float _float;
+    int32_t _int;
+    uint8_t _bool;
+};
+static_assert(sizeof(FValueComponent) == sizeof(uint64_t), "bad packing");
 
-    const FStructType* struct_type = nullptr;
-    std::string object_name;
-    EValueType value_type;
+
+struct FValue{
+    FValue(){};
+
+    FType type;
+    std::vector<FValueComponent> componet;
+
 };
 
 struct FStructType{
@@ -52,7 +59,32 @@ struct FStructField{
 };
 
 
-enum class EValueComponentType : uint8
+struct FType{
+
+    FType():value_type(EValueType::Void){}
+    FType(EValueType in_value_type): value_type(in_value_type){
+        // check( value_type != EValueType::Struct && value_type != EValuetype::Object);
+    }
+    FType(const FStructType* in_struct_type): struct_type(in_struct_type), value_type(struct_type? EValueType::Struct : EValueType::Void){}
+    FType(const std::string& in_object_type): object_name(in_object_type), value_type(object_name.empty()? EValueType::Void : EValueType::Object){}
+
+    const char* GetName() const;
+    FType GetDerivativeType() const;
+
+    bool IsVoid() const {return value_type == EValueType::Void;}
+    bool IsStruct() const {return value_type == EValueType::Struct;}
+    bool IsObject() const {return value_type == EValueType::Object;}
+    bool IsAny() const {return value_type == EValueType::Any;}
+
+
+
+    const FStructType* struct_type = nullptr;
+    std::string object_name;
+    EValueType value_type;
+};
+
+
+enum class EValueComponentType : uint8_t
 {
 	Void,
 	Float,
@@ -62,7 +94,7 @@ enum class EValueComponentType : uint8
 
 	// May be any numeric type, stored internally as 'double' within FValue
 	Numeric,
-
+    // 当作length来用 EValueComponentType::Num == 6
 	Num,
 };
 
@@ -110,7 +142,7 @@ enum class EValueType : uint8_t{
 	Struct,
 	Object,
 	Any,
-
+    // 当作length来用 EValueComponentType::Num == 28
 	Num,
 };
 }
