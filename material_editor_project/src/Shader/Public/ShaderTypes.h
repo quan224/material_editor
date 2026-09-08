@@ -72,6 +72,9 @@ enum class EValueType : uint8_t{
 
 struct FStructType;   // 前置声明，FType 里用指针引用它
 
+// const FValueTypeDescription& GetValueTypeDescription(EValueType t);
+
+
 struct FType{
 
     FType():value_type(EValueType::Void){}
