@@ -81,44 +81,48 @@ struct FValueTypeDescription{
 };
 
 
-const FValueTypeDescription  GValueTypeDescriptions[]={
-	{ {"void"),			EValueType::Void,		EValueComponentType::Void,		0, 0 },
-	{ {"float"),		EValueType::Float1,		EValueComponentType::Float,		1, sizeof(float) },
-	{ {"float2"),		EValueType::Float2,		EValueComponentType::Float,		2, sizeof(float) },
-	{ {"float3"),		EValueType::Float3,		EValueComponentType::Float,		3, sizeof(float) },
-	{ {"float4"),		EValueType::Float4,		EValueComponentType::Float,		4, sizeof(float) },
-	{ {"FWSScalar"),	EValueType::Double1,	EValueComponentType::Double,	1, sizeof(double) },
-	{ {"FWSVector2"),	EValueType::Double2,	EValueComponentType::Double,	2, sizeof(double) },
-	{ {"FWSVector3"),	EValueType::Double3,	EValueComponentType::Double,	3, sizeof(double) },
-	{ {"FWSVector4"),	EValueType::Double4,	EValueComponentType::Double,	4, sizeof(double) },
-	{ {"int"),			EValueType::Int1,		EValueComponentType::Int,		1, sizeof(int32) },
-	{ {"int2"),			EValueType::Int2,		EValueComponentType::Int,		2, sizeof(int32) },
-	{ {"int3"),			EValueType::Int3,		EValueComponentType::Int,		3, sizeof(int32) },
-	{ {"int4"),			EValueType::Int4,		EValueComponentType::Int,		4, sizeof(int32) },
-	{ {"bool"),			EValueType::Bool1,		EValueComponentType::Bool,		1, 1 },
-	{ {"bool2"),		EValueType::Bool2,		EValueComponentType::Bool,		2, 1 },
-	{ {"bool3"),		EValueType::Bool3,		EValueComponentType::Bool,		3, 1 },
-	{ {"bool4"),		EValueType::Bool4,		EValueComponentType::Bool,		4, 1 },
-	{ {"Numeric1"),		EValueType::Numeric1,	EValueComponentType::Numeric,	1, sizeof(double) },
-	{ {"Numeric2"),		EValueType::Numeric2,	EValueComponentType::Numeric,	2, sizeof(double) },
-	{ {"Numeric3"),		EValueType::Numeric3,	EValueComponentType::Numeric,	3, sizeof(double) },
-	{ {"Numeric4"),		EValueType::Numeric4,	EValueComponentType::Numeric,	4, sizeof(double) },
-	{ {"float4x4"),		EValueType::Float4x4,	EValueComponentType::Float,		16, sizeof(float) },
-	{ {"FWSMatrix"),	EValueType::Double4x4,	EValueComponentType::Double,	16, sizeof(double) },
-	{ {"FWSInverseMatrix"), EValueType::DoubleInverse4x4, EValueComponentType::Double, 16, sizeof(double) },
-	{ {"Numeric4x4"),	EValueType::Numeric4x4, EValueComponentType::Numeric,	16, sizeof(double) },
-	{ {"struct"),		EValueType::Struct,		EValueComponentType::Void,		0, 0 },
-	{ {"object"),		EValueType::Object,		EValueComponentType::Void,		0, 0 },
-	{ {"Any"),			EValueType::Any,		EValueComponentType::Void,		0, 0 },
-	{ {"<INVALID>"),	EValueType::Num,		EValueComponentType::Void,		0, 0 },
+const FValueTypeDescription  GValueTypeDescriptions[]=
+{
+	{"void",			EValueType::Void,		EValueComponentType::Void,		0, 0 },
+	{"float",		EValueType::Float1,		EValueComponentType::Float,		1, sizeof(float) },
+	{"float2",		EValueType::Float2,		EValueComponentType::Float,		2, sizeof(float) },
+	{"float3",		EValueType::Float3,		EValueComponentType::Float,		3, sizeof(float) },
+	{"float4",		EValueType::Float4,		EValueComponentType::Float,		4, sizeof(float) },
+	{"FWSScalar",	EValueType::Double1,	EValueComponentType::Double,	1, sizeof(double) },
+	{"FWSVector2",	EValueType::Double2,	EValueComponentType::Double,	2, sizeof(double) },
+	{"FWSVector3",	EValueType::Double3,	EValueComponentType::Double,	3, sizeof(double) },
+	{"FWSVector4",	EValueType::Double4,	EValueComponentType::Double,	4, sizeof(double) },
+	{"int",			EValueType::Int1,		EValueComponentType::Int,		1, sizeof(int32_t) },
+	{"int2",			EValueType::Int2,		EValueComponentType::Int,		2, sizeof(int32_t) },
+	{"int3",			EValueType::Int3,		EValueComponentType::Int,		3, sizeof(int32_t) },
+	{"int4",			EValueType::Int4,		EValueComponentType::Int,		4, sizeof(int32_t) },
+	{"bool",			EValueType::Bool1,		EValueComponentType::Bool,		1, 1 },
+	{"bool2",		EValueType::Bool2,		EValueComponentType::Bool,		2, 1 },
+	{"bool3",		EValueType::Bool3,		EValueComponentType::Bool,		3, 1 },
+	{"bool4",		EValueType::Bool4,		EValueComponentType::Bool,		4, 1 },
+	{"Numeric1",		EValueType::Numeric1,	EValueComponentType::Numeric,	1, sizeof(double) },
+	{"Numeric2",		EValueType::Numeric2,	EValueComponentType::Numeric,	2, sizeof(double) },
+	{"Numeric3",		EValueType::Numeric3,	EValueComponentType::Numeric,	3, sizeof(double) },
+	{"Numeric4",		EValueType::Numeric4,	EValueComponentType::Numeric,	4, sizeof(double) },
+	{"float4x4",		EValueType::Float4x4,	EValueComponentType::Float,		16, sizeof(float) },
+	{"FWSMatrix",	EValueType::Double4x4,	EValueComponentType::Double,	16, sizeof(double) },
+	{"FWSInverseMatrix", EValueType::DoubleInverse4x4, EValueComponentType::Double, 16, sizeof(double) },
+	{"Numeric4x4",	EValueType::Numeric4x4, EValueComponentType::Numeric,	16, sizeof(double) },
+	{"struct",		EValueType::Struct,		EValueComponentType::Void,		0, 0 },
+	{"object",		EValueType::Object,		EValueComponentType::Void,		0, 0 },
+	{"Any",			EValueType::Any,		EValueComponentType::Void,		0, 0 },
+	{"<INVALID>",	EValueType::Num,		EValueComponentType::Void,		0, 0 },
 };
 
 static_assert(sizeof(GValueTypeDescriptions)/sizeof(GValueTypeDescriptions[0]) == (NumValueTypes+1), "Missing entry from shader value description table");
 
+const FValueTypeDescription& GetValueTypeDescription(EValueType t);
+
+inline bool IsNumericType(EValueComponentType t){return t!= EValueComponentType::Void;}
+inline bool IsNumericType(EValueType t){return IsNumericType(GetValueTypeDescription(t).comp_type);}
 
 
 struct FStructType;   // 前置声明，FType 里用指针引用它
-
 
 struct FType{
 
