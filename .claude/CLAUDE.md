@@ -155,7 +155,42 @@ L5 应用层            ← UI / Compiler / Renderer
 
 ### 编译器结构对齐 UE（课 6 教案，已定稿，不要推翻）
 设计细节（EValueType 改 bitmask 含 LWC/纹理变体/打包三件套 / UniformExpression 表达式树替代 variant / CodeChunk 与 FShaderCodeChunk 逐字段一一对应（含导数双轨/作用域三件套） / MaterialCompiler 抽象基类 + HLSLTranslator 实现的两层结构 / 三轨判定 / 双层去重 / PromoteToType 规则）**以 lesson06.md 为唯一权威来源**，此处不复述。
-**完整度**：不省略不简化任何 UE 内容，完整实现。
+**完整度（2026-09-12 用户终裁）**：
+
+**保留（完整实现）**：
+- 类型系统全套（EMaterialValueType 全部 31 位 + LWC + 谓词 + 推导 + CanImplicitConvert）
+- UniformExpression 树 45 子类对应物 + 双层去重 + 折叠
+- CodeChunk 全字段（含导数双轨字段、作用域字段）
+- 算子三轨判定（~20 个代表算子）
+- preshader 值体系（FType/FValue/运算函数族/字节码/VM，课 20）
+- 材质函数编译（函数栈 + 参数重定向，课 7）
+- 材质实例（参数覆盖 + 变体缓存，课 20）
+- 多属性编译循环（课 7）
+- 错误收集（带节点定位）+ 撤销重做（课 19）
+- 节点图交互全套：拖动/连线/缩放平移/删除/**多选框选**（课 12）
+- 属性面板（反射驱动）/调色板/代码预览
+- DX12 手动管线全套（设备/交换链/PSO/根签名/描述符/命令队列/围栏）
+- 纹理上传 + 全类型采样
+- **渲染全部**：延迟渲染 GBuffer 全套、阴影完整（CSM 级联）、IBL（split-sum LUT）、Bloom + DOF + Tonemap、**多线程渲染**（渲染线程）、3D 预览
+- JSON 保存/加载、HLSL 导出
+- DDC 本地缓存（树序列化 + 命中，课 20）
+- **LWC 求值链**（WSAdd/WSMul CPU 实现，课 20 补）
+- 贴图/模型加载（stb_image/Assimp）
+- Substrate 完整实现（组合树 + 课 17 GGX 求值接入，非桩）
+- Make/Break MaterialAttributes、ShadingModel 分支
+
+**省略（仅此清单）**：
+- 多平台分支矩阵（单平台 DX12）
+- 150 算子批量复制（~20 个代表已覆盖模板）
+- DerivativeAutogen 完整生成器 → 兜底：课 20 最简版（链式法则 + 核心算子导数表）
+- 搜索/收藏/节点文档浮窗
+- 实时预览缩略图
+- 材质实例/材质函数的**独立子编辑器窗口**（功能保留，不开单独窗口）
+- 快捷键完整体系/无障碍/本地化
+- RDG → 兜底：绕不开时 pass 列表 + 手动屏障最简框架
+- TAA（历史缓冲/运动矢量与架构纠缠深）
+- DDC 企业级（网络共享/分层/增量键）
+- 资产引用重定向/热重载
 
 ### 宏的命名规范
 - `ME_BEGIN_CLASS` / `ME_FIELD` / `ME_END_CLASS` / `ME_DISPLAY_NAME` / `ME_CATEGORY` / `ME_CATEGORY_COLOR`
