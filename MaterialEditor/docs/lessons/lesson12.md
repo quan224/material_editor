@@ -687,3 +687,9 @@ void MainWindow::SetupDockWidgets() {
 - [ ] Delete 键删除选中节点
 - [ ] 网格背景正确渲染
 - [ ] 类型不匹配时拒绝连线
+
+---
+
+## 待补（2026-09-12 终裁保留项，做本课前先补全教案）
+
+- 多选（Ctrl 点选 / Shift 加选 / 框选 rubber band）、批量删除、批量拖动

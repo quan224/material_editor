@@ -1246,3 +1246,10 @@ void MainWindow::OnCompile() {
 - [ ] 纹理参数配 sampler 测试：TextureParameter 自动注册 `NameSampler`
 - [ ] `StaticSwitchContext` 变体 key 一致性测试（`(A=true,B=false)` 和 `(B=false,A=true)` 同 key）
 - [ ] `MaterialResource::GetOrCompileVariant` 缓存命中测试 + 变体数上限保护
+
+---
+
+## 待补（2026-09-12 终裁保留项，做本课前先补全教案）
+
+- LWC 求值链：WSAdd/WSMul 等 double 运算的 CPU 求值实现（类型位已有，求值缺）
+- DerivativeAutogen 最简版（兜底条款）：链式法则 + 核心算子（Add/Mul/Sin）导数表
