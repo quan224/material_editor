@@ -117,9 +117,31 @@ const FValueTypeDescription  GValueTypeDescriptions[]=
 static_assert(sizeof(GValueTypeDescriptions)/sizeof(GValueTypeDescriptions[0]) == (NumValueTypes+1), "Missing entry from shader value description table");
 
 const FValueTypeDescription& GetValueTypeDescription(EValueType t);
-
+inline bool IsLWCType(EValueComponentType c_t) {return c_t == EValueComponentType::Double;}
+inline bool IsLWCType(EValueType t) {return IsLWCType(GetValueTypeDescription(t).comp_type);}
 inline bool IsNumericType(EValueComponentType t){return t!= EValueComponentType::Void;}
 inline bool IsNumericType(EValueType t){return IsNumericType(GetValueTypeDescription(t).comp_type);}
+inline bool IsGenericType(EValueComponentType c_t){return c_t == EValueComponentType::Numeric;}
+inline bool IsGenericType(EValueType t){return t == EValueType::Any || IsGenericType(GetValueTypeDescription(t).comp_type);}
+inline bool IsNumericScalarType(EValueType t){
+	FValueTypeDescription type_desc = GetValueTypeDescription(t);
+	return IsNumericType(type_desc.comp_type) && type_desc.num_components == 1;
+}
+inline bool IsNumericVectorType(EValueType t){
+	FValueTypeDescription type_desc = GetValueTypeDescription(t);
+	return IsNumericType(type_desc.comp_type) && type_desc.num_components <= 4;
+}
+inline bool IsNumericMatrixType(EValueType t){
+	FValueTypeDescription type_desc = GetValueTypeDescription(t);
+	return IsNumericType(type_desc.comp_type) && type_desc.num_components == 16;
+}
+
+inline EValueComponentType MakeNoneLWCType(EValueComponentType c_t){return c_t == EValueComponentType::Double? EValueComponentType::Float:c_t;}
+EValueType MakeNoneLWCType(EValueType t);
+inline EValueComponentType MakeConcreteType(EValueComponentType c_t){return c_t == EValueComponentType::Numeric? EValueComponentType::Float:c_t;}
+EValueType MakeConcreteType(EValueType t);
+
+
 
 
 struct FStructType;   // 前置声明，FType 里用指针引用它
@@ -136,13 +158,38 @@ struct FType{
 
     const char* GetName() const;
     FType GetDerivativeType() const;
-    int32_t GetNumComponents() const;
-
+	// 双精度变单精度
+	FType GetNonLWCType() const {return IsNumericLWC()? FType(MakeNoneLWCType(value_type)):*this;}
+	// 类型定性
+	FType GetConcreteType() const {return IsNumeric()? FType(MakeConcreteType(value_type)):*this;}
     bool IsVoid() const {return value_type == EValueType::Void;}
     bool IsStruct() const {return value_type == EValueType::Struct;}
     bool IsObject() const {return value_type == EValueType::Object;}
     bool IsAny() const {return value_type == EValueType::Any;}
+	// 是否是还没定型的数值
+	bool IsGeneric() const {return !IsStruct()&& !IsObject() && IsGenericType(value_type);}
+	// 是否是可运算类型
+	bool IsNumeric() const {return !IsStruct()&& !IsObject() && IsNumericType(value_type);}
+	// 是否是单值可运算
+	bool IsNumericScalar() const {return !IsStruct()&& !IsObject() && IsNumericScalarType(value_type);}
+	// 是否是向量可运算
+	bool IsNumericVector() const {return !IsStruct()&& !IsObject() && IsNumericVectorType(value_type);}
+	// 是否是矩阵可运算
+	bool IsNumericMatrix() const {return !IsStruct()&& !IsObject() && IsNumericMatrixType(value_type);}
+	// 是否是大世界精度可运算
+	bool IsNumericLWC() const {return IsNumeric()&& IsLWCType(value_type);}
 
+	// struct S { float3 A; Inner B; }    Inner { float X; float Y; }
+	// 返回 A.x, A.y, A.z, X, Y
+	int32_t GetNumComponents() const;
+	// 返回 A，X，Y
+	int32_t GetNumFlatFields() const;
+	EValueComponentType GetComponentType(int32_t index) const;
+	EValueType GetFlatFieldType(int32_t index) const;
+
+	inline operator EValueType()const {return value_type;}
+	inline operator bool() const {return !IsVoid();}
+	inline bool operator!() const {return IsVoid();}
 
     // value_type == EValueType::Struct 时生效，指向真正的结构类型
     const FStructType* struct_type = nullptr;
