@@ -199,6 +199,36 @@ struct FType{
     EValueType value_type;
 };
 
+inline bool operator==(const FType& l, const FType& r){
+	if (l.value_type != r.value_type) return false;
+	if (l.value_type==EValueType::Struct && r.value_type!=EValueType::Struct) return false;
+	if (l.value_type==EValueType::Object && r.value_type!=EValueType::Object) return false;
+	return true;
+}
+inline bool operator!=(const FType& l, const FType& r){
+	return !(l==r);
+}
+
+inline bool operator==(const FType& l, const EValueType& r)
+{
+	return !l.IsStruct() && l.value_type == r;
+}
+inline bool operator!=(const FType& l, const EValueType& r)
+{
+	return !operator==(l, r);
+}
+
+inline bool operator==(const EValueType& l, const FType& r)
+{
+	return !r.IsStruct() && l == r.value_type;
+}
+inline bool operator!=(const EValueType& l, const FType& r)
+{
+	return !operator==(l, r);
+}
+
+FType CombineTypes(const FType& l, const FType& r, bool b_merge_matrix_types=false);
+
 struct FStructField{
     const char* name;
     FType type;
@@ -220,6 +250,21 @@ struct FStructType{
     int32_t GetNumComponents() const {return component_types.size();}
     const FStructField* FindFieldByName(const char* in_name) const;
 };
+
+struct FStructFieldInitializer{
+
+	FStructFieldInitializer()=default;
+	FStructFieldInitializer(const std::string& n, const FType& t):name(n), type(t){}
+	std::string name;
+	FType type;
+};
+
+struct FStructTypeInitializer{
+	std::string name;
+	std::vector<FStructFieldInitializer> fields;
+	bool b_is_derivative_type = false;
+};
+
 
 
 union FValueComponent{

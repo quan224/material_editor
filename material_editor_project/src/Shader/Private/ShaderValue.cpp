@@ -96,7 +96,59 @@ EValueType MakeConcreteType(EValueType t){
     return t; 
 }
 
+EValueComponentType CombineComponentTypes(EValueComponentType l, EValueComponentType r){
+    if(l == r){
+        return l;
+    }
+    else if(l==EValueComponentType::Void){
+        return r;
+    }
+    else if(r==EValueComponentType::Void){
+        return l;
+    }
+    else if(l==EValueComponentType::Numeric&&r==EValueComponentType::Numeric){
+        return EValueComponentType::Numeric;
+    }
+    // 有double用double
+    else if(l==EValueComponentType::Double||r==EValueComponentType::Double){
+        return EValueComponentType::Double;
+    }
+    // 有float用float
+    else if(l==EValueComponentType::Float||r==EValueComponentType::Float){
+        return EValueComponentType::Float;
+    }
+    // 实在不行用int
+    else if(IsNumericType(l)&&IsNumericType(r)){
+        return EValueComponentType::Int;
+    }
+    else{
+        return EValueComponentType::Void;
+    }
+}
 
+FType CombineTypes(const FType& l, const FType& r, bool b_merge_matrix_types){
+    if(l.IsVoid() || l.IsAny()){
+        return r;
+    }
+    if(r.IsVoid() || r.IsAny()){
+        return l;
+    }
+    if((l.IsNumericVector()&&r.IsNumericVector())||(b_merge_matrix_types&&l.IsNumericMatrix()&&r.IsNumericMatrix())){
+        FValueTypeDescription l_desc = GetValueTypeDescription(l);
+        FValueTypeDescription r_desc = GetValueTypeDescription(r);
+        const EValueComponentType c_type = CombineComponentTypes(l_desc.comp_type, r_desc.comp_type);
+        if(c_type==EValueComponentType::Void){
+            return EValueType::Void;
+        }
+        const int8_t counts = std::max(l_desc.num_components, r_desc.num_components);
+        return MakeValueType(c_type, counts);
+    }
+    if(l==r){
+        return r;
+    }
+    return EValueType::Void;
+
+}
 
 
 
@@ -104,8 +156,7 @@ EValueType MakeConcreteType(EValueType t){
 
 
 
-
-
+// ===================↑ FType===================
 const char* FType::GetName() const{
     if(IsStruct()){
         return struct_type->name;
@@ -174,6 +225,16 @@ EValueType FType::GetFlatFieldType(int32_t index) const{
     }
     return index==0 ? value_type:EValueType::Void;
 }
-	// 
+
+
+// ===================↑ FStructType===================
+const FStructField* FStructType::FindFieldByName(const char* in_name) const{
+    for(const auto& f:fields){
+        if (f.name == in_name) return &f;
+    }
+    return nullptr;
+}
 
 }
+
+
