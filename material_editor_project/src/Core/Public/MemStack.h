@@ -9,13 +9,19 @@ class MemStack{
 public:
     struct Mark{char* pos;};
     
-    MemStack()=default;
     MemStack(const MemStack& s)=delete;
     MemStack& operator=(const MemStack&)=delete;
 
+    // 构造即开首块（对照 UE：top_ 永不为 null，任何时机的 Mark 都安全）
+    MemStack(){
+        chunks_.push_back(std::make_unique<char[]>(CHUNK_));
+        top_ = chunks_.back().get();
+        end_ = top_+CHUNK_;
+    }
+
     // 借n字节裸内存（单词分配永远连续，绝不跨快）
     void* Alloc(size_t n){
-        if(top_+n<end_){
+        if(top_+n>end_){
             size_t chunk_size = ChunkSizeFor(n);
             chunks_.push_back(std::make_unique<char[]>(chunk_size));
             top_ = chunks_.back().get();
