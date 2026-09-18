@@ -2,8 +2,10 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <map>
 #include <cassert>
 #include "Core/Public/StringBuilder.h"
+#include "Core/Public/MemStack.h"
 
 namespace shader{
 
@@ -265,6 +267,19 @@ struct FStructTypeInitializer{
 	bool b_is_derivative_type = false;
 };
 
+
+class FStructTypeRegistry{
+public:
+	explicit FStructTypeRegistry(MemStack& in_allocator):allocator(&in_allocator){}
+	void EmitDeclarationsCode(FStringBuilderBase& out_code) const;
+	const FStructType* NewType(const FStructTypeInitializer& initializer);
+
+
+
+private:
+	MemStack* allocator;
+	std::map<uint64_t, const FStructType*> types;
+};
 
 
 union FValueComponent{

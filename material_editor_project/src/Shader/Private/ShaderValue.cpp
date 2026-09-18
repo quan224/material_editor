@@ -235,6 +235,33 @@ const FStructField* FStructType::FindFieldByName(const char* in_name) const{
     return nullptr;
 }
 
+// ===================↑ FStructTypeRegistry===================
+
+void FStructTypeRegistry::EmitDeclarationsCode(FStringBuilderBase& out_code) const{
+    for(const auto& it:types){
+        const FStructType* struct_type = it.second;
+        if(!struct_type->IsExternal()){
+            out_code.Appendf("struct %s\n", struct_type->name);
+            out_code.Appendf("{\n");
+            for (const FStructField& struct_field:struct_type->fields){
+                out_code.Appendf("\t%s %s;\n", struct_field.type.GetName(), struct_field.name);
+            }
+            out_code.Appendf("}\n");
+            for (const FStructField& struct_field:struct_type->fields){
+                out_code.Appendf("%s %s_Set%s(%s self, %s value) {self.%s = value; return self;}",
+                struct_type->name, struct_type->name, struct_field.name, struct_type->name, struct_field.type.GetName(), struct_field.name);
+            }
+            out_code.Appendf("\n");
+
+        }
+    }
+}
+
+const FStructType* FStructTypeRegistry::NewType(const FStructTypeInitializer& initializer){
+
+}
+
+
 }
 
 
