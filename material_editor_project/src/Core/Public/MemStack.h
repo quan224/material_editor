@@ -2,6 +2,7 @@
 #include <new>
 #include <memory>
 #include <vector>
+#include <string>
 #include <cstdint>
 
 // 内存栈(对照UE FMemStackBase，Misc/MemStack.h)
@@ -29,6 +30,13 @@ public:
         }
         void* p = top_;
         top_+=n;
+        return p;
+    }
+
+    const char* AllocateString(const std::string& s){
+        char* p = (char*)Alloc(s.size()+1);
+        memcpy(p, s.c_str(), s.size());
+        p[s.size()] = '\0';
         return p;
     }
 

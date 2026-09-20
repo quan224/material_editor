@@ -6,6 +6,7 @@
 #include <cassert>
 #include "Core/Public/StringBuilder.h"
 #include "Core/Public/MemStack.h"
+#include "Core/Public/Hash.h"
 
 namespace shader{
 
