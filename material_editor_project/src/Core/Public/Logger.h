@@ -42,3 +42,12 @@ inline void LogToFile(const char* msg) {
         snprintf(_logBuf, sizeof(_logBuf), "[ERROR] " msg "\n", ##__VA_ARGS__); \
         LogToFile(_logBuf); \
     } while(0)
+
+
+#define ME_CHECK(expr)\
+    do{\
+        if(!(expr)){\
+            ME_LOG_ERROR("CHECK failed: %s\n  file:%s\n  line:%d", #expr, __FILE__, __LINE__);\
+            assert(false&&#expr);\
+        }\
+    } while(0)

@@ -342,6 +342,19 @@ const FStructType* FStructTypeRegistry::NewType(const FStructTypeInitializer& in
     return struct_type;
 }
 
+const FStructType* FStructTypeRegistry::NewExternalType(std::string name){
+    uint64_t hash = HashString(name);
+    FStructType* struct_type = new(allocator->Alloc(sizeof(FStructType))) FStructType();
+    struct_type->name = allocator->AllocateString(name);
+    struct_type->hash = hash;
+    types[hash] = struct_type;
+    return struct_type;
+}
+
+const FStructType* FStructTypeRegistry::FindType(uint64_t hash) const{
+    const auto& it = types.find(hash);
+    return it != types.end() ? it->second : nullptr;
+}
 
 }
 
