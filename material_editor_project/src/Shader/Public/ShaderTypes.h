@@ -8,6 +8,7 @@
 #include "Core/Public/MemStack.h"
 #include "Core/Public/Hash.h"
 #include "Core/Public/Logger.h"
+#include "Core/Public/MathTypes.h"
 
 namespace shader{
 
@@ -123,6 +124,8 @@ static_assert(sizeof(GValueTypeDescriptions)/sizeof(GValueTypeDescriptions[0]) =
 const FValueTypeDescription& GetValueTypeDescription(EValueType t);
 inline bool IsLWCType(EValueComponentType c_t) {return c_t == EValueComponentType::Double;}
 inline bool IsLWCType(EValueType t) {return IsLWCType(GetValueTypeDescription(t).comp_type);}
+EValueType MakeValueType(EValueType t, int8_t nums);
+EValueType MakeValueType(EValueComponentType c_t, int8_t nums);
 inline bool IsNumericType(EValueComponentType t){return t!= EValueComponentType::Void;}
 inline bool IsNumericType(EValueType t){return IsNumericType(GetValueTypeDescription(t).comp_type);}
 inline bool IsGenericType(EValueComponentType c_t){return c_t == EValueComponentType::Numeric;}
@@ -333,10 +336,139 @@ struct FMemoryImageValue{
 
 // 可以存储一个任意类型的算术/结构值，值被表达为平铺的分量列表
 struct FValue{
-    FValue(){};
+    FValue()=default;
+	explicit FValue(const FType& in_type):type_(in_type){
+		component.reserve(in_type.GetNumComponents());
+	}
 
-    FType type;
-    std::vector<FValueComponent> componet;
+	inline FValue(EValueComponentType in_comp_type, int8_t num_comps):type_(MakeValueType(in_comp_type, num_comps)){
+		component.reserve(num_comps);
+	}
+
+	inline FValue(float v): type_(EValueType::Float1){
+		component.push_back(v);
+	}
+
+	inline FValue(float x, float y): type_(EValueType::Float2){
+		component.push_back(x);
+		component.push_back(y);
+	}
+
+	inline FValue(float x, float y, float z): type_(EValueType::Float3){
+		component.push_back(x);
+		component.push_back(y);
+		component.push_back(z);
+	}
+
+	inline FValue(float x, float y, float z, float w): type_(EValueType::Float4){
+		component.push_back(x);
+		component.push_back(y);
+		component.push_back(z);
+		component.push_back(w);
+	}
+
+	inline FValue(double v): type_(EValueType::Double1){
+		component.push_back(v);
+	}
+
+	inline FValue(double x, double y): type_(EValueType::Double2){
+		component.push_back(x);
+		component.push_back(y);
+	}
+
+	inline FValue(double x, double y, double z): type_(EValueType::Double3){
+		component.push_back(x);
+		component.push_back(y);
+		component.push_back(z);
+	}
+
+	inline FValue(double x, double y, double z, double w): type_(EValueType::Double4){
+		component.push_back(x);
+		component.push_back(y);
+		component.push_back(z);
+		component.push_back(w);
+	}
+
+	inline FValue(const Vec2& value):type_(EValueType::Float2){
+		component.push_back(value.x);
+		component.push_back(value.y);
+	}
+
+	inline FValue(const Vec3& value):type_(EValueType::Float3){
+		component.push_back(value.x);
+		component.push_back(value.y);
+		component.push_back(value.z);
+	}
+
+	inline FValue(const Vec4& value):type_(EValueType::Float4){
+		component.push_back(value.x);
+		component.push_back(value.y);
+		component.push_back(value.z);
+		component.push_back(value.w);
+	}
+
+	inline FValue(const DVec2& value):type_(EValueType::Double2){
+		component.push_back(value.x);
+		component.push_back(value.y);
+	}
+
+	inline FValue(const DVec3& value):type_(EValueType::Double3){
+		component.push_back(value.x);
+		component.push_back(value.y);
+		component.push_back(value.z);
+	}
+
+	inline FValue(const DVec4& value):type_(EValueType::Double4){
+		component.push_back(value.x);
+		component.push_back(value.y);
+		component.push_back(value.z);
+		component.push_back(value.w);
+	}
+
+	inline FValue(bool v):type_(EValueType::Bool1){
+		component.push_back(v);
+	}
+
+	inline FValue(bool x, bool y, bool z, bool w):type_(EValueType::Bool4){
+		component.push_back(x);
+		component.push_back(y);
+		component.push_back(z);
+		component.push_back(w);
+	}
+
+	inline FValue(int32_t v):type_(EValueType::Int1){
+		component.push_back(v);
+	}
+
+	inline const FType& GetType() const{return type_;}
+	inline int32_t GetNumComponents() const{return type_.GetNumComponents();}
+
+	inline FValueComponent GetComponent(int32_t index) const{
+		const int32_t component_index = (type_.IsNumericScalar()&&index>=0 &&index<4)? 0 :index;
+		if(index>=0 && index<component.size()){
+			return component[index];
+		}
+		return FValueComponent();
+	}
+
+	static FValue FromMemoryImage(EValueType t, const void* data, uint32_t* out_size_in_bytes=nullptr);
+	FMemoryImageValue AsMemoryImage() const;
+
+	FFloatValue AsFloat() const;
+	FDoubleValue AsDouble() const;
+	FIntValue AsInt() const;
+	FBoolValue AsBool() const;
+
+	DVec4 AsVector4d() const;
+	float AsFloatScalar() const;
+	bool AsBoolScalar() const;
+
+	bool IsZero() const;
+
+	const char* ToString(EValueStringFormat format, FStringBuilderBase& out_string)const;
+
+    FType type_;
+    std::vector<FValueComponent> component;
 };
 
 
