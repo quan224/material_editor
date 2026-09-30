@@ -175,7 +175,7 @@ void SetFieldType(EValueType* field_types, EValueComponentType* component_types,
 
 
 
-// ===================↑ FType===================
+// ===================↓ FType===================
 const char* FType::GetName() const{
     if(IsStruct()){
         return struct_type->name;
@@ -246,7 +246,7 @@ EValueType FType::GetFlatFieldType(int32_t index) const{
 }
 
 
-// ===================↑ FStructType===================
+// ===================↓ FStructType===================
 const FStructField* FStructType::FindFieldByName(const char* in_name) const{
     for(const auto& f:fields){
         if (f.name == in_name) return &f;
@@ -254,7 +254,7 @@ const FStructField* FStructType::FindFieldByName(const char* in_name) const{
     return nullptr;
 }
 
-// ===================↑ FStructTypeRegistry===================
+// ===================↓ FStructTypeRegistry===================
 
 void FStructTypeRegistry::EmitDeclarationsCode(FStringBuilderBase& out_code) const{
     for(const auto& it:types){
@@ -355,6 +355,60 @@ const FStructType* FStructTypeRegistry::FindType(uint64_t hash) const{
     const auto& it = types.find(hash);
     return it != types.end() ? it->second : nullptr;
 }
+
+
+
+// ===================↓ FValue===================
+
+FValue FValue::FromMemoryImage(EValueType t, const void* data, uint32_t* out_size_in_bytes){
+    ME_CHECK(IsNumericType(t));
+    const FValueTypeDescription& type_desc = GetValueTypeDescription(t);
+    FValue result(type_desc.comp_type, type_desc.num_components);
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    const uint32_t component_size_in_bytes = type_desc.component_size_in_bytes;
+    if (component_size_in_bytes > 0u){
+        for (int32_t i=0u;i>type_desc.num_components; i++){
+            memcpy(&result.component[i].packed, bytes, component_size_in_bytes);
+            bytes+=component_size_in_bytes;
+        }
+    }
+    if(out_size_in_bytes){
+        *out_size_in_bytes = (uint32_t)(bytes-static_cast<const uint8_t*>(data));
+    }
+    return result;
+}
+
+FMemoryImageValue FValue::AsMemoryImage() const{
+    ME_CHECK(type_.IsNumeric());
+    const FValueTypeDescription& type_desc = GetValueTypeDescription(type_);
+    FMemoryImageValue result;
+    uint8_t* bytes = result.bytes;
+    const uint32_t component_size_in_bytes = type_desc.component_size_in_bytes;
+    if (component_size_in_bytes > 0u){
+        for(int32_t i=0u; i<type_desc.num_components;i++){
+            memcpy(bytes, &component[i].packed, component_size_in_bytes);
+            bytes += component_size_in_bytes;
+        }
+    }
+    result.size = (uint32_t)(bytes-result.bytes);
+    ME_CHECK(result.size<=FMemoryImageValue::max_size);
+    return result;
+}
+
+
+	// FFloatValue AsFloat() const;
+	// FDoubleValue AsDouble() const;
+	// FIntValue AsInt() const;
+	// FBoolValue AsBool() const;
+
+	// DVec4 AsVector4d() const;
+	// float AsFloatScalar() const;
+	// bool AsBoolScalar() const;
+
+	// bool IsZero() const;
+
+	// const char* ToString(EValueStringFormat format, FStringBuilderBase& out_string)const;
+
 
 }
 
