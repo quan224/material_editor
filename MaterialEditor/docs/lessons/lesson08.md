@@ -8,7 +8,7 @@
 
 ## 背景知识
 
-课 6 的编译器产物是 `chunks_` 数组（`CodeChunk` 中间表示），课 7 打通了图遍历。本课补上最后一环：`GenerateCode()`——把 `chunks_` 组装成完整的 HLSL 着色器。
+课 6 的编译器产物是 `chunks_` 数组（`FShaderCodeChunk` 中间表示），课 7 打通了图遍历。本课补上最后一环：`GenerateCode()`——把 `chunks_` 组装成完整的 HLSL 着色器。
 
 一个完整的着色器除了局部变量声明，还需要：
 
@@ -256,7 +256,7 @@ private:
 
 > **cbuffer packing 警告（已踩坑预警）**：HLSL 的 cbuffer 不是 C struct 那样紧密排列。`float3 a; float b;` 占 32 字节（`a` 占一个 vec4 槽，`b` 因为不能挤进 `a` 的剩余 4 字节而开新槽——准确说 `b` **能**挤进去，但 `float3 a; float3 b;` 占 32 字节，因为 `b` 不能跨槽）。CPU 端上传时**必须按同样的 packing 规则布局**，否则数据错位。教学版建议：① 全部用 `float4`（最简单，浪费点显存无所谓）；② 或加 `packoffset` 显式控制。课14 接 DX12 时会再讲一次。
 
-### 4. 声明顺序：拓扑排序（按 `CodeChunk::references`）
+### 4. 声明顺序：拓扑排序（按 `FShaderCodeChunk::references`）
 
 这是代码生成**最容易被忽略但必踩的坑**。
 
@@ -275,8 +275,8 @@ int result = compiler->Multiply(sum, half_);  // chunk 4（如果非常量、复
 简单情况靠内联规避了声明顺序问题。但**复杂表达式**（`TextureSample`、`Power`、`Cross` 这些走 `AddCodeChunk(is_inline=false)`）必须声明局部变量：
 
 ```cpp
-int n1 = compiler->TextureSample(tex, uv);  // chunk 5：非内联，symbolName = "Local0"
-int n2 = compiler->Power(n1, exp);          // chunk 6：非内联，symbolName = "Local1"，references=[5]
+int n1 = compiler->TextureSample(tex, uv);  // chunk 5：非内联，symbol_name = "Local0"
+int n2 = compiler->Power(n1, exp);          // chunk 6：非内联，symbol_name = "Local1"，references=[5]
 ```
 
 如果之后有 chunk 7 引用 chunk 6，而 chunks_ 顺序是 `[5, 6, 7]`，简单 for 循环按顺序输出没问题。但**图遍历顺序不保证**——比如先编译了下游再编译上游（缓存命中或递归回溯），push_back 顺序可能是 `[6, 5, 7]` 或更乱。
@@ -288,7 +288,7 @@ float3 Local1 = pow(Local0, exp);   // Local0 还没声明 → fxc 报 undeclare
 float3 Local0 = tex2D(...);
 ```
 
-**解决方案**：按 `CodeChunk::references` 做拓扑排序。
+**解决方案**：按 `FShaderCodeChunk::references` 做拓扑排序。
 
 #### 算法对比
 
@@ -310,7 +310,7 @@ namespace {
 // 返回拓扑顺序（先被依赖的在前，HLSL 声明顺序要求）
 // 检测到循环依赖时返回空 vector + 写 errorMessage
 std::vector<int32_t> TopoSortChunks(
-    const std::vector<CodeChunk>& chunks,
+    const std::vector<FShaderCodeChunk>& chunks,
     std::string& errorMessage)
 {
     std::vector<int32_t> order;
@@ -324,7 +324,7 @@ std::vector<int32_t> TopoSortChunks(
         if (color[i] == DFSColor::Gray) {
             // 回到「灰度」节点 = 找到环
             errorMessage = "Circular dependency detected at chunk "
-                         + chunks[i].symbolName + " (index " + std::to_string(i) + "). "
+                         + chunks[i].symbol_name + " (index " + std::to_string(i) + "). "
                          + "材质图里有环——检查连线。";
             return false;
         }
@@ -373,7 +373,7 @@ class HLSLGenerator {
 public:
     struct Params {
         std::map<std::string, int32_t> materialOutputs;  // "BaseColor" → chunk index
-        const std::vector<CodeChunk>* chunks = nullptr;  // 指针（结构体要默认构造）
+        const std::vector<FShaderCodeChunk>* chunks = nullptr;  // 指针（结构体要默认构造）
         // uniform / texture 描述（参数系统提供，见课 20；无参数图时为空）
         UniformCollector uniforms;
         // 导数变体选择（对照 UE ECompiledPartialDerivativeVariation）：
@@ -437,7 +437,7 @@ public:
 private:
     static std::string GenerateMaterialBodyPS(
         const std::map<std::string, int32_t>& outputs,
-        const std::vector<CodeChunk>& chunks)
+        const std::vector<FShaderCodeChunk>& chunks)
     {
         std::string body;
         for (const auto& [name, idx] : outputs) {
@@ -458,7 +458,7 @@ private:
 
     static std::string GenerateMaterialBodyVS(
         const std::map<std::string, int32_t>& outputs,
-        const std::vector<CodeChunk>& chunks)
+        const std::vector<FShaderCodeChunk>& chunks)
     {
         std::string body;
         auto it = outputs.find("WorldPositionOffset");
@@ -468,10 +468,10 @@ private:
         return body;
     }
 
-    static std::string GetChunkCode(const std::vector<CodeChunk>& chunks, int32_t idx) {
+    static std::string GetChunkCode(const std::vector<FShaderCodeChunk>& chunks, int32_t idx) {
         if (idx < 0 || idx >= (int32_t)chunks.size()) return "0.0";
         const auto& chunk = chunks[idx];
-        return chunk.isInline ? chunk.code : chunk.symbolName;
+        return chunk.is_inline ? chunk.code : chunk.symbol_name;
     }
 
     static void ReplaceAll(std::string& str, const std::string& from, const std::string& to) {
@@ -649,7 +649,7 @@ UE 的材质模板和我们用**同样的"标记注入"思路**——模板里�
 ## 完成标志
 
 - [ ] `HLSLTemplate` 提供 VS+PS 一体模板（含双 cbuffer / `VS_INPUT`·`PS_INPUT` / PBR 辅助函数 / `VSMain`·`PSMain`）
-- [ ] `TopoSortChunks` 按 `CodeChunk::references` DFS 后序排序，生成的局部变量声明顺序合法（无 `undeclared identifier`）
+- [ ] `TopoSortChunks` 按 `FShaderCodeChunk::references` DFS 后序排序，生成的局部变量声明顺序合法（无 `undeclared identifier`）
 - [ ] 拓扑排序检测循环依赖，错误信息带 chunk 符号名（`Circular dependency at Local7`）
 - [ ] 导数双轨发射：`Params.bAnalyticDerivatives` 切换 `chunk.AtCode()` 的 finite/analytic 版本（字段课 6 已备好；DerivativeAutogen 课 20 接通前 analytic 为空自动回落 finite）
 - [ ] 中间块剔除：`is_intermediate` 且无引用者的 chunk 不进声明段（对照 UE bIntermediate 语义）

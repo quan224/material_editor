@@ -1143,7 +1143,9 @@ inline D3D12_SRV_DIMENSION GetSRVDimension(EValueType t) {
 
 ## 前向链接：贴图元数据表达式（课 6 树的贴图族补全）
 
-`FMaterialUniformExpression` 家族里有一支**贴图元数据表达式**——不采样颜色，查询贴图自身的属性（尺寸/纹素/RVT/SVT 向量），全部 CPU 可求值。本课随纹理系统一并实现（`src/Expression/Public/UniformExpression.h` 追加）：
+`FMaterialUniformExpression` 家族里有一支**贴图元数据表达式**——不采样颜色，查询贴图自身的属性（尺寸/纹素/RVT/SVT 向量），全部 CPU 可求值。本课随纹理系统一并实现（`src/Expression/Public/UniformExpression.h` 追加）。
+
+`GetNumberValue` 用到的 `ctx.GetTextureSize` / `ctx.GetRVTUniform` 要求 **`MaterialRenderContext` 本课扩展**：携带贴图资源表（渲染器把已加载贴图注册进来，按索引可查）。对照 UE：`FMaterialRenderContext`（`MaterialShared.h:348`）从一开始就持有 `FMaterialRenderProxy*`——材质渲染代理，贴图/参数统一从它查。教学版 ctx 课 6 是空壳，本课先进贴图资源表，参数表课 20 再补。
 
 ```cpp
 // 贴图属性查询。对照 FMaterialUniformExpressionTextureProperty（.h:1880）：
@@ -1165,7 +1167,7 @@ public:
         out = prop_ == TextureSize ? Vec4(size.x, size.y, 0, 0)
                                    : Vec4(1.f/size.x, 1.f/size.y, 0, 0);
     }
-    const char* GetTypeName() const override { return "TextureProperty"; }
+    const char* GetDescribeType() const override { return "TextureProperty"; }
 private:
     Ref<UniformExpression> tex_;
     EProperty prop_;
@@ -1185,7 +1187,7 @@ public:
     void GetNumberValue(const MaterialRenderContext& ctx, Vec4& out) const override {
         out = ctx.GetRVTUniform(texIndex_, vectorIndex_);   // 渲染器侧 RVT 对象提供
     }
-    const char* GetTypeName() const override { return "RVTUniform"; }
+    const char* GetDescribeType() const override { return "RVTUniform"; }
 private:
     int32_t texIndex_, vectorIndex_;
 };

@@ -492,10 +492,10 @@ int main(int argc, char* argv[]) {
 ```
 [INFO] === 编译成功 ===
     // Material outputs
-    // BaseColor = float3(1.000000, 0.000000, 0.000000)
+    // BaseColor = (float3(1.000000, 0.000000, 0.000000) + 0.0)
 ```
 
-B 引脚未连接，`CompileInputPin` 走默认值 `"0.0"`（`ParseDefaultValue`）得到常量表达式；`Add` 发现两边表达式都 `IsConstant()` → 立即折叠成新的常量块（课 6 的 `ConstResultValue` 路径），**没有任何加法指令**。
+B 引脚未连接，`CompileInputPin` 走默认值 `"0.0"`（`ParseDefaultValue`）得到常量表达式；两边都有表达式 → `Add` **建 `FoldedMath(Add)` 树**（课 6 分工表：Add/Sub 建树不立即折叠，对照 UE `HLSLMaterialTranslator.cpp` 的 `Add` 原版——`new FMaterialUniformExpressionFoldedMath(..., FMO_Add)`，求值推迟给 preshader）。chunk 的 code 是内联串 `"(%s + %s)"`，表达式块生成代码时直接用定义串——HLSL 里加法式子保留，值由 CPU 侧 `GetNumberValue` 一求就出。
 
 ---
 
@@ -520,14 +520,14 @@ graph.Connect(nodeAdd->outputPins[0].id, graph.GetOutputNode()->FindInputPin("Ba
 auto result = compiler.Compile(&graph);
 ```
 
-**预期：`Add((1,0,0), (0,1,0))` 编译期折叠成 `(1,1,0)`**——因为课6 的 `Constant3` 建的是 `UniformConstant(Vec4(1,0,0,0), MCT_Float3)` 表达式叶子，`Add` 发现两边表达式的树都 `IsConstant()`，就对两棵树 `GetNumberValue` 求值、逐分量相加，经 `ConstResultValue` 折成一个新的常量叶子。生成的 HLSL 只有一个常量、**没有加法指令**：
+**预期：`Add((1,0,0), (0,1,0))` 建 `FoldedMath(Add)` 树，求值推迟**——课6 的 `Constant3` 建的是 `UniformConstant(Vec4(1,0,0,0), MCT_Float3)` 表达式叶子，两边都有表达式 → `Add` 建 `FoldedMath` 子树（对照 UE 原版：`new FMaterialUniformExpressionFoldedMath(..., FMO_Add)`，不立即折叠——立即折叠只发生在 Mul/Div，因为它们的代数化简需要值）。生成的 HLSL 是内联表达式串，不是单个常量：
 
 ```
     // Material outputs
-    // BaseColor = float3(1.000000, 1.000000, 0.000000)
+    // BaseColor = (float3(1.000000, 0.000000, 0.000000) + float3(0.000000, 1.000000, 0.000000))
 ```
 
-> 如果折叠没生效，HLSL 会是 `float3 Local0 = float3(1,0,0); float3 Local1 = float3(0,1,0); float3 Local2 = Local0 + Local1;`——说明 `Constant3` 没走表达式路径（检查课6 的 `Constant3` 是否建 `UniformConstant` 叶子并挂到 chunk 上），或 `Add` 没走"两边 `IsConstant()` → 求值折叠"的轨道（错走了 `UniformFoldedMath` 建树轨道或纯 HLSL 轨道）。这正是课6 表达式树要验证的。
+> 验证树机制的三个断言：① `GetParameterUniformExpression(add)` 非空且 `IsConstant()` 为 true（两个常量叶子递归判定）；② 对它 `GetNumberValue(ctx, v)` 求值，`v == (1,1,0)`——**求值时才算出结果，这正是建树的意义**；③ 同样的 `Add` 编第二次返回同一 chunk 索引（`IsIdentical` 去重）。如果输出变成了单个常量 `float3(1,1,0)`——说明 `Add` 错走了 `ConstResultValue` 立即折叠轨道（那是 Mul/Div 的行为），与 UE 原版不符。这正是课6 表达式树要验证的。
 
 ---
 

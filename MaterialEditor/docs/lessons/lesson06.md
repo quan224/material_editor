@@ -7,14 +7,14 @@
 | # | 教学版 | UE 对应 | 对齐点 |
 |---|--------|---------|--------|
 | ① | `EValueType : uint64_t` bitmask + 类别掩码 | `EMaterialValueType`（`MaterialValueType.h`）| 位定义、掩码语义、"MCT_Float1 不自动提升"规则全部照搬 |
-| ② | `CodeChunk` 全字段 | `FShaderCodeChunk`（`HLSLMaterialTranslator.h:83-174`）| 每个字段逐一裁决采用/不采用并说明理由 |
+| ② | `FShaderCodeChunk` 全字段 | `FShaderCodeChunk`（`HLSLMaterialTranslator.h:83-174`）| 每个字段逐一裁决采用/不采用并说明理由 |
 | ③ | `UniformExpression` 表达式树 | `FMaterialUniformExpression` 家族（`MaterialUniformExpressions.h`）| 常量与含参数表达式统一为一棵树，支持递归 IsConstant / IsIdentical 去重 / CPU 求值 |
 | ④ | `MaterialCompiler` 抽象基类 + `HLSLTranslator` 实现 | `FMaterialCompiler`（`MaterialCompiler.h:145`）+ `FHLSLMaterialTranslator` | 编译器拆两层，表达式只依赖抽象接口 |
 
 **本课范围（自给自足，不挖坑）**：
 - 类型系统 bitmask 改造（Float1-4 / 矩阵 / 纹理 + 类别掩码）+ 算术推导规则
 - `UniformExpression` 树：基类 + `UniformConstant` + `UniformFoldedMath` + 一元独立子类（UniformNeg/UniformAbs/UniformSine/UniformCosine/UniformRcp）
-- `CodeChunk` 全字段版 + 常量/参数表达式 chunk 的构建与**双层去重**（代码 hash + `IsIdentical`）
+- `FShaderCodeChunk` 全字段版 + 常量/参数表达式 chunk 的构建与**双层去重**（代码 hash + `IsIdentical`）
 - 双层编译器：`MaterialCompiler`（抽象接口）+ `HLSLTranslator`（实现）
 - 算子 API：算术 / 三角 / 向量 / 标量常量 / 类型转换（共 ~20 个），按 UE 真实的**三轨判定**实现（错误检查 → 表达式树/立即折叠 → HLSL 发射）
 - 错误诊断编译器层：`CompileError` + `EmitError` 收集器 + 类型不匹配/除零检查
@@ -33,7 +33,7 @@
 
 ### 编译器做什么
 
-接收一个 `Graph`，从输出节点反向遍历，对每个节点调用其 `Expression::Compile()`，生成一系列"代码块"（`CodeChunk`），最后组装成 HLSL 着色器。
+接收一个 `Graph`，从输出节点反向遍历，对每个节点调用其 `Expression::Compile()`，生成一系列"代码块"（`FShaderCodeChunk`），最后组装成 HLSL 着色器。
 
 ### 完整编译流程（标出本课实现的部分）
 
@@ -205,7 +205,7 @@ enum EValueType : uint64_t {
 | `MCT_LicenseeReserved`（bit 48-63）| 授权方自定义保留段 | 不适用 |
 | `MCT_MeshPaint`/`MCT_MaterialCache` 等 UE 私有内部位 | 引擎内部贴图流（MeshPaint/MaterialCache 特殊路径）| 无对应系统 |
 
-> **注**：其余全部位已引入——float/LWC/UInt/Bool/StaticBool/Execution 族、纹理全族（含 CubeArray/SparseVolumeTexture/VTPageTableResult/External/Virtual）、MaterialAttributes/ShadingModel/Substrate、矩阵族、Unexposed。位值与 UE `MaterialValueType.h` 逐位一致（22+ 位）。`MCT_Numeric` 含 UInt（对齐 UE 的 `MCT_Float|MCT_LWCType|MCT_Bool` 组合方式，教学版 Bool 单独判）。Substrate 完整实现（组合树 + 求值）在课 20，导数双轨（`EDerivativeStatus` + `code_analytic`）随本课 CodeChunk 字段进、课 8 发射时消费、课 20 的 DerivativeAutogen 全量接通。
+> **注**：其余全部位已引入——float/LWC/UInt/Bool/StaticBool/Execution 族、纹理全族（含 CubeArray/SparseVolumeTexture/VTPageTableResult/External/Virtual）、MaterialAttributes/ShadingModel/Substrate、矩阵族、Unexposed。位值与 UE `MaterialValueType.h` 逐位一致（22+ 位）。`MCT_Numeric` 含 UInt（对齐 UE 的 `MCT_Float|MCT_LWCType|MCT_Bool` 组合方式，教学版 Bool 单独判）。Substrate 完整实现（组合树 + 求值）在课 20，导数双轨（`EDerivativeStatus` + `code_analytic`）随本课 FShaderCodeChunk 字段进、课 8 发射时消费、课 20 的 DerivativeAutogen 全量接通。
 
 ### 两条关键语义（从 UE 注释原样搬来，最容易踩的坑）
 
@@ -696,7 +696,7 @@ enum class EDerivativeStatus : uint8_t {
 };
 
 // 代码块：一行（或一段）HLSL 代码 + 元数据。对照 FShaderCodeChunk（HLSLMaterialTranslator.h:83）
-struct CodeChunk {
+struct FShaderCodeChunk {
     uint64_t hash = 0;                        // 代码哈希：纯代码块去重（UE 同）
     uint64_t material_attribute_mask = 0;     // 属性打包位掩码（UE MaterialAttributeMask）
     std::string code;                         // 定义串·有限差分版（UE DefinitionFinite）
@@ -1000,7 +1000,7 @@ private:
                    const std::string& overridePinName = "");
 
     // === 状态 ===
-    std::vector<CodeChunk> chunks_;                 // 全部代码块（UE CurrentScopeChunks，教学版无作用域只有一个数组）
+    std::vector<FShaderCodeChunk> chunks_;                 // 全部代码块（UE CurrentScopeChunks，教学版无作用域只有一个数组）
     std::map<uint64_t, int32_t> hash_to_chunk_;     // 纯代码块的去重索引（UE 用线性扫描，教学版用 map 等价）
     std::vector<Ref<UniformExpression>> uniform_expressions_;  // 材质级唯一表达式表（UE UniformExpressions，跨属性共享）
     int32_t next_symbol_index_ = 0;
@@ -1048,7 +1048,7 @@ int32_t HLSLTranslator::AddCodeChunk(EValueType type, const std::string& code, b
         auto it = hash_to_chunk_.find(hash);
         if (it != hash_to_chunk_.end()) return it->second;    // hash 命中 → 复用
 
-        CodeChunk chunk;
+        FShaderCodeChunk chunk;
         std::string symbol = MakeSymbolName();   // 先生成一次，code 和 symbol_name 共用
         chunk.hash = hash;
         chunk.code = "\t" + std::string(TypeSystem::ToHLSLType(type)) + " "
@@ -1109,7 +1109,7 @@ int32_t HLSLTranslator::AddUniformExpression(Ref<UniformExpression> expr,
         }
     }
 
-    CodeChunk chunk;
+    FShaderCodeChunk chunk;
     chunk.hash = HashString("expr_" + code);
     chunk.code = code;                          // 表达式块：code 直接嵌（无 SymbolName）
     chunk.type = type;
@@ -1441,7 +1441,7 @@ int32_t HLSLTranslator::Divide(int32_t a, int32_t b) {
 //    用友元 CompilerTestAccess 造一个，验证算子的非表达式路径）
 struct CompilerTestAccess {
     static int32_t MakeRawChunk(HLSLTranslator& c, EValueType type, const std::string& code) {
-        CodeChunk chunk;
+        FShaderCodeChunk chunk;
         chunk.hash = HashString(code);
         chunk.code = code;
         chunk.type = type;
@@ -1536,7 +1536,7 @@ assert(c.GetParameterCode(-1) == "0.0");
 |---------|---------|------|
 | `EValueType` bitmask | `EMaterialValueType` | `Source/Runtime/Engine/Public/MaterialValueType.h`（全文 93 行）|
 | 类别判断 `Type & MCT_Float` | 同（`AddCodeChunkInner` 用它判断能否建局部变量）| `HLSLMaterialTranslator.cpp:3362` |
-| `CodeChunk` | `FShaderCodeChunk` | `Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.h:83-174` |
+| `FShaderCodeChunk` | `FShaderCodeChunk` | `Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.h:83-174` |
 | 表达式树基类 | `FMaterialUniformExpression` | `Source/Runtime/Engine/Private/Materials/MaterialUniformExpressions.h:56-81` |
 | 常量叶子（4 分量 + 类型标签）| `FMaterialUniformExpressionConstant` | 同上 `.h:257-306` |
 | 二元折叠节点 + FMO 枚举 | `FMaterialUniformExpressionFoldedMath` + `EFoldedMathOperation` | 同上 `.h:1093-1158` |
@@ -1582,7 +1582,7 @@ assert(c.GetParameterCode(-1) == "0.0");
 - [ ] `UniformExpression` 基类（`IsConstant` / `IsIdentical` / `GetNumberValue(ctx, out)` 三个虚函数，语义对齐 UE）
 - [ ] `UniformConstant`（Vec4 4 分量 + 类型标签，对齐 `FMaterialUniformExpressionConstant`）
 - [ ] `UniformFoldedMath`（`EFoldedMathOp` 6 运算 + 递归 IsConstant/IsIdentical）+ 一元独立子类（UniformNeg/UniformAbs/UniformSine/UniformCosine/UniformRcp，对照 UE 每运算一类）
-- [ ] `CodeChunk` 全字段版（**与 UE 逐字段一一对应，零省略**）：`material_attribute_mask` / `code` + `code_analytic` 双轨 / `derivative_status`（EDerivativeStatus 四值）/ 作用域三件套 + `scoped_chunks` / `is_intermediate` / `AtCode(variant)` + `uniform_expression` 树指针 + 两种 chunk 来源的语义（表达式块无 SymbolName）
+- [ ] `FShaderCodeChunk` 全字段版（**与 UE 逐字段一一对应，零省略**）：`material_attribute_mask` / `code` + `code_analytic` 双轨 / `derivative_status`（EDerivativeStatus 四值）/ 作用域三件套 + `scoped_chunks` / `is_intermediate` / `AtCode(variant)` + `uniform_expression` 树指针 + 两种 chunk 来源的语义（表达式块无 SymbolName）
 - [ ] `MaterialCompiler` 抽象基类（纯虚算子接口）+ `HLSLTranslator` 实现（两层结构，依赖倒置）
 - [ ] `CompileError` / `EErrorSeverity` / `CompileResult`（errors 数组 + `HasErrors`）+ `EmitError`（SameAs 去重）+ `current_node_`/`current_pin_` 上下文
 - [ ] `AddCodeChunk`（Unknown→-1 / 内联不去重 / 数值类型限制 / 纹理报错）+ `AddInlinedCodeChunk` + `AddUniformExpression`（IsIdentical 双层去重 + 材质级表达式表）
