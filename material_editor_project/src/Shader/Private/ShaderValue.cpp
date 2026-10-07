@@ -80,10 +80,10 @@ EValueType MakeDerivativeType(EValueType t){
 
 }
 
-EValueType MakeNoneLWCType(EValueType t){
+EValueType MakeNonLWCType(EValueType t){
     FValueTypeDescription type_desc = GetValueTypeDescription(t);
     if (type_desc.comp_type == EValueComponentType::Double){
-        return MakeValueType( MakeNoneLWCType(type_desc.comp_type), type_desc.num_components);
+        return MakeValueType( MakeNonLWCType(type_desc.comp_type), type_desc.num_components);
     }
     return t;
 }
@@ -249,7 +249,7 @@ EValueType FType::GetFlatFieldType(int32_t index) const{
 // ===================↓ FStructType===================
 const FStructField* FStructType::FindFieldByName(const char* in_name) const{
     for(const auto& f:fields){
-        if (f.name == in_name) return &f;
+        if (std::strcmp(f.name, in_name)==0) return &f;
     }
     return nullptr;
 }
@@ -360,6 +360,145 @@ const FStructType* FStructTypeRegistry::FindType(uint64_t hash) const{
 
 // ===================↓ FValue===================
 
+namespace Private {
+struct FCastFloat {
+    using FComponentType = float;
+    inline float operator()(EValueComponentType t, const FValueComponent& component)const {
+        switch (t) {
+        case EValueComponentType::Float: return component._float;
+        case EValueComponentType::Double: return (float)component._double;
+        case EValueComponentType::Int: return (float)component._int;
+        case EValueComponentType::Bool: return (float)component._bool;
+        default:return 0.0f;
+        }
+    }
+};
+
+struct FCastDouble {
+    using FComponentType = double;
+    inline double operator()(EValueComponentType t, const FValueComponent& component)const {
+        switch (t) {
+        case EValueComponentType::Float: return (double)component._float;
+        case EValueComponentType::Double: return component._double;
+        case EValueComponentType::Int: return (double)component._int;
+        case EValueComponentType::Bool: return (double)component._bool;
+        default:return 0.0f;
+        }
+    }
+};
+
+struct FCastInt {
+    using FComponentType = int32_t;
+    inline int32_t operator()(EValueComponentType t, const FValueComponent& component)const {
+        switch (t) {
+        case EValueComponentType::Float: return (int32_t)component._float;
+        case EValueComponentType::Double: return (int32_t)component._double;
+        case EValueComponentType::Int: return component._int;
+        case EValueComponentType::Bool: return component._bool ? 1 : 0;
+        default:return 0;
+        }
+    }
+};
+
+struct FCastBool {
+    using FComponentType = bool;
+    inline bool operator()(EValueComponentType t, const FValueComponent& component)const {
+        switch (t) {
+        case EValueComponentType::Float: return component._float != 0.0f;
+        case EValueComponentType::Double: return component._double != 0.0;
+        case EValueComponentType::Int: return component._int != 0;
+        case EValueComponentType::Bool: return component.AsBool();
+        default:return false;
+        }
+    }
+};
+
+template<typename Operator, typename ResultType>
+void AsType(const Operator& op, const FValue& value, ResultType& out_result) {
+    using FComponentType = typename Operator::FComponentType;
+    const FValueTypeDescription& type_desc = GetValueTypeDescription(value.type_);
+    if (type_desc.num_components == 1) {
+        const FComponentType component = op(type_desc.comp_type, value.component[0]);
+        for (int32_t i = 0; i < 4; i++) {
+            out_result[i] = component;
+        }
+    }
+    else {
+        const int32_t num_components = std::min<int32_t>(type_desc.num_components, 4);
+        for (int32_t i = 0; i < num_components; ++i) {
+            out_result[i] = op(type_desc.comp_type, value.component[i]);
+        }
+        for (int32_t i = num_components; i < 4; ++i) {
+            out_result[i] = (FComponentType)0;
+        }
+    }
+}
+
+template<typename Operation, typename ResultType>
+void AsTypeInPlace(const Operation& op, EValueType Type, std::vector<FValueComponent> component, ResultType& out_result) {
+    using FComponentType = typename Operation::FComponentType;
+    const FValueTypeDescription& type_desc = GetValueTypeDescription(Type);
+    if (type_desc.num_components == 1) {
+        const FComponentType component_cast = op(type_desc.comp_type, component[0]);
+        for (int32_t i = 0; i < 4; i++) {
+            out_result[i] = component_cast;
+        }
+    }
+    else {
+        const int32_t num_components = std::min<int32_t>(component.size(), 4);
+        for (int32_t i = 0; i < num_components; i++) {
+            out_result[i] = op(type_desc.comp_type, component[i]);
+        }
+        for (int32_t i = num_components; i < 4; i++) {
+            out_result[i] = (FComponentType)0;
+        }
+    }
+}
+
+template<typename Operation>
+void Cast(const Operation& op, const FValue& value, FValue& out_result) {
+    ME_CHECK(out_result.component.empty());
+    using FComponentType = typename Operation::FComponentType;
+    const FValueTypeDescription& value_type_desc = GetValueTypeDescription(value.type_);
+    const FValueTypeDescription& result_type_desc = GetValueTypeDescription(out_result.type_);
+    const int32_t num_copy_components = std::min(value_type_desc.num_components, result_type_desc.num_components);
+    for (int32_t i = 0; i < num_copy_components; i++) {
+        out_result.component.push_back(op(value_type_desc.comp_type, value.component[i]));
+    }
+    if (num_copy_components < result_type_desc.num_components) {
+        if (num_copy_components == 1) {
+            const FValueComponent component = out_result.component[0];
+            for (int i = 1; i < result_type_desc.num_components; i++) {
+                out_result.component.push_back(component);
+            }
+        }
+        else {
+            for (int32_t i = num_copy_components; i < result_type_desc.num_components; i++) {
+                out_result.component.emplace_back();
+            }
+        }
+    }
+}
+
+void FormatComponent_Double(double value, int32_t num_components, EValueStringFormat format, FStringBuilderBase& out_result) {
+    if (format == EValueStringFormat::HLSL) {
+        out_result.Appendf("%0.8f", value);
+    } else {
+        // Shorter format for more components
+        switch (num_components) {
+        default: out_result.Appendf("%.2g", value); break;
+        case 3: out_result.Appendf("%.3g", value); break;
+        case 2: out_result.Appendf("%.3g", value); break;
+        case 1: out_result.Appendf("%.4g", value); break;
+        }
+    }
+}
+
+
+}// namespace Private
+
+
+
 FValue FValue::FromMemoryImage(EValueType t, const void* data, uint32_t* out_size_in_bytes){
     ME_CHECK(IsNumericType(t));
     const FValueTypeDescription& type_desc = GetValueTypeDescription(t);
@@ -367,7 +506,7 @@ FValue FValue::FromMemoryImage(EValueType t, const void* data, uint32_t* out_siz
     const uint8_t* bytes = static_cast<const uint8_t*>(data);
     const uint32_t component_size_in_bytes = type_desc.component_size_in_bytes;
     if (component_size_in_bytes > 0u){
-        for (int32_t i=0u;i>type_desc.num_components; i++){
+        for (int32_t i=0u;i<type_desc.num_components; i++){
             memcpy(&result.component[i].packed, bytes, component_size_in_bytes);
             bytes+=component_size_in_bytes;
         }
@@ -395,19 +534,115 @@ FMemoryImageValue FValue::AsMemoryImage() const{
     return result;
 }
 
+FFloatValue FValue::AsFloat() const {
+    FFloatValue result;
+    Private::AsType(Private::FCastFloat(), *this, result);
+    return result;
+}
 
-	// FFloatValue AsFloat() const;
-	// FDoubleValue AsDouble() const;
-	// FIntValue AsInt() const;
-	// FBoolValue AsBool() const;
+FDoubleValue FValue::AsDouble() const {
+    FDoubleValue result;
+    Private::AsType(Private::FCastDouble(), *this, result);
+    return result;
+}
 
-	// DVec4 AsVector4d() const;
-	// float AsFloatScalar() const;
-	// bool AsBoolScalar() const;
+FIntValue FValue::AsInt() const {
+    FIntValue result;
+    Private::AsType(Private::FCastInt(), *this, result);
+    return result;
+}
 
-	// bool IsZero() const;
+FBoolValue FValue::AsBool() const {
+    FBoolValue result;
+    Private::AsType(Private::FCastBool(), *this, result);
+    return result;
+}
 
-	// const char* ToString(EValueStringFormat format, FStringBuilderBase& out_string)const;
+DVec4 FValue::AsVector4d() const {
+    FDoubleValue result = AsDouble();
+    return DVec4(result[0], result[1], result[2], result[3]);
+}
+
+float FValue::AsFloatScalar() const {
+    FFloatValue result;
+    Private::AsType(Private::FCastFloat(), *this, result);
+    return result[0];
+}
+
+bool FValue::AsBoolScalar() const {
+    FBoolValue result = AsBool();
+    for (int32_t i = 0; i < 4; i++) {
+        if (result[i]) {
+            return true;
+        }
+    }
+    return false;
+
+}
+
+bool FValue::IsZero() const {
+    bool is_zero = type_.IsNumeric();
+    if (is_zero) {
+        for (const FValueComponent& comp: component) {
+            if (comp.packed) {
+                is_zero = false;
+                break;
+            }
+        }
+    }
+    return is_zero;
+}
+
+const char* FValueComponent::ToString(EValueComponentType type, FStringBuilderBase& out_string) const {
+    switch (type) {
+    case EValueComponentType::Int: out_string.Appendf("%d", _int); break;
+    case EValueComponentType::Bool: out_string.Append(AsBool() ? "true" : "false"); break;
+    case EValueComponentType::Float: out_string.Appendf("%#.9gf", _float); break;
+    default: ME_CHECK(false); break; // TODO - double, Numeric
+    }
+    return out_string.GetData();
+}
+
+const char* FValue::ToString(EValueStringFormat format, FStringBuilderBase& out_string) const {
+    const int32_t num_components = type_.GetNumComponents();
+    const char* closing_suffix = nullptr;
+
+    if (format == EValueStringFormat::HLSL) {
+        if (type_.IsStruct()) {
+            out_string.Append("{ ");
+            closing_suffix = " }";
+        } else {
+            const FValueTypeDescription& type_desc = GetValueTypeDescription(type_.value_type);
+            ME_CHECK(type_desc.comp_type != EValueComponentType::Numeric);
+            if (type_desc.comp_type != EValueComponentType::Double) {
+                out_string.Appendf("%s(", type_desc.name);
+                closing_suffix = ")";
+            }
+        }
+    }
+
+    for (int32_t index = 0; index < num_components; ++index) {
+        if (index > 0) {
+            out_string.Append(", ");
+        }
+        const EValueComponentType component_type = type_.GetComponentType(index);
+        switch (component_type) {
+        case EValueComponentType::Int: out_string.Appendf("%d", component[index]._int); break;
+        case EValueComponentType::Bool: out_string.Append(component[index]._bool ? "true" : "false"); break;
+        case EValueComponentType::Float: Private::FormatComponent_Double((double)component[index]._float, num_components, format, out_string); break;
+        case EValueComponentType::Double:
+        case EValueComponentType::Numeric:
+            Private::FormatComponent_Double(component[index]._double, num_components, format, out_string); break;
+        default: ME_CHECK(false); break;
+        }
+    }
+
+    if (closing_suffix) {
+        out_string.Append(closing_suffix);
+    }
+
+    return out_string.GetData();
+}
 
 
 }

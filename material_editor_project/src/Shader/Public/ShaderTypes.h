@@ -143,8 +143,10 @@ inline bool IsNumericMatrixType(EValueType t){
 	return IsNumericType(type_desc.comp_type) && type_desc.num_components == 16;
 }
 
-inline EValueComponentType MakeNoneLWCType(EValueComponentType c_t){return c_t == EValueComponentType::Double? EValueComponentType::Float:c_t;}
-EValueType MakeNoneLWCType(EValueType t);
+inline EValueComponentType MakeNonLWCType(EValueComponentType c_t){return c_t == EValueComponentType::Double? EValueComponentType::Float:c_t;}
+EValueType MakeNonLWCType(EValueType t);
+EValueType MakeDerivativeType(EValueType t);
+EValueComponentType CombineComponentTypes(EValueComponentType l, EValueComponentType r);
 inline EValueComponentType MakeConcreteType(EValueComponentType c_t){return c_t == EValueComponentType::Numeric? EValueComponentType::Float:c_t;}
 EValueType MakeConcreteType(EValueType t);
 
@@ -166,7 +168,7 @@ struct FType{
     const char* GetName() const;
     FType GetDerivativeType() const;
 	// 双精度变单精度
-	FType GetNonLWCType() const {return IsNumericLWC()? FType(MakeNoneLWCType(value_type)):*this;}
+	FType GetNonLWCType() const {return IsNumericLWC()? FType(MakeNonLWCType(value_type)):*this;}
 	// 类型定性
 	FType GetConcreteType() const {return IsNumeric()? FType(MakeConcreteType(value_type)):*this;}
     bool IsVoid() const {return value_type == EValueType::Void;}
@@ -297,7 +299,7 @@ union FValueComponent{
     FValueComponent(bool in_bool):packed(0u){ in_bool?_bool=1u:_bool=0u; }
 
     // 转回bool用
-    bool AsBool(){return _bool != 0u; }
+    bool AsBool()const {return _bool != 0u; }
 
     const char* ToString(EValueComponentType type, FStringBuilderBase& out_string) const;
 
@@ -338,11 +340,11 @@ struct FMemoryImageValue{
 struct FValue{
     FValue()=default;
 	explicit FValue(const FType& in_type):type_(in_type){
-		component.reserve(in_type.GetNumComponents());
+		component.resize(in_type.GetNumComponents());
 	}
 
 	inline FValue(EValueComponentType in_comp_type, int8_t num_comps):type_(MakeValueType(in_comp_type, num_comps)){
-		component.reserve(num_comps);
+		component.resize(num_comps);
 	}
 
 	inline FValue(float v): type_(EValueType::Float1){
