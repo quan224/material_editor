@@ -4,6 +4,8 @@
 #include "MaterialTypes/Public/ValueType.h"
 #include "Core/Public/MathTypes.h"
 #include "Demos/ReflectionDemo/ReflectionDemoWidget.h"
+#include "Demos/ShaderTest/ShaderTypesTest.h"
+#include "Demos/ExprTreeTest/ExprTreeTest.h"
 
 // ============================================================
 // 测试用 Expression 子类
@@ -38,9 +40,12 @@ int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
 
-    TestExpr expr;
-    ReflectionDemoWidget w(&expr);
-    w.show();
+    //TestExpr expr;
+    //ReflectionDemoWidget w(&expr);
+    //w.show();
+
+    // RunShaderTypesFullTest();
+    RunExprTreeTest();
 
     return app.exec();
 }
