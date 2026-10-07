@@ -97,7 +97,7 @@ private:
 
 
     // 状态
-    std::vector<CodeChunk> chunks_;
+    std::vector<FShaderCodeChunk> chunks_;
     std::map<uint64_t, int32_t> hash_to_chunk_;
     std::map<std::string,std::vector<int32_t>> node_cache_;
     int32_t next_symbol_index_ = 0;

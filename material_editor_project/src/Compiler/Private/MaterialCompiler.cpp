@@ -39,7 +39,7 @@ int32_t MaterialCompiler::AddCodeChunk(EMaterialValueType type, const std::strin
     auto it = hash_to_chunk_.find(hash);
     if(it != hash_to_chunk_.end()) return it->second;
 
-    CodeChunk chunk;
+    FShaderCodeChunk chunk;
     chunk.hash = hash;
     chunk.code = code;
     chunk.type = type;                                    // ← 原来漏了，导致 chunk 类型全是 Unknown
@@ -62,7 +62,7 @@ int32_t MaterialCompiler::AddConstantChunk(EMaterialValueType type, const ConstV
     auto it = hash_to_chunk_.find(hash);
     if (it != hash_to_chunk_.end()) return it->second;
 
-    CodeChunk chunk;
+    FShaderCodeChunk chunk;
     chunk.hash = hash;
     chunk.code = const_code;
     chunk.type = type;

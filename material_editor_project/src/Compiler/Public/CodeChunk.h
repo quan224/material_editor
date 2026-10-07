@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <variant>
 
-struct CodeChunk{
+struct FShaderCodeChunk{
     uint64_t hash = 0;  // 哈希，去重用(相同代码只存一份)
     std::string code;  // HLSL片段, 如“Local0+Local1”
     std::string symbol_name;  // 变量名，如"Local2"
