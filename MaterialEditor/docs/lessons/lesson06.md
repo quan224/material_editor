@@ -713,9 +713,10 @@ struct FShaderCodeChunk {
     int32_t used_scope = -1;                  // 使用所在作用域（UE UsedScopeIndex）
     int32_t scope_level = 0;                  // 作用域嵌套层级（UE ScopeLevel）
 
-    // 按变体取定义串（UE AtDefinition 同款）
-    const std::string& AtCode(bool analytic) const {
-        return analytic && !code_analytic.empty() ? code_analytic : code;
+    // 按变体取定义串（对照 UE AtDefinition, HLSLMaterialTranslator.h:126）
+    const std::string& AtDefinition(ECompiledPartialDerivativeVariation variation) const {
+        return variation == ECompiledPartialDerivativeVariation::Analytic
+               && !code_analytic.empty() ? code_analytic : code;
     }
 };
 ```
@@ -1582,7 +1583,7 @@ assert(c.GetParameterCode(-1) == "0.0");
 - [ ] `UniformExpression` 基类（`IsConstant` / `IsIdentical` / `GetNumberValue(ctx, out)` 三个虚函数，语义对齐 UE）
 - [ ] `UniformConstant`（Vec4 4 分量 + 类型标签，对齐 `FMaterialUniformExpressionConstant`）
 - [ ] `UniformFoldedMath`（`EFoldedMathOp` 6 运算 + 递归 IsConstant/IsIdentical）+ 一元独立子类（UniformNeg/UniformAbs/UniformSine/UniformCosine/UniformRcp，对照 UE 每运算一类）
-- [ ] `FShaderCodeChunk` 全字段版（**与 UE 逐字段一一对应，零省略**）：`material_attribute_mask` / `code` + `code_analytic` 双轨 / `derivative_status`（EDerivativeStatus 四值）/ 作用域三件套 + `scoped_chunks` / `is_intermediate` / `AtCode(variant)` + `uniform_expression` 树指针 + 两种 chunk 来源的语义（表达式块无 SymbolName）
+- [ ] `FShaderCodeChunk` 全字段版（**与 UE 逐字段一一对应，零省略**）：`material_attribute_mask` / `code` + `code_analytic` 双轨 / `derivative_status`（EDerivativeStatus 四值）/ 作用域三件套 + `scoped_chunks` / `is_intermediate` / `AtDefinition(variation)` + `uniform_expression` 树指针 + 两种 chunk 来源的语义（表达式块无 SymbolName）
 - [ ] `MaterialCompiler` 抽象基类（纯虚算子接口）+ `HLSLTranslator` 实现（两层结构，依赖倒置）
 - [ ] `CompileError` / `EErrorSeverity` / `CompileResult`（errors 数组 + `HasErrors`）+ `EmitError`（SameAs 去重）+ `current_node_`/`current_pin_` 上下文
 - [ ] `AddCodeChunk`（Unknown→-1 / 内联不去重 / 数值类型限制 / 纹理报错）+ `AddInlinedCodeChunk` + `AddUniformExpression`（IsIdentical 双层去重 + 材质级表达式表）

@@ -11,15 +11,14 @@
 | | 内容 |
 |---|---|
 | **输入** | 表达式树六类刚完成（`UniformExpression.h`）——本步把树接到 chunk 上 |
-| **产出** | ① `EDerivativeStatus` 枚举 ② `FShaderCodeChunk` 7 字段简化版 → 全字段版（17 字段 + AtCode）③ 旧代码（MaterialCompiler.cpp）最小适配编译过 |
+| **产出** | ① `EDerivativeStatus` 枚举 ② `FShaderCodeChunk` 7 字段简化版 → 全字段版（17 字段 + AtDefinition）③ 旧代码（MaterialCompiler.cpp）最小适配编译过 |
 | **下游消费者** | ⑤代码块管理（AddCodeChunk/AddUniformExpression 装配它、双层去重）、⑥算子、课 8 生成器（code/code_analytic 双轨、is_intermediate 剔除）、课 18（material_attribute_mask）、课 20（scoped_chunks、作用域三件套、DerivativeAutogen 写 derivative_status） |
 | **本步不做** | chunk 的构造/去重逻辑（⑤）、算子三轨（⑥）、旧编译器整体拆两层（④） |
 
-## 1. 命名裁决（动手前看一眼，有异议先说）
+## 1. 命名裁决（2026-10-08 终裁）
 
-lesson06 与 lesson08 **两份已定稿教案**统一用了：字段 snake_case（`symbol_name`/`is_inline`...）、方法 `AtCode(bool analytic)`。UE 原文是：字段 PascalCase（`SymbolName`）、方法 `AtDefinition(ECompiledPartialDerivativeVariation)`（枚举在 `MaterialShared.h:2043`）。
-
-本稿默认**沿用两份教案的定稿**（snake + `AtCode(bool)`）——理由：改字段名要连锁修订 lesson06/08 已定稿教案和现有生成器相关代码，收益只是拼写一致。如果你想全 UE 化（Pascal + AtDefinition + 变体枚举），那是推翻已定稿教案的裁决，说一声我再同步改教案。
+**类名/方法名对齐 UE**：`AtDefinition(ECompiledPartialDerivativeVariation)`（枚举已建在 HLSLMaterialDerivativeAutogen.h，对照 UE `MaterialShared.h:2043`）。
+**字段保持 snake_case**（`symbol_name`/`is_inline`...）——用户自己对照 UE PascalCase 原文，对照表见文末附录。
 
 ## 2. EDerivativeStatus → 独立文件 `src/Compiler/Public/HLSLMaterialDerivativeAutogen.h`
 
@@ -78,9 +77,10 @@ struct FShaderCodeChunk {
     bool is_intermediate = false;       // :122 中间块：无引用者时课 8 生成可剔除（UE bIntermediate）
     EDerivativeStatus derivative_status = EDerivativeStatus::NotAware;   // :124
 
-    // 按变体取定义串（UE AtDefinition :126-137 的 bool 版）
-    const std::string& AtCode(bool analytic) const {
-        return analytic && !code_analytic.empty() ? code_analytic : code;
+    // 按变体取定义串（对照 UE AtDefinition :126）
+    const std::string& AtDefinition(ECompiledPartialDerivativeVariation variation) const {
+        return variation == ECompiledPartialDerivativeVariation::Analytic
+               && !code_analytic.empty() ? code_analytic : code;
     }
 
     // === 两个构造（UE :140-174 照抄，语义见 §4）===
@@ -112,7 +112,7 @@ struct FShaderCodeChunk {
 
 **相对旧版（7 字段）的变化**：
 - `is_constant` + `constant_value(variant)` **退役**——由 `uniform_expression` 树指针替代（树能表达 variant 表达不了的"含参数"形态）
-- 新增 10 个字段 + AtCode + 两个构造
+- 新增 10 个字段 + AtDefinition + 两个构造
 
 ## 4. 两个构造函数的语义（UE :140/:160 注释原文的翻译）
 
@@ -150,14 +150,14 @@ return c.symbol_name;                       // 非内联 → 变量名（引用�
 结构升级 + 适配完成后：
 
 1. `cmake --build build --config Debug` 零错误（CodeChunk.h 现在被 MaterialCompiler.cpp 真实编译着，不是假阴性）
-2. 字段自查（对照 §3 表逐个 grep）：`grep -c "material_attribute_mask\|code_analytic\|derivative_status\|is_intermediate\|AtCode" Compiler/Public/CodeChunk.h` → 5 类全命中
+2. 字段自查（对照 §3 表逐个 grep）：`grep -c "material_attribute_mask\|code_analytic\|derivative_status\|is_intermediate\|AtDefinition" Compiler/Public/CodeChunk.h` → 5 类全命中
 3. 行为小测（写进 ExprTreeTest 尾部或临时 main 三行）：
    ```cpp
    FShaderCodeChunk c1(0, "1.0+2.0", "", "", MCT_Float, EDerivativeStatus::NotAware, true);
    FShaderCodeChunk c2(0, nullptr_expr_ptr, "3.0", "", MCT_Float, EDerivativeStatus::Zero);
-   // AtCode 双轨：analytic 为空时回落 finite
-   assert(c1.AtCode(true) == "1.0+2.0");   // code_analytic 空 → 回落
-   assert(c2.AtCode(false) == "3.0");
+   // AtDefinition 双轨：analytic 为空时回落 finite
+   assert(c1.AtDefinition(ECompiledPartialDerivativeVariation::Analytic) == "1.0+2.0");   // code_analytic 空 → 回落
+   assert(c2.AtDefinition(ECompiledPartialDerivativeVariation::FiniteDifferences) == "3.0");
    assert(c2.symbol_name.empty());          // 表达式构造无符号名
    assert(!c2.is_inline);                   // 表达式构造恒非内联
    ```
@@ -165,7 +165,7 @@ return c.symbol_name;                       // 非内联 → 变量名（引用�
 ## 7. 完成标志（本步可勾）
 
 - [ ] `EDerivativeStatus` 四值枚举（照抄 UE :20）
-- [ ] FShaderCodeChunk 17 字段 + `AtCode(bool)` + 两个构造（参数与 UE :140/:160 一一对应）
+- [ ] FShaderCodeChunk 17 字段 + `AtDefinition(variation)` + 两个构造（参数与 UE :140/:160 一一对应）
 - [ ] `is_constant`/`constant_value` 退役，无残留引用
 - [ ] §5 五处旧代码适配完成，`MaterialCompiler.cpp` 编译零错误
 - [ ] §6 验证全过
@@ -187,7 +187,7 @@ return c.symbol_name;                       // 非内联 → 变量名（引用�
 | is_inline | bInline | :121 | 现在 |
 | is_intermediate | bIntermediate | :122 | 课 8 剔除 |
 | derivative_status | DerivativeStatus | :124 | 课 20 写 |
-| AtCode(bool) | AtDefinition(ECompiledPartialDerivativeVariation) | :126 | 课 8（命名差异见 §1） |
+| AtDefinition(ECompiledPartialDerivativeVariation) | AtDefinition(ECompiledPartialDerivativeVariation) | :126 | 课 8 |
 | 构造① | 纯代码块构造 | :140 | ⑤ |
 | 构造② | 带表达式构造 | :160 | ⑤ |
 | IsDerivativeValid（已随枚举搬入独立文件） | IsDerivativeValid | DerivativeAutogen.h:30 | 课 20 |
