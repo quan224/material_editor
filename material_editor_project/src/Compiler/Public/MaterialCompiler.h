@@ -11,7 +11,7 @@
 #include "Compiler/Public/CompileError.h"
 
 
-class MaterialCompiler{
+class FMaterialCompiler{
 
 public:
     struct CompileResult {

@@ -47,8 +47,13 @@ enum EMaterialValueType : uint64_t
     MCT_LWCVector3 = 1u<<20,  // 双精度三维
     MCT_LWCVector4 = 1u<<21,  // 双精度四维
     MCT_Execution = 1u<<22,  // 执行流引脚(静态开关分支)
+    MCT_VoidStatement = 1u<<23,  // 无值语句块（非表达式）
     MCT_Bool = 1u<<24,  // 动态bool
+    MCT_TextureCollection = 1u<<29,  // 贴图集合修饰位
+    MCT_TextureMeshPaint = 1u<<30,  // 网格绘制纹理
+    MCT_TextureMaterialCache = 1u<<31,  // 材质缓存纹理
     MCT_LWCMatrix = 1ull<<34,  // 双精度矩阵(大世界变换)
+    MCT_MaterialCacheABuffer = 1ull<<35,  // 材质缓存 A Buffer
 
     // 无符号整数
     MCT_UInt1 = 1u<<25,
@@ -61,12 +66,16 @@ enum EMaterialValueType : uint64_t
     MCT_Float4x4 = 1ull<<33,
     MCT_Unexposed = 1ull<<36,  // 不暴露给用户的内部类型
 
-    // 类别掩码
-    MCT_Float = MCT_Float1|MCT_Float2|MCT_Float3|MCT_Float4, // 任意float
-    MCT_LWCType = MCT_LWCScalar|MCT_LWCVector2|MCT_LWCVector3|MCT_LWCVector4,  // 任意LWC值
-    MCT_UInt = MCT_UInt1|MCT_UInt2|MCT_UInt3|MCT_UInt4,  // 任意无符号整数
-    MCT_Numeric = MCT_Float|MCT_LWCType|MCT_UInt,  // 任意数值(对齐UE含UInt; UE还含Bool,教学版Bool单独判)
-    MCT_Texture = MCT_Texture2D|MCT_TextureCube|MCT_Texture2DArray|MCT_TextureCubeArray|MCT_VolumeTexture|MCT_TextureExternal|MCT_TextureVirtual|MCT_SparseVolumeTexture,  // 任意纹理(对齐UE掩码成员,不含VTPageTableResult内部类型)
+    // 授权方自定义保留段(bit48-63)
+    MCT_LicenseeReservedBegin = 1ull<<48,
+    MCT_LicenseeReservedEnd = 1ull<<63,
+
+    // 类别掩码（对齐 UE 原文：Texture 不含 SparseVolumeTexture，Numeric 含 Bool）
+    MCT_Float = MCT_Float1|MCT_Float2|MCT_Float3|MCT_Float4,
+    MCT_UInt = MCT_UInt1|MCT_UInt2|MCT_UInt3|MCT_UInt4,
+    MCT_LWCType = MCT_LWCScalar|MCT_LWCVector2|MCT_LWCVector3|MCT_LWCVector4,
+    MCT_Numeric = MCT_Float|MCT_LWCType|MCT_Bool,
+    MCT_Texture = MCT_Texture2D|MCT_TextureCube|MCT_Texture2DArray|MCT_TextureCubeArray|MCT_VolumeTexture|MCT_TextureExternal|MCT_TextureVirtual|MCT_TextureMeshPaint|MCT_TextureMaterialCache,
 
 };
 

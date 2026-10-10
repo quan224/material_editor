@@ -78,3 +78,46 @@ struct FShaderCodeChunk{
     {}
 
 };
+
+class FHLSLMaterialTranslator: public FMaterialCompiler{
+
+public:
+    /**
+     * Tests if a type is a valid argument to a variadic function, e.g. printf.
+     */
+    template <typename T>
+    struct TIsValidVariadicFunctionArg
+    {
+    private:
+        using DecayedT = std::decay_t<T>;
+
+    public:
+        static constexpr bool Value =
+            std::is_enum_v      <DecayedT> ||
+            std::is_arithmetic_v<DecayedT> ||
+            std::is_pointer_v   <DecayedT> ||
+            std::is_same_v      <DecayedT, TYPE_OF_NULLPTR>;
+    };
+
+protected:
+    /** Adds an already formatted inline or referenced code chunk */
+	int32_t AddCodeChunkInner(uint64_t hash, const char* formatted_type, const char* formatted_code, EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined);
+	int32_t AddCodeChunkInner(uint64_t Hash, const char* formatted_code, EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined);
+
+protected:
+    /** 
+	* Constructs the formatted code chunk and creates a new local variable definition from it. 
+	* This should be used over AddInlinedCodeChunk when the code chunk adds actual instructions, and especially when calling a function.
+	* Creating local variables instead of inlining simplifies the generated code and reduces redundant expression chains,
+	* Making compiles faster and enabling the shader optimizer to do a better job.
+	*/
+    int32_t AddCodeChunkInner(EMaterialValueType t, const char* formated_type, EDerivativeStatus derivative_status, bool in_lined, const char* format, ...);
+    int32_t AddCodeChunkInner(EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined, const char* format, ...);
+
+    template<typename... types>
+    int32_t AddCodeChunk(EMaterialValueType t, const char* format, types... args){
+        ME_CHECK(TIsValidVariadicFunctionArg<types>::Value&&...);
+        return AddCodeChunkInner(t, EDerivativeStatus::NotAware, false, format, args...);
+    }
+
+};
