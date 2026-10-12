@@ -69,7 +69,7 @@ struct FShaderCodeChunk {
     Ref<FMaterialUniformExpression> uniform_expression;  // :108 表达式树指针；空=纯 GPU 代码块
     std::vector<int32_t> scoped_chunks;   // :110 作用域挂在本块下的子块（翻译完成后填，课 20）
     std::vector<int32_t> references;      // :113 依赖的 chunk 索引（UE ReferencedCodeChunks）
-    EMaterialValueType type = MCT_Unknown;   // :115
+    EMaterialValueType type_ = MCT_Unknown;   // :115
     int32_t declared_scope = -1;        // :117 声明所在作用域（UE DeclaredScopeIndex，课 20）
     int32_t used_scope = -1;            // :118 使用所在作用域（UE UsedScopeIndex，课 20）
     int32_t scope_level = 0;            // :119 作用域嵌套层级（UE ScopeLevel，课 20）
@@ -126,8 +126,8 @@ struct FShaderCodeChunk {
 由此，⑤的 `GetParameterCode` 是三段判断（顺序重要）：
 
 ```cpp
-if (c.uniform_expression) return c.code;   // 有树 → 定义串直接用
-if (c.is_inline)           return c.code;   // 内联块 → 定义串
+if (c.uniform_expression) return c.definition_finite;   // 有树 → 定义串直接用
+if (c.b_inline)           return c.definition_finite;   // 内联块 → 定义串
 return c.symbol_name;                       // 非内联 → 变量名（引用声明）
 ```
 
@@ -159,7 +159,7 @@ return c.symbol_name;                       // 非内联 → 变量名（引用�
    assert(c1.AtDefinition(ECompiledPartialDerivativeVariation::Analytic) == "1.0+2.0");   // code_analytic 空 → 回落
    assert(c2.AtDefinition(ECompiledPartialDerivativeVariation::FiniteDifferences) == "3.0");
    assert(c2.symbol_name.empty());          // 表达式构造无符号名
-   assert(!c2.is_inline);                   // 表达式构造恒非内联
+   assert(!c2.b_inline);                   // 表达式构造恒非内联
    ```
 
 ## 7. 完成标志（本步可勾）

@@ -734,8 +734,8 @@ UE 给了两个构造函数（`.h:143` / `.h:160`），对应 chunk 的两种来
 // 有表达式树 → 直接用定义串（常量字面量 / preshader 访问）
 // 内联块    → 定义串
 // 非内联块  → 变量名（引用 float3 Local0 = ...; 的声明）
-if (c.uniform_expression) return c.code;
-if (c.is_inline)          return c.code;
+if (c.uniform_expression) return c.definition_finite;
+if (c.b_inline)          return c.definition_finite;
 return c.symbol_name;
 ```
 
@@ -1052,11 +1052,11 @@ int32_t HLSLTranslator::AddCodeChunk(EValueType type, const std::string& code, b
         FShaderCodeChunk chunk;
         std::string symbol = MakeSymbolName();   // 先生成一次，code 和 symbol_name 共用
         chunk.hash = hash;
-        chunk.code = "\t" + std::string(TypeSystem::ToHLSLType(type)) + " "
+        chunk.definition_finite = "\t" + std::string(TypeSystem::ToHLSLType(type)) + " "
                    + symbol + " = " + code + ";";  // UE .cpp:3380：定义串含声明+换行
         chunk.symbol_name = symbol;
-        chunk.type = type;
-        chunk.is_inline = false;
+        chunk.type_ = type;
+        chunk.b_inline = false;
         chunks_.push_back(chunk);
         index = (int32_t)chunks_.size() - 1;
         hash_to_chunk_[hash] = index;
@@ -1067,7 +1067,7 @@ int32_t HLSLTranslator::AddCodeChunk(EValueType type, const std::string& code, b
         EmitError("Operation not supported for type " + DescribeType(type));
         return -1;
     }
-    chunks_[index].references = {};   // 调用方按需填
+    chunks_[index].referenced_code_chunks = {};   // 调用方按需填
     return index;
 }
 
@@ -1112,9 +1112,9 @@ int32_t HLSLTranslator::AddUniformExpression(Ref<UniformExpression> expr,
 
     FShaderCodeChunk chunk;
     chunk.hash = HashString("expr_" + code);
-    chunk.code = code;                          // 表达式块：code 直接嵌（无 SymbolName）
-    chunk.type = type;
-    chunk.is_inline = false;                    // UE 带表达式构造 bInline=false
+    chunk.definition_finite = code;                          // 表达式块：code 直接嵌（无 SymbolName）
+    chunk.type_ = type;
+    chunk.b_inline = false;                    // UE 带表达式构造 bInline=false
     chunk.uniform_expression = expr;            // 挂树（chunk 的 Ref 与登记表共享计数）
     chunks_.push_back(chunk);
     int32_t index = (int32_t)chunks_.size() - 1;
@@ -1163,13 +1163,13 @@ std::string HLSLTranslator::GetParameterCode(int32_t index) const {
     assert(index >= 0 && index < (int32_t)chunks_.size());
     if (index < 0 || index >= (int32_t)chunks_.size()) return "0.0";
     const auto& c = chunks_[index];
-    if (c.uniform_expression) return c.code;   // 表达式块：定义串直接用（UE 字段注释语义）
-    return c.is_inline ? c.code : c.symbol_name;
+    if (c.uniform_expression) return c.definition_finite;   // 表达式块：定义串直接用（UE 字段注释语义）
+    return c.b_inline ? c.definition_finite : c.symbol_name;
 }
 EValueType HLSLTranslator::GetType(int32_t index) const {
     assert(index >= 0 && index < (int32_t)chunks_.size());
     if (index < 0 || index >= (int32_t)chunks_.size()) return MCT_Unknown;
-    return chunks_[index].type;
+    return chunks_[index].type_;
 }
 EValueType HLSLTranslator::GetParameterType(int32_t index) const { return GetType(index); }
 
@@ -1444,9 +1444,9 @@ struct CompilerTestAccess {
     static int32_t MakeRawChunk(HLSLTranslator& c, EValueType type, const std::string& code) {
         FShaderCodeChunk chunk;
         chunk.hash = HashString(code);
-        chunk.code = code;
-        chunk.type = type;
-        chunk.is_inline = true;   // 简单起见内联块（无 uniform_expression）
+        chunk.definition_finite = code;
+        chunk.type_ = type;
+        chunk.b_inline = true;   // 简单起见内联块（无 uniform_expression）
         c.chunks_.push_back(chunk);
         return (int32_t)c.chunks_.size() - 1;
     }

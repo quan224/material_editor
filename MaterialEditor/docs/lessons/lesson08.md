@@ -329,7 +329,7 @@ std::vector<int32_t> TopoSortChunks(
             return false;
         }
         color[i] = DFSColor::Gray;   // 进入栈
-        for (int32_t ref : chunks[i].references) {
+        for (int32_t ref : chunks[i].referenced_code_chunks) {
             if (!dfs(ref)) return false;
         }
         color[i] = DFSColor::Black;  // 离开栈，标记完成
@@ -377,7 +377,7 @@ public:
         // uniform / texture 描述（参数系统提供，见课 20；无参数图时为空）
         UniformCollector uniforms;
         // 导数变体选择（对照 UE ECompiledPartialDerivativeVariation）：
-        // false=有限差分（普通材质，用 chunk.code）；true=解析导数（位移材质，用 chunk.code_analytic）
+        // false=有限差分（普通材质，用 chunk.definition_finite）；true=解析导数（位移材质，用 chunk.definition_analytic）
         bool bAnalyticDerivatives = false;
     };
 
@@ -408,9 +408,9 @@ public:
         std::string declarations;
         for (int32_t idx : order) {
             const auto& chunk = (*params.chunks)[idx];
-            if (chunk.is_inline) continue;
-            if (chunk.is_intermediate && CountReferencers(idx, *params.chunks) == 0) continue;
-            declarations += "    " + std::string(TypeSystem::ToHLSLType(chunk.type))
+            if (chunk.b_inline) continue;
+            if (chunk.b_intermediate && CountReferencers(idx, *params.chunks) == 0) continue;
+            declarations += "    " + std::string(TypeSystem::ToHLSLType(chunk.type_))
                           + " " + chunk.symbol_name + " = "
                           + chunk.AtDefinition(params.bAnalyticDerivatives) + ";\n";
         }
@@ -471,7 +471,7 @@ private:
     static std::string GetChunkCode(const std::vector<FShaderCodeChunk>& chunks, int32_t idx) {
         if (idx < 0 || idx >= (int32_t)chunks.size()) return "0.0";
         const auto& chunk = chunks[idx];
-        return chunk.is_inline ? chunk.code : chunk.symbol_name;
+        return chunk.b_inline ? chunk.definition_finite : chunk.symbol_name;
     }
 
     static void ReplaceAll(std::string& str, const std::string& from, const std::string& to) {

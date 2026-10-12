@@ -1,6 +1,8 @@
 #pragma once
 #include "MaterialTypes/Public/ValueType.h"
-#include "Core/Public/MathTypes.h"   // Vec2/3/4（constant_value variant 用）
+#include "Core/Public/MathTypes.h" 
+#include "Core/Public/StringBuilder.h"
+#include "Core/Public/Hash.h"
 #include "Compiler/Public/HLSLMaterialDerivativeAutogen.h"
 #include "Compiler/Public/MaterialShared.h"
 #include "Expression/Public/UniformExpression.h"
@@ -15,11 +17,11 @@ struct FShaderCodeChunk{
     uint64_t hash = 0;
     uint64_t material_attribute_mask = 0;  // MaterialAttributes 引脚的属性位掩码
     std::string definition_finite;  // :97  定义串·有限差分版（UE DefinitionFinite）
-    std::string definition_analytic;  // :101 定义串·解析导数版（UE DefinitionAnalytic
+    std::string definition_analytic;  // :101 定义串·解析导数版（UE DefinitionAnalytic）
     std::string symbol_name;  // 局部变量名
     Ref<FMaterialUniformExpression> uniform_expression;  // 表达式树指针
     std::vector<int32_t> scoped_chunks;  // 作用域挂在本块下的子块
-    std::vector<int32_t> referenced_code_chunks;  // 以来的chunk索引
+    std::vector<int32_t> referenced_code_chunks;  // 依赖的chunk索引
     EMaterialValueType type_ = MCT_Unknown;
     int32_t declared_scope_index = -1;  // 声明所在的作用域
     int32_t used_scope_index = -1;  // 使用所在作用域
@@ -98,6 +100,8 @@ public:
             std::is_pointer_v   <DecayedT> ||
             std::is_same_v      <DecayedT, TYPE_OF_NULLPTR>;
     };
+
+    const char* HLSLTypeString(EMaterialValueType Type) const;
 
 protected:
     /** Adds an already formatted inline or referenced code chunk */
