@@ -58,6 +58,20 @@ public:
         return *this;
     }
 
+    // va_list 版 Appendf（可变参数转发用，对照 UE AppendV）
+    FStringBuilderBase& AppendV(const char* fmt, va_list args) {
+        va_list copy;
+        va_copy(copy, args);
+        int need = vsnprintf(nullptr, 0, fmt, copy);
+        va_end(copy);
+        if (need > 0) {
+            Ensure(len_ + (size_t)need + 1);
+            vsnprintf(data_ + len_, (size_t)need + 1, fmt, args);
+            len_ += (size_t)need;
+        }
+        return *this;
+    }
+
     template<typename T>
     FStringBuilderBase& operator<<(const T& v) { return Append(v); }
 

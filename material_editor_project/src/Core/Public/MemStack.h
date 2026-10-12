@@ -20,17 +20,18 @@ public:
         end_ = top_+CHUNK_;
     }
 
-    // 借n字节裸内存（单词分配永远连续，绝不跨快）
-    void* Alloc(size_t n){
-        if((top_+n)>end_){
-            size_t chunk_size = ChunkSizeFor(n);
+    // 借 n 字节裸内存，地址按 alignment 向上取整（对照 UE Alloc(Size, Alignment) MemStack.h:132，默认 8 = UE MIN_ALIGNMENT）
+    void* Alloc(size_t n, size_t alignment = 8){
+        char* aligned = AlignPtr(top_, alignment);
+        if((aligned+n)>end_){
+            size_t chunk_size = ChunkSizeFor(n+alignment);   // 多借 alignment（对齐可能浪费前缀，UE :152 同款）
             chunks_.push_back(std::make_unique<char[]>(chunk_size));
             top_ = chunks_.back().get();
             end_ = top_+chunk_size;
+            aligned = AlignPtr(top_, alignment);
         }
-        void* p = top_;
-        top_+=n;
-        return p;
+        top_ = aligned+n;
+        return aligned;
     }
 
     const char* AllocateString(const std::string& s){
@@ -42,7 +43,7 @@ public:
 
     template<typename T, typename... Args>
     T* New(Args... args){
-        return new(Alloc(sizeof(T))) T(std::forward<Args>(args)...);
+        return new(Alloc(sizeof(T), alignof(T))) T(std::forward<Args>(args)...);   // 类型对齐自动传
     }
 
     Mark GetMark(){return Mark{top_};}
@@ -51,6 +52,11 @@ public:
 
 
 private:
+    // 地址向上取整到 2 的幂对齐（对照 UE Align 宏）
+    static char* AlignPtr(char* p, size_t alignment){
+        return (char*)(((uintptr_t)p + alignment-1) & ~(uintptr_t)(alignment-1));
+    }
+
     // 分档（按4KB翻倍，找寻最小但能放得下的块）
     static size_t ChunkSizeFor(size_t n){
         size_t chunk_size = CHUNK_;
