@@ -5,6 +5,7 @@
 #include "Core/Public/Hash.h"
 #include "Compiler/Public/HLSLMaterialDerivativeAutogen.h"
 #include "Compiler/Public/MaterialShared.h"
+#include "Compiler/Public/MaterialCompiler.h"
 #include "Expression/Public/UniformExpression.h"
 #include "MaterialTypes/Public/MiscDefines.h"
 #include "Core/Public/Logger.h"
@@ -104,11 +105,14 @@ public:
     const char* HLSLTypeString(EMaterialValueType Type) const;
 
 protected:
+
+    std::string CreateSymbolName(const char* symbol_name_hint);
+    void AddCodeChunkToCurrentScope(int32_t chunk_index);
+
     /** Adds an already formatted inline or referenced code chunk */
 	int32_t AddCodeChunkInner(uint64_t hash, const char* formatted_type, const char* formatted_code, EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined);
 	int32_t AddCodeChunkInner(uint64_t Hash, const char* formatted_code, EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined);
 
-protected:
     /** 
 	* Constructs the formatted code chunk and creates a new local variable definition from it. 
 	* This should be used over AddInlinedCodeChunk when the code chunk adds actual instructions, and especially when calling a function.
@@ -123,5 +127,10 @@ protected:
         ME_CHECK(TIsValidVariadicFunctionArg<types>::Value&&...);
         return AddCodeChunkInner(t, EDerivativeStatus::NotAware, false, format, args...);
     }
+
+    std::vector<FShaderCodeChunk*> current_scope_chunks;
+    std::vector<int32_t> scope_stack;
+    int32_t next_symbol_index;
+
 
 };

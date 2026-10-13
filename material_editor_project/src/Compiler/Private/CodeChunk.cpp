@@ -1,6 +1,8 @@
 #pragma once
 #include "Compiler/Public/CodeChunk.h"
 
+#define HLSL_LINE_TERMINATOR "\n"
+
 const char* FHLSLMaterialTranslator::HLSLTypeString(EMaterialValueType Type) const
 {
 	switch (Type)
@@ -40,10 +42,67 @@ const char* FHLSLMaterialTranslator::HLSLTypeString(EMaterialValueType Type) con
 	default:						return "unknown";
 	};
 }
+std::string FHLSLMaterialTranslator::CreateSymbolName(const char* symbol_name_hint) {
+	return symbol_name_hint + std::to_string(next_symbol_index++);
+}
 
+void FHLSLMaterialTranslator::AddCodeChunkToCurrentScope(int32_t chunk_index) {
+	if (chunk_index != INDEX_NONE && scope_stack.size() > 0) {
+		const int32_t current_scope_index = scope_stack.size();
+		AddCodeChunkToScope(chunk_index, current_scope_index);  // 需要先记录下这里的流程以及AddCodeChunkToScope实在做什么
+
+	}
+}
 
 int32_t FHLSLMaterialTranslator::AddCodeChunkInner(uint64_t hash, const char* formatted_type, const char* formatted_code, EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined) {
+	if (t == MCT_Unknown) {
+		return INDEX_NONE;
+	}
+	const bool b_from_texture_collection = (t & MCT_TextureCollection) != 0;
+	int32_t code_index = INDEX_NONE;
+	if (t == MCT_VoidStatement) {
+		code_index = current_scope_chunks.size();
+		const std::string statement = std::string(formatted_code) + HLSL_LINE_TERMINATOR;
+		current_scope_chunks.emplace_back(hash, statement.c_str(), statement.c_str(), "", t, derivative_status, true);
+	}
+	else if (in_lined) {
+		code_index = current_scope_chunks.size();
+		current_scope_chunks.emplace_back(hash, formatted_code, formatted_code, "", t, derivative_status, true);
+	}
+	else if ((t & (MCT_Float | MCT_LWCType | MCT_VTPageTableResult | MCT_Unexposed | MCT_UInt)) || t == MCT_ShadingModel || t == MCT_MaterialAttributes || t == MCT_Substrate || t == MCT_UInt || b_from_texture_collection || t == MCT_MaterialCacheABuffer) {
 
+		for (int32_t i = 0; i < current_scope_chunks.size(); i++) {
+			if (current_scope_chunks[i]->hash == hash) {
+				code_index = i;
+				break;
+			}
+			if (code_index == INDEX_NONE) {
+				code_index = current_scope_chunks.size();
+				const std::string symbol_name = CreateSymbolName("Local");
+				const std::string local_variable_definition_finite = std::string(" ") + formatted_type + " " + symbol_name + " = " + formatted_code + ";" + HLSL_LINE_TERMINATOR;
+				const std::string local_variable_definition_analytic = std::string("	") + formatted_type + " " + symbol_name + " = " + formatted_code + ";" + HLSL_LINE_TERMINATOR;
+				current_scope_chunks.emplace_back(hash, local_variable_definition_finite.c_str(), local_variable_definition_analytic.c_str(), symbol_name.c_str(), t, derivative_status, false);
+			}
+		}
+	}
+	else {
+		if (t & MCT_Texture) {
+			ME_LOG_ERROR("Operation not supported on a Texture");
+			return INDEX_NONE;
+		}
+		else if (t == MCT_StaticBool)
+		{
+			ME_LOG_ERROR("Operation not supported on a Static Bool");
+			return INDEX_NONE;
+		}
+		else
+		{
+			ME_LOG_ERROR("Operation not supported for type %s", DescribeType(t));
+			return INDEX_NONE;
+		}
+	}
+	AddCodeChunkToCurrentScope(code_index);
+	return code_index;
 }
 
 int32_t FHLSLMaterialTranslator::AddCodeChunkInner(EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined, const char* format, ...) {
