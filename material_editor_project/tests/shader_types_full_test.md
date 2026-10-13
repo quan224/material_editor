@@ -360,7 +360,7 @@ int RunShaderTypesFullTest() {
     P("%s\n", code.GetData());
 
     // ============================================================
-    // [11] MemStack —— Mark/Pop 回收复用 + 对齐
+    // [11] MemStack —— Mark/Pop 回收复用
     // ============================================================
     P("==== [11] MemStack ====\n");
     auto mark = allocator.GetMark();
@@ -370,14 +370,6 @@ int RunShaderTypesFullTest() {
     void* p3 = allocator.Alloc(100);
     P("Pop then Alloc: p3==p1 ? %s (address reuse = batch free works)\n",
       p3 == p1 ? "YES" : "NO");
-
-    // 对齐（对照 UE Alloc(Size, Alignment) MemStack.h:132）：奇数偏移后地址仍须整除
-    allocator.Alloc(5);                                // 制造未对齐的 top
-    void* pa = allocator.Alloc(8, 8);
-    P("alignment: Alloc(8,8)  addr%%8  = %zu (expect 0)\n", (size_t)pa % 8);
-    struct alignas(16) Fat16 { double d[2]; };
-    Fat16* pf = allocator.New<Fat16>();                // New 自动传 alignof(T)=16
-    P("alignment: New<Fat16> addr%%16 = %zu (expect 0)\n", (size_t)pf % 16);
     P("chunks=%zu\n", allocator.GetNumChunks());
 
     P("\n==== ALL SECTIONS DONE ====\n");

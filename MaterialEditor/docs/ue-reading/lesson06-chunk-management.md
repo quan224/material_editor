@@ -120,6 +120,27 @@ Mul 算子（⑥）先问：IsExpressionConstantValue(B, 0.0f)
 
 ConstResultValue 是**所有折叠算子共同的出口**（Mul/Div/Add 折完都调它入库）；IsExpressionConstantValue 是化简判定的眼睛——两个函数合起来，代数化简才跑得通。
 
+## 测试案例
+
+### MemStack 对齐（Alloc 已带 alignment，对照 UE FMemStackBase::Alloc MemStack.h:132）
+
+```cpp
+MemStack allocator;
+
+// 先借奇数大小，把分配指针推到未对齐地址——没有对齐逻辑时下一个 8 对齐分配必拿到奇数地址
+allocator.Alloc(5);
+void* pa = allocator.Alloc(8, 8);
+printf("Alloc(8,8)  addr%%8  = %zu (expect 0)\n", (size_t)pa % 8);
+
+// New<T> 自动传 alignof(T)：16 对齐结构在未对齐偏移后仍须落在 16 的倍数
+struct alignas(16) Fat16 { double d[2]; };
+allocator.Alloc(5);                       // 再推一次未对齐
+Fat16* pf = allocator.New<Fat16>();
+printf("New<Fat16> addr%%16 = %zu (expect 0)\n", (size_t)pf % 16);
+```
+
+两行都打印 0 即通过。X86 上未对齐"碰巧也能跑"，别被它骗了——这个测试是防 ARM/严格平台崩的。
+
 ## ⑤ 之后
 
 ⑥ 算子（同文件）：`Constant/2/3/4` 搜 `.cpp:5211`；`Add/Sub/Mul/Div` 搜 `.cpp:9484` 起。⑥ 完成即课 6 收尾（compiler_test 按教案 lesson06.md 第九部分）。
