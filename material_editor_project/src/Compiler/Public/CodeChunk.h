@@ -4,6 +4,7 @@
 #include "Core/Public/StringBuilder.h"
 #include "Core/Public/Hash.h"
 #include "Compiler/Public/HLSLMaterialDerivativeAutogen.h"
+#include "Core/Public/MemStack.h"
 #include "Compiler/Public/MaterialShared.h"
 #include "Compiler/Public/MaterialCompiler.h"
 #include "Expression/Public/UniformExpression.h"
@@ -12,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <type_traits>
 #include <variant>
 
 struct FShaderCodeChunk{
@@ -85,6 +87,9 @@ struct FShaderCodeChunk{
 class FHLSLMaterialTranslator: public FMaterialCompiler{
 
 public:
+    // MemStack 由外部传入，生命周期须罩住整个编译过程（编译完 Mark/Pop 批量回收 chunk）
+    explicit FHLSLMaterialTranslator(MemStack& in_allocator) : allocator(&in_allocator) {}
+
     /**
      * Tests if a type is a valid argument to a variadic function, e.g. printf.
      */
@@ -99,7 +104,7 @@ public:
             std::is_enum_v      <DecayedT> ||
             std::is_arithmetic_v<DecayedT> ||
             std::is_pointer_v   <DecayedT> ||
-            std::is_same_v      <DecayedT, TYPE_OF_NULLPTR>;
+            std::is_same_v      <DecayedT, std::nullptr_t>;
     };
 
     const char* HLSLTypeString(EMaterialValueType Type) const;
@@ -108,6 +113,7 @@ protected:
 
     std::string CreateSymbolName(const char* symbol_name_hint);
     void AddCodeChunkToCurrentScope(int32_t chunk_index);
+    void AddCodeChunkToScope(int32_t chunk_index, int32_t scope_index);
 
     /** Adds an already formatted inline or referenced code chunk */
 	int32_t AddCodeChunkInner(uint64_t hash, const char* formatted_type, const char* formatted_code, EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined);
@@ -128,7 +134,8 @@ protected:
         return AddCodeChunkInner(t, EDerivativeStatus::NotAware, false, format, args...);
     }
 
-    std::vector<FShaderCodeChunk*> current_scope_chunks;
+    MemStack* allocator = nullptr;                      // chunk 对象住在 MemStack 上（对照 UE FMemStackBase* Allocator）
+    std::vector<FShaderCodeChunk*> current_scope_chunks;  // 地址清单（对象本体在 MemStack）
     std::vector<int32_t> scope_stack;
     int32_t next_symbol_index;
 

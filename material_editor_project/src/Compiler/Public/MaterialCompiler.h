@@ -3,7 +3,6 @@
 #include <vector>
 #include <string>
 #include "MaterialGraph/Public/Graph.h"
-#include "Compiler/Public/CodeChunk.h"
 #include "Compiler/Public/ConstantFolding.h"
 #include "MaterialTypes/Public/ValueType.h"
 #include "Core/Public/Hash.h"

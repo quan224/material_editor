@@ -48,10 +48,45 @@ std::string FHLSLMaterialTranslator::CreateSymbolName(const char* symbol_name_hi
 
 void FHLSLMaterialTranslator::AddCodeChunkToCurrentScope(int32_t chunk_index) {
 	if (chunk_index != INDEX_NONE && scope_stack.size() > 0) {
-		const int32_t current_scope_index = scope_stack.size();
-		AddCodeChunkToScope(chunk_index, current_scope_index);  // ÐèÒªÏÈ¼ÇÂ¼ÏÂÕâÀïµÄÁ÷³ÌÒÔ¼°AddCodeChunkToScopeÊµÔÚ×öÊ²Ã´
-
+		const int32_t current_scope_index = scope_stack.back();
+		AddCodeChunkToScope(chunk_index, current_scope_index);
 	}
+}
+
+void FHLSLMaterialTranslator::AddCodeChunkToScope(int32_t chunk_index, int32_t scope_index){
+	if(chunk_index != INDEX_NONE){
+		FShaderCodeChunk& current_scope = *current_scope_chunks[scope_index];
+		FShaderCodeChunk& chunk = *current_scope_chunks[chunk_index];
+		if(chunk.declared_scope_index == INDEX_NONE){
+			// å¦‚æžœæ²¡è¢«å£°æ˜Žè¿‡ï¼Œé‚£ä¹Ÿä¸åº”è¯¥è¢«ä½¿ç”¨
+			ME_CHECK(chunk.used_scope_index==INDEX_NONE);
+			chunk.declared_scope_index = scope_index;
+			chunk.used_scope_index = scope_index;
+			chunk.scope_level = current_scope.scope_level + 1;
+		}
+		// æ»¡è¶³å…¨éƒ¨ä½¿ç”¨è€…çš„â€œæœ€æµ…å¯è§å±‚â€ç»“è®º
+		else if(chunk.used_scope_index != scope_index){
+			// Find the most derived scope that's shared by the current scope, and the scope this code was previously referenced from
+			int32_t scope_index0 = scope_index;
+			int32_t scope_index1 = chunk.used_scope_index;
+			while(scope_index0 != scope_index1){
+				const FShaderCodeChunk& scope0 = *current_scope_chunks[scope_index0];
+				const FShaderCodeChunk& scope1 = *current_scope_chunks[scope_index1];
+				if(scope0.scope_level > scope1.scope_level){
+					ME_CHECK(scope0.used_scope_index != INDEX_NONE);
+					scope_index0 = scope0.used_scope_index;
+				}
+				else{
+					ME_CHECK(scope1.used_scope_index != INDEX_NONE);
+					scope_index1 = scope1.used_scope_index;
+				}
+			}
+			const FShaderCodeChunk& scope = *current_scope_chunks[scope_index0];
+			chunk.used_scope_index = scope_index0;
+			chunk.scope_level = scope.scope_level + 1;
+		}
+	}
+
 }
 
 int32_t FHLSLMaterialTranslator::AddCodeChunkInner(uint64_t hash, const char* formatted_type, const char* formatted_code, EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined) {
@@ -63,26 +98,28 @@ int32_t FHLSLMaterialTranslator::AddCodeChunkInner(uint64_t hash, const char* fo
 	if (t == MCT_VoidStatement) {
 		code_index = current_scope_chunks.size();
 		const std::string statement = std::string(formatted_code) + HLSL_LINE_TERMINATOR;
-		current_scope_chunks.emplace_back(hash, statement.c_str(), statement.c_str(), "", t, derivative_status, true);
+		current_scope_chunks.push_back(allocator->New<FShaderCodeChunk>(hash, statement.c_str(), statement.c_str(), "", t, derivative_status, true));
 	}
 	else if (in_lined) {
 		code_index = current_scope_chunks.size();
-		current_scope_chunks.emplace_back(hash, formatted_code, formatted_code, "", t, derivative_status, true);
+		current_scope_chunks.push_back(allocator->New<FShaderCodeChunk>(hash, formatted_code, formatted_code, "", t, derivative_status, true));
 	}
 	else if ((t & (MCT_Float | MCT_LWCType | MCT_VTPageTableResult | MCT_Unexposed | MCT_UInt)) || t == MCT_ShadingModel || t == MCT_MaterialAttributes || t == MCT_Substrate || t == MCT_UInt || b_from_texture_collection || t == MCT_MaterialCacheABuffer) {
 
+		// Check for existing
 		for (int32_t i = 0; i < current_scope_chunks.size(); i++) {
 			if (current_scope_chunks[i]->hash == hash) {
 				code_index = i;
 				break;
 			}
-			if (code_index == INDEX_NONE) {
-				code_index = current_scope_chunks.size();
-				const std::string symbol_name = CreateSymbolName("Local");
-				const std::string local_variable_definition_finite = std::string(" ") + formatted_type + " " + symbol_name + " = " + formatted_code + ";" + HLSL_LINE_TERMINATOR;
-				const std::string local_variable_definition_analytic = std::string("	") + formatted_type + " " + symbol_name + " = " + formatted_code + ";" + HLSL_LINE_TERMINATOR;
-				current_scope_chunks.emplace_back(hash, local_variable_definition_finite.c_str(), local_variable_definition_analytic.c_str(), symbol_name.c_str(), t, derivative_status, false);
-			}
+		}
+
+		if (code_index == INDEX_NONE) {
+			code_index = current_scope_chunks.size();
+			const std::string symbol_name = CreateSymbolName("Local");
+			const std::string local_variable_definition_finite = std::string(" ") + formatted_type + " " + symbol_name + " = " + formatted_code + ";" + HLSL_LINE_TERMINATOR;
+			const std::string local_variable_definition_analytic = std::string("	") + formatted_type + " " + symbol_name + " = " + formatted_code + ";" + HLSL_LINE_TERMINATOR;
+			current_scope_chunks.push_back(allocator->New<FShaderCodeChunk>(hash, local_variable_definition_finite.c_str(), local_variable_definition_analytic.c_str(), symbol_name.c_str(), t, derivative_status, false));
 		}
 	}
 	else {
