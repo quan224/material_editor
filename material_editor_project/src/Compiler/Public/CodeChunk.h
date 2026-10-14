@@ -84,6 +84,8 @@ struct FShaderCodeChunk{
 
 };
 
+class FAddUniformExpressionScope;
+
 class FHLSLMaterialTranslator: public FMaterialCompiler{
 
 public:
@@ -134,10 +136,36 @@ protected:
         return AddCodeChunkInner(t, EDerivativeStatus::NotAware, false, format, args...);
     }
 
+    template<typename... types>
+    int32_t AddInlinedCodeChunk(EMaterialValueType t, const char* format, types... args) {
+        ME_CHECK(TIsValidVariadicFunctionArg<types>::Value&&...);
+        return AddCodeChunkInner(t, EDerivativeStatus::NotAware, true, format, args...);
+    }
+
+    int32_t AddUniformExpression(FAddUniformExpressionScope& scope, FMaterialUniformExpression* uniform_expression, EMaterialValueType t, const char* format, ...);
+    int32_t AddUniformExpressionInner(int64_t hash, FMaterialUniformExpression* uniform_expression, EMaterialValueType t, const char* formatted_code);
+
     MemStack* allocator = nullptr;                      // chunk 对象住在 MemStack 上（对照 UE FMemStackBase* Allocator）
     std::vector<FShaderCodeChunk*> current_scope_chunks;  // 地址清单（对象本体在 MemStack）
-    std::vector<int32_t> scope_stack;
-    int32_t next_symbol_index;
+    std::vector<FShaderCodeChunk*> uniform_expressions;  // 表达式
+    std::vector<int32_t> scope_stack;  // 作用域索引记录
+    int32_t next_symbol_index;  // 变量名
+    int32_t adding_uniform_expression;
+
+    friend class FAddUniformExpressionScope;
+};
+
+class FAddUniformExpressionScope {
+public:
+    FAddUniformExpressionScope(FHLSLMaterialTranslator* in_translator) :translator(in_translator) {
+        translator->adding_uniform_expression++;
+    }
+    ~FAddUniformExpressionScope() {
+        translator->adding_uniform_expression--;
+        ME_CHECK(translator->adding_uniform_expression >= 0);
+    }
 
 
+private:
+    FHLSLMaterialTranslator* translator;
 };

@@ -152,3 +152,75 @@ int32_t FHLSLMaterialTranslator::AddCodeChunkInner(EMaterialValueType t, EDeriva
 
 	return AddCodeChunkInner(hash, HLSLTypeString(effective_type), formatted_code, t, derivative_status, in_lined);
 }
+
+int32_t FHLSLMaterialTranslator::AddUniformExpression(FAddUniformExpressionScope& scope, FMaterialUniformExpression* uniform_expression, EMaterialValueType t, const char* format, ...) {
+	FStringBuilderBase builder(256);
+	va_list args;
+	va_start(args, format);
+	const char* formatted_code = builder.AppendV(format, args).GetData();
+	va_end(args);
+	int64_t hash = HashString(formatted_code);
+	return AddUniformExpressionInner(hash, uniform_expression, t, formatted_code);
+
+}
+
+int32_t FHLSLMaterialTranslator::AddUniformExpressionInner(int64_t hash, FMaterialUniformExpression* uniform_expression, EMaterialValueType t, const char* formatted_code) {
+	if (t == MCT_Unknown) {
+		return INDEX_NONE;
+	}
+
+	ME_CHECK(uniform_expression);
+	// Only a texture uniform expression can have MCT_Texture type
+	//if ((t & MCT_Texture) && !uniform_expression->GetTextureUniformExpression()
+	//	&& !uniform_expression->GetExternalTextureUniformExpression())
+	//{
+	//	ME_LOG_ERROR("Operation not supported on a Texture");
+	//	return INDEX_NONE;
+	//}
+
+	//// External textures must have an external texture uniform expression
+	//if ((t & MCT_TextureExternal) && !uniform_expression->GetExternalTextureUniformExpression())
+	//{
+	//	ME_LOG_ERROR("Operation not supported on an external texture");
+	//	return INDEX_NONE;
+	//}
+
+	if (t == MCT_StaticBool)
+	{
+		ME_LOG_ERROR("Operation not supported on a Static Bool");
+		return INDEX_NONE;
+	}
+	if (t == MCT_MaterialAttributes)
+	{
+		ME_LOG_ERROR("Operation not supported on a MaterialAttributes");
+		return INDEX_NONE;
+	}
+	
+	bool b_found_existing_expression = false;
+	for (int32_t expression_index = 0; expression_index < uniform_expressions.size() && !b_found_existing_expression; expression_index++) {
+		FMaterialUniformExpression* test_expression = (uniform_expressions[expression_index]->uniform_expression).get();
+		ME_CHECK(test_expression);
+		if (test_expression->IsIdentical(uniform_expression)) {
+			b_found_existing_expression = true;
+			ME_CHECK(t == uniform_expressions[expression_index]->type_);
+			for (int32_t chunk_index = 0; chunk_index < current_scope_chunks.size(); chunk_index++) {
+				FMaterialUniformExpression* other_expression = current_scope_chunks[chunk_index]->uniform_expression.get();
+				if (other_expression && other_expression->IsIdentical(uniform_expression)) {
+					delete uniform_expression;
+					AddCodeChunkToCurrentScope(chunk_index);
+					return chunk_index;
+				}
+			}
+			delete uniform_expression;
+			uniform_expression = test_expression;
+			break;
+		}
+	}
+	const int32_t return_index = current_scope_chunks.size();
+	current_scope_chunks.push_back(allocator->New<FShaderCodeChunk>(hash, uniform_expression, formatted_code, formatted_code, t, EDerivativeStatus::Zero));
+	if (!b_found_existing_expression) {
+		uniform_expressions.push_back(allocator->New<FShaderCodeChunk>(hash, uniform_expression, formatted_code, formatted_code, t, EDerivativeStatus::Zero));
+	}
+	AddCodeChunkToCurrentScope(return_index);
+	return return_index;
+}

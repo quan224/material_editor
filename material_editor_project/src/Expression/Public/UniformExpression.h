@@ -42,9 +42,9 @@ class FMaterialUniformExpression{
 public:
     virtual ~FMaterialUniformExpression()=default;
     virtual FMaterialUniformExpressionType* GetType()const =0;
-    // virtual FMaterialUniformExpressionTexture*  GetTextureUniformExpresion(){return nullptr;}
-    // virtual FMaterialUniformExpressionExternalTexture* GetExternalTextureUniformExpression(){return nullptr;}
-    // virtual FMaterialUniformExpressionTextureCollection* GetTextureCollectionUniformExpression(){return nullptr;}
+    //virtual FMaterialUniformExpressionTexture*  GetTextureUniformExpresion(){return nullptr;}
+    //virtual FMaterialUniformExpressionExternalTexture* GetExternalTextureUniformExpression(){return nullptr;}
+    //virtual FMaterialUniformExpressionTextureCollection* GetTextureCollectionUniformExpression(){return nullptr;}
     
     virtual bool IsConstant()const{return false;}
     virtual bool IsIdentical(const FMaterialUniformExpression* other)const{return false;}
