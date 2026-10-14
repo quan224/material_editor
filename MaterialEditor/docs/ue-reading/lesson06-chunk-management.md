@@ -120,6 +120,42 @@ Mul 算子（⑥）先问：IsExpressionConstantValue(B, 0.0f)
 
 ConstResultValue 是**所有折叠算子共同的出口**（Mul/Div/Add 折完都调它入库）；IsExpressionConstantValue 是化简判定的眼睛——两个函数合起来，代数化简才跑得通。
 
+### 例5：FAddUniformExpressionScope——为什么需要它（UE .h:1459 注释的展开）
+
+`AddUniformExpression` 的调用现场（Constant :5211 / Add :9850）都长这样：
+
+```cpp
+FAddUniformExpressionScope Scope(this);                       // ① RAII：标记+1
+return AddUniformExpression(Scope,
+    new FMaterialUniformExpressionFoldedMath(EA, EB, FMO_Add),
+    MCT_Float,
+    "(%s + %s)",
+    GetParameterCode(A), GetParameterCode(B));                // ② 参数——在进入函数体【之前】求值！
+```
+
+要解决的问题：**preshader 字节码只在表达式第一次被 HLSL 真正引用时才生成**（省性能）。②里的 `GetParameterCode` 每次访问一个表达式都要做决定："这次访问要不要顺手生成它的 preshader？"
+
+```
+访问发生在 AddUniformExpression 的参数里（标记>0）
+   → 它只是父表达式的孩子（Constant(1) 参与 Add 建树）
+   → 孩子会被父树整体覆盖，单独生成就是浪费 → 不生成
+
+同一个 GetParameterCode 出现在 AddCodeChunk 的参数里（标记==0）
+   → 这个表达式真的要被写进 HLSL → 生成
+```
+
+**为什么不能在 AddUniformExpression 函数体里设置这个标记**——时机：
+
+```
+进入语句 → Scope 构造(标记=1) → 求参数(GetParameterCode 查标记) → 进入函数体 → 语句结束 Scope 析构(标记=0)
+                                ▲                                    ▲
+                          判断发生在这里                        在这里才设标志就晚了
+```
+
+C++ 的函数参数在进入函数体**之前**求值——标志必须在调用语句处由 RAII 对象预先打上。放错位置的后果（UE 注释原话）：HLSL 引用的表达式被误判成"父表达式的孩子"→ 不生成 preshader → 代码里出现 `"UniformStub[$0]"` 哨兵 → shader 编译报未定义符号。
+
+**教学版处理**：这个标记的消费者（preshader 生成判定）是课 20 的——现在抄 `AddUniformExpression` 不带 Scope 参数，课 20 补 preshader 时把这两段（15 行 RAII 类 + 计数成员）加回来，纯追加。
+
 ## 测试案例
 
 ### MemStack 对齐（Alloc 已带 alignment，对照 UE FMemStackBase::Alloc MemStack.h:132）
