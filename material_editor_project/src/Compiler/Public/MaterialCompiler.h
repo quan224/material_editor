@@ -4,6 +4,7 @@
 #include <string>
 #include "MaterialGraph/Public/Graph.h"
 #include "Compiler/Public/ConstantFolding.h"
+#include "Compiler/Public/CodeChunk.h"
 #include "MaterialTypes/Public/ValueType.h"
 #include "Core/Public/Hash.h"
 #include "Compiler/Public/TypeSystem.h"
@@ -54,10 +55,10 @@ public:
     int32_t Length(int32_t x);
 
     // 常量
-    int32_t Constant(float x);
-    int32_t Constant2(float x, float y);
-    int32_t Constant3(float x, float y, float z);
-    int32_t Constant4(float x, float y, float z, float w);
+    virtual int32_t Constant(float x);
+    virtual int32_t Constant2(float x, float y);
+    virtual int32_t Constant3(float x, float y, float z);
+    virtual int32_t Constant4(float x, float y, float z, float w);
 
     // 向量操作/ 纹理 / 控制 / 类型转换
     int32_t ComponentMask(int32_t input, bool r, bool g, bool b, bool a);
@@ -70,7 +71,8 @@ public:
 
     // === 查询（常量值返回variant）===
     std::string GetParameterCode(int32_t index) const;
-    EMaterialValueType GetType(int32_t index) const;
+    virtual EMaterialValueType GetType(int32_t code);
+    virtual EMaterialValueType GetParameterType(int32_t index) const;
     bool IsConstant(int32_t index) const;
     ConstValue GetConstantValue(int32_t index) const;
 

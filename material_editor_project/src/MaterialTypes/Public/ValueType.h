@@ -133,6 +133,17 @@ inline EMaterialValueType ToLWCType(EMaterialValueType f){
     }
 }
 
+// LWC->float
+inline EMaterialValueType MakeNonLWCType(EMaterialValueType t){
+    switch(t){
+        case MCT_LWCScalar: return MCT_Float1;
+        case MCT_LWCVector2:return MCT_Float2;
+        case MCT_LWCVector3:return MCT_Float3;
+        case MCT_LWCVector4:return MCT_Float4;
+        default:return t;
+    }
+}
+
 
 // 获取类型的分量数
 inline int GetComponentCount(const EMaterialValueType& t){

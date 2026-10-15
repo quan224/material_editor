@@ -1,5 +1,6 @@
 #pragma once
-#include "Compiler/Public/CodeChunk.h"
+#include "Compiler/Public/HLSLMaterialTranslator.h"
+#include "Core/Public/StringBuilder.h"
 
 #define HLSL_LINE_TERMINATOR "\n"
 
@@ -219,8 +220,87 @@ int32_t FHLSLMaterialTranslator::AddUniformExpressionInner(int64_t hash, FMateri
 	const int32_t return_index = current_scope_chunks.size();
 	current_scope_chunks.push_back(allocator->New<FShaderCodeChunk>(hash, uniform_expression, formatted_code, formatted_code, t, EDerivativeStatus::Zero));
 	if (!b_found_existing_expression) {
-		uniform_expressions.push_back(allocator->New<FShaderCodeChunk>(hash, uniform_expression, formatted_code, formatted_code, t, EDerivativeStatus::Zero));
+		uniform_expressions.push_back(current_scope_chunks[return_index]);
 	}
 	AddCodeChunkToCurrentScope(return_index);
 	return return_index;
+}
+
+EMaterialValueType FHLSLMaterialTranslator::GetType(int32_t code){
+	if(code != INDEX_NONE){
+		return GetParameterType(code);
+	}
+	else{
+		return MCT_Unknown;
+	}
+}
+
+EMaterialValueType FHLSLMaterialTranslator::GetParameterType(int32_t index) const{
+	ME_CHECK(index>=0 && index<current_scope_chunks.size());
+	return current_scope_chunks[index]->type_;
+}
+
+int32_t FHLSLMaterialTranslator::LWCCastIfNeccessary(EMaterialValueType result_type, int32_t result_code){
+	if(!IsNumericType(result_type)){
+		ME_LOG_ERROR("LWCCastIfNeccessary Cannot cast non numeric type");
+		return INDEX_NONE;
+	}
+	EMaterialValueType current_type = GetType(result_code);
+	if(current_type == result_type){
+		return result_code;
+	}
+
+	EMaterialValueType result_non_lwc_t = MakeNonLWCType(result_type);
+	EMaterialValueType current_non_lwc_t = MakeNonLWCType(current_type);
+	if (result_non_lwc_t == current_non_lwc_t || result_non_lwc_t == MCT_Float || current_non_lwc_t == MCT_Float)
+	{
+		return ForceCast(result_code, result_type);
+	}
+	ME_LOG_ERROR("LWCCastIfNeccessary can only cast between LWC and Non LWC types.  Current result has a different number of components than requested type");
+	return INDEX_NONE;
+}
+
+int32_t FHLSLMaterialTranslator::ConstResultValue(EMaterialValueType t, Vec4 constant_value){
+	EMaterialValueType non_lwc_t = MakeNonLWCType(t);
+	int32_t result;
+	switch(non_lwc_t){
+		case MCT_Float:
+		case MCT_Float1:
+			result = Constant(constant_value.r);
+			break;
+		case MCT_Float2:
+			result = Constant2(constant_value.r, constant_value.g);
+			break;
+		case MCT_Float3:
+			result = Constant3(constant_value.r, constant_value.g, constant_value.b);
+			break;
+		case MCT_Float4:
+			result = Constant4(constant_value.r, constant_value.g, constant_value.b, constant_value.a);
+			break;
+		default:
+			return INDEX_NONE;
+	}
+	return LWCCastIfNeccessary(t, result);
+}
+int32_t FHLSLMaterialTranslator::ConstResultValue(EMaterialValueType t, float constant_value){
+	return ConstResultValue(t, Vec4(constant_value, constant_value, constant_value, constant_value));
+}
+
+
+// ====================表达式========================
+int32_t FHLSLMaterialTranslator::Constant(float x){
+	FAddUniformExpressionScope scope(this);
+	return AddUniformExpression(scope, new FMaterialUniformExpressionConstant(Vec4(x,x,x,x), MCT_Float), MCT_Float, "%0.8ff", x);
+}
+int32_t FHLSLMaterialTranslator::Constant2(float x, float y){
+	FAddUniformExpressionScope scope(this);
+	return AddUniformExpression(scope, new FMaterialUniformExpressionConstant(Vec4(x,y,0,0), MCT_Float2), MCT_Float2, "MaterialFloat2(%0.8ff, %0.8ff)", x, y);
+}
+int32_t FHLSLMaterialTranslator::Constant3(float x, float y, float z){
+	FAddUniformExpressionScope scope(this);
+	return AddUniformExpression(scope, new FMaterialUniformExpressionConstant(Vec4(x,y,z,0), MCT_Float3), MCT_Float3, "MaterialFloat3(%0.8ff, %0.8ff, %0.8ff)", x, y, z);
+}
+int32_t FHLSLMaterialTranslator::Constant4(float x, float y, float z, float w){
+	FAddUniformExpressionScope scope(this);
+	return AddUniformExpression(scope, new FMaterialUniformExpressionConstant(Vec4(x,y,z,w), MCT_Float4), MCT_Float4, "MaterialFloat4(%0.8ff, %0.8ff, %0.8ff, %0.8ff)", x, y, z, w);
 }
