@@ -235,9 +235,46 @@ EMaterialValueType FHLSLMaterialTranslator::GetType(int32_t code){
 	}
 }
 
+int32_t FHLSLMaterialTranslator::AccessUniformExpression(int32_t index){
+	ME_CHECK(index>=0&&index<current_scope_chunks.size());
+	const FShaderCodeChunk& code_chunk = *(current_scope_chunks[index]);
+	ME_CHECK(code_chunk.uniform_expression && !code_chunk.uniform_expression->IsConstant());
+	const bool b_is_lwc = IsLWCType(code_chunk.type_);
+	return AddInlinedCodeChunkZeroDeriv(code_chunk.type_, "%s", code_chunk.definition_finite.c_str());
+}
+
 EMaterialValueType FHLSLMaterialTranslator::GetParameterType(int32_t index) const{
 	ME_CHECK(index>=0 && index<current_scope_chunks.size());
 	return current_scope_chunks[index]->type_;
+}
+
+FMaterialUniformExpression* FHLSLMaterialTranslator::GetParameterUniformExpression(int32_t index) const{
+	ME_CHECK(index >= 0 && index<current_scope_chunks.size());
+	return current_scope_chunks[index]->uniform_expression.get();
+}
+
+FDerivInfo FHLSLMaterialTranslator::GetDerivInfo(int32_t index, bool b_allow_non_float){
+	
+}
+
+int32_t FHLSLMaterialTranslator::ForceCast(int32_t code, EMaterialValueType dest_type, uint32_t force_cast_flags){
+
+	if(code == INDEX_NONE){
+		return INDEX_NONE;
+	}
+	if(GetParameterUniformExpression(code) && !GetParameterUniformExpression(code)->IsConstant()){
+		return ForceCast(AccessUniformExpression(code), dest_type, force_cast_flags);
+	}
+
+	const EMaterialValueType source_type = GetParameterType(code);
+	if((force_cast_flags&MFCF_ExactMatch)?(source_type==dest_type):(source_type&dest_type)){
+		return code;
+	}
+	else if(IsFloatNumericType(source_type)&&IsFloatNumericType(dest_type)){
+		const FDerivInfo code_deriv_info = GetDerivInfo(code);
+	}
+
+
 }
 
 int32_t FHLSLMaterialTranslator::LWCCastIfNeccessary(EMaterialValueType result_type, int32_t result_code){

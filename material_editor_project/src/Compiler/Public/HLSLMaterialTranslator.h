@@ -41,9 +41,14 @@ public:
 
     const char* HLSLTypeString(EMaterialValueType Type) const;
 
+    FDerivInfo GetDerivInfo(int32_t index, bool b_allow_non_float=false);
+
 protected:
     EMaterialValueType GetType(int32_t code) override;
     EMaterialValueType GetParameterType(int32_t index) const override;
+    // 把一个挂着表达式树的chunk【兑换】成能写进HLSL的代码
+    int32_t AccessUniformExpression(int32_t index);
+    FMaterialUniformExpression* GetParameterUniformExpression(int32_t index) const override;
 
     int32_t LWCCastIfNeccessary(EMaterialValueType result_type, int32_t result_code);
     std::string CreateSymbolName(const char* symbol_name_hint);
@@ -73,6 +78,12 @@ protected:
     }
 
     template<typename... types>
+    int32_t AddInlinedCodeChunkZeroDeriv(EMaterialValueType t, const char* format, types... args){
+        ME_CHECK(TIsValidVariadicFunctionArg<types>::Value&&...);
+        return AddCodeChunkInner(t, EDerivativeStatus::Zero, true, format, args...);
+    }
+
+    template<typename... types>
     int32_t AddInlinedCodeChunk(EMaterialValueType t, const char* format, types... args) {
         ME_CHECK(TIsValidVariadicFunctionArg<types>::Value&&...);
         return AddCodeChunkInner(t, EDerivativeStatus::NotAware, true, format, args...);
@@ -88,7 +99,7 @@ protected:
 
 
 
-    // 表达式
+    // ===================表达式=====================
     int32_t Constant(float x) override;
     int32_t Constant2(float x, float y) override;
     int32_t Constant3(float x, float y, float z) override;
@@ -100,6 +111,11 @@ protected:
     std::vector<int32_t> scope_stack;  // 作用域索引记录
     int32_t next_symbol_index;  // 变量名
     int32_t adding_uniform_expression;
+
+
+
+
+    uint32_t b_cull_intermediate_uniform_expression:1;  // 是否剔除中间表达式
 
     friend class FAddUniformExpressionScope;
 };

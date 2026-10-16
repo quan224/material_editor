@@ -10,6 +10,13 @@
 #include "Compiler/Public/TypeSystem.h"
 #include "Compiler/Public/CompileError.h"
 
+enum EMaterialForceCastFlags
+{
+	MFCF_ForceCast		= 1<<0,	// Used by caller functions as a helper
+	MFCF_ExactMatch		= 1<<2, // If flag set skips the cast on an exact match, else skips on a compatible match
+	MFCF_ReplicateValue	= 1<<3	// Replicates a Float1 value when up-casting, else appends zero
+};
+
 
 class FMaterialCompiler{
 
@@ -73,6 +80,7 @@ public:
     std::string GetParameterCode(int32_t index) const;
     virtual EMaterialValueType GetType(int32_t code);
     virtual EMaterialValueType GetParameterType(int32_t index) const;
+    virtual FMaterialUniformExpression* GetParameterUniformExpression(int32_t index) const;
     bool IsConstant(int32_t index) const;
     ConstValue GetConstantValue(int32_t index) const;
 

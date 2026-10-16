@@ -107,6 +107,14 @@ inline bool CanImplicitConvert(EMaterialValueType from, EMaterialValueType to)
     return false;
 }
 
+inline bool IsMaterialValueType(EMaterialValueType t, EMaterialValueType in_compare){
+    return (t&in_compare) != 0;
+}
+
+inline bool IsLWCType(EMaterialValueType t){
+    return IsMaterialValueType(t, MCT_LWCType);
+}
+
 // 能否算术运算
 inline bool IsNumericType(EMaterialValueType t){
     return t & (MCT_Float|MCT_LWCType|MCT_UInt|MCT_ShadingModel);
