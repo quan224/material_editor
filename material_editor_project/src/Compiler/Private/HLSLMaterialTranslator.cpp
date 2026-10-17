@@ -254,7 +254,7 @@ FMaterialUniformExpression* FHLSLMaterialTranslator::GetParameterUniformExpressi
 }
 
 FDerivInfo FHLSLMaterialTranslator::GetDerivInfo(int32_t index, bool b_allow_non_float){
-	
+	ad
 }
 
 int32_t FHLSLMaterialTranslator::ForceCast(int32_t code, EMaterialValueType dest_type, uint32_t force_cast_flags){
