@@ -42,6 +42,8 @@ public:
     // 类型 → HLSL 类型名（"MaterialFloat3" / "Texture2D" / ...）
     const char* HLSLTypeString(EMaterialValueType Type) const;
 
+    // =================== 查询（基类接口 override）====================
+    const FShaderCodeChunk& AtParameterCodeChunk(int32_t index) const;
     // 导数信息查询（双轨用）
     FDerivInfo GetDerivInfo(int32_t index, bool b_allow_non_float = false);
 

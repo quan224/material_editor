@@ -51,3 +51,17 @@ inline void LogToFile(const char* msg) {
             assert(false&&#expr);\
         }\
     } while(0)
+
+// ME_CHECK 可选附加信息版（待需要时启用，现有 ME_CHECK 调用零影响）：
+//   ME_CHECK(expr)                          → 原样
+//   ME_CHECK(expr, " | ctx:%d", someVar)    → 失败时追加一行上下文
+// 原理：__VA_ARGS__ 原样文本替换；" " 与用户格式串拼接成完整格式串（相邻字面量自动连接），
+//       变量跟在逗号后按占位符填充；## 在空参时吞掉悬空逗号（GNU 扩展，MinGW/GCC 支持）
+// #define ME_CHECK(expr, ...)\
+//     do{\
+//         if(!(expr)){\
+//             ME_LOG_ERROR("CHECK failed: %s\n  file:%s\n  line:%d", #expr, __FILE__, __LINE__);\
+//             ME_LOG_ERROR(" " ##__VA_ARGS__);\
+//             assert(false&&#expr);\
+//         }\
+//     } while(0)

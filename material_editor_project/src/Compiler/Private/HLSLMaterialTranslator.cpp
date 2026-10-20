@@ -4,6 +4,8 @@
 
 #define HLSL_LINE_TERMINATOR "\n"
 
+// =================== 工具 ===================
+
 const char* FHLSLMaterialTranslator::HLSLTypeString(EMaterialValueType Type) const
 {
 	switch (Type)
@@ -43,6 +45,193 @@ const char* FHLSLMaterialTranslator::HLSLTypeString(EMaterialValueType Type) con
 	default:						return "unknown";
 	};
 }
+
+const FShaderCodeChunk& FHLSLMaterialTranslator::AtParameterCodeChunk(int32_t index) const{
+	ME_CHECK(index != INDEX_NONE);
+	ME_CHECK(index>=0 && index<current_scope_chunks.size());
+	const FShaderCodeChunk& code_chunk = *(current_scope_chunks[index]);
+	return code_chunk;
+}
+
+FDerivInfo FHLSLMaterialTranslator::GetDerivInfo(int32_t index, bool b_allow_non_float){
+	const FShaderCodeChunk& code_chunk = AtParameterCodeChunk(index);
+	if(!b_allow_non_float && GetDerivType)
+}
+
+// =================== 查询（基类接口 override）====================
+
+EMaterialValueType FHLSLMaterialTranslator::GetType(int32_t code){
+	if(code != INDEX_NONE){
+		return GetParameterType(code);
+	}
+	else{
+		return MCT_Unknown;
+	}
+}
+
+EMaterialValueType FHLSLMaterialTranslator::GetParameterType(int32_t index) const{
+	ME_CHECK(index>=0 && index<current_scope_chunks.size());
+	return current_scope_chunks[index]->type_;
+}
+
+FMaterialUniformExpression* FHLSLMaterialTranslator::GetParameterUniformExpression(int32_t index) const{
+	ME_CHECK(index >= 0 && index<current_scope_chunks.size());
+	return current_scope_chunks[index]->uniform_expression.get();
+}
+
+// =================== 类型转换 ===================
+
+int32_t FHLSLMaterialTranslator::ForceCast(int32_t code, EMaterialValueType dest_type, uint32_t force_cast_flags){
+
+	if(code == INDEX_NONE){
+		return INDEX_NONE;
+	}
+	if(GetParameterUniformExpression(code) && !GetParameterUniformExpression(code)->IsConstant()){
+		return ForceCast(AccessUniformExpression(code), dest_type, force_cast_flags);
+	}
+
+	const EMaterialValueType source_type = GetParameterType(code);
+	if((force_cast_flags&MFCF_ExactMatch)?(source_type==dest_type):(source_type&dest_type)){
+		return code;
+	}
+	else if(IsFloatNumericType(source_type)&&IsFloatNumericType(dest_type)){
+		const FDerivInfo code_deriv_info = GetDerivInfo(code);
+	}
+
+
+}
+
+int32_t FHLSLMaterialTranslator::LWCCastIfNeccessary(EMaterialValueType result_type, int32_t result_code){
+	if(!IsNumericType(result_type)){
+		ME_LOG_ERROR("LWCCastIfNeccessary Cannot cast non numeric type");
+		return INDEX_NONE;
+	}
+	EMaterialValueType current_type = GetType(result_code);
+	if(current_type == result_type){
+		return result_code;
+	}
+
+	EMaterialValueType result_non_lwc_t = MakeNonLWCType(result_type);
+	EMaterialValueType current_non_lwc_t = MakeNonLWCType(current_type);
+	if (result_non_lwc_t == current_non_lwc_t || result_non_lwc_t == MCT_Float || current_non_lwc_t == MCT_Float)
+	{
+		return ForceCast(result_code, result_type);
+	}
+	ME_LOG_ERROR("LWCCastIfNeccessary can only cast between LWC and Non LWC types.  Current result has a different number of components than requested type");
+	return INDEX_NONE;
+}
+
+// =================== 表达式树（表达式块路径）====================
+
+int32_t FHLSLMaterialTranslator::AccessUniformExpression(int32_t index){
+	ME_CHECK(index>=0&&index<current_scope_chunks.size());
+	const FShaderCodeChunk& code_chunk = *(current_scope_chunks[index]);
+	ME_CHECK(code_chunk.uniform_expression && !code_chunk.uniform_expression->IsConstant());
+	const bool b_is_lwc = IsLWCType(code_chunk.type_);
+	return AddInlinedCodeChunkZeroDeriv(code_chunk.type_, "%s", code_chunk.definition_finite.c_str());
+}
+
+int32_t FHLSLMaterialTranslator::AddUniformExpression(FAddUniformExpressionScope& scope, FMaterialUniformExpression* uniform_expression, EMaterialValueType t, const char* format, ...) {
+	FStringBuilderBase builder(256);
+	va_list args;
+	va_start(args, format);
+	const char* formatted_code = builder.AppendV(format, args).GetData();
+	va_end(args);
+	int64_t hash = HashString(formatted_code);
+	return AddUniformExpressionInner(hash, uniform_expression, t, formatted_code);
+
+}
+
+int32_t FHLSLMaterialTranslator::AddUniformExpressionInner(int64_t hash, FMaterialUniformExpression* uniform_expression, EMaterialValueType t, const char* formatted_code) {
+	if (t == MCT_Unknown) {
+		return INDEX_NONE;
+	}
+
+	ME_CHECK(uniform_expression);
+	// Only a texture uniform expression can have MCT_Texture type
+	//if ((t & MCT_Texture) && !uniform_expression->GetTextureUniformExpression()
+	//	&& !uniform_expression->GetExternalTextureUniformExpression())
+	//{
+	//	ME_LOG_ERROR("Operation not supported on a Texture");
+	//	return INDEX_NONE;
+	//}
+
+	//// External textures must have an external texture uniform expression
+	//if ((t & MCT_TextureExternal) && !uniform_expression->GetExternalTextureUniformExpression())
+	//{
+	//	ME_LOG_ERROR("Operation not supported on an external texture");
+	//	return INDEX_NONE;
+	//}
+
+	if (t == MCT_StaticBool)
+	{
+		ME_LOG_ERROR("Operation not supported on a Static Bool");
+		return INDEX_NONE;
+	}
+	if (t == MCT_MaterialAttributes)
+	{
+		ME_LOG_ERROR("Operation not supported on a MaterialAttributes");
+		return INDEX_NONE;
+	}
+
+	bool b_found_existing_expression = false;
+	for (int32_t expression_index = 0; expression_index < uniform_expressions.size() && !b_found_existing_expression; expression_index++) {
+		FMaterialUniformExpression* test_expression = (uniform_expressions[expression_index]->uniform_expression).get();
+		ME_CHECK(test_expression);
+		if (test_expression->IsIdentical(uniform_expression)) {
+			b_found_existing_expression = true;
+			ME_CHECK(t == uniform_expressions[expression_index]->type_);
+			for (int32_t chunk_index = 0; chunk_index < current_scope_chunks.size(); chunk_index++) {
+				FMaterialUniformExpression* other_expression = current_scope_chunks[chunk_index]->uniform_expression.get();
+				if (other_expression && other_expression->IsIdentical(uniform_expression)) {
+					delete uniform_expression;
+					AddCodeChunkToCurrentScope(chunk_index);
+					return chunk_index;
+				}
+			}
+			delete uniform_expression;
+			uniform_expression = test_expression;
+			break;
+		}
+	}
+	const int32_t return_index = current_scope_chunks.size();
+	current_scope_chunks.push_back(allocator->New<FShaderCodeChunk>(hash, uniform_expression, formatted_code, formatted_code, t, EDerivativeStatus::Zero));
+	if (!b_found_existing_expression) {
+		uniform_expressions.push_back(current_scope_chunks[return_index]);
+	}
+	AddCodeChunkToCurrentScope(return_index);
+	return return_index;
+}
+
+int32_t FHLSLMaterialTranslator::ConstResultValue(EMaterialValueType t, Vec4 constant_value){
+	EMaterialValueType non_lwc_t = MakeNonLWCType(t);
+	int32_t result;
+	switch(non_lwc_t){
+		case MCT_Float:
+		case MCT_Float1:
+			result = Constant(constant_value.r);
+			break;
+		case MCT_Float2:
+			result = Constant2(constant_value.r, constant_value.g);
+			break;
+		case MCT_Float3:
+			result = Constant3(constant_value.r, constant_value.g, constant_value.b);
+			break;
+		case MCT_Float4:
+			result = Constant4(constant_value.r, constant_value.g, constant_value.b, constant_value.a);
+			break;
+		default:
+			return INDEX_NONE;
+	}
+	return LWCCastIfNeccessary(t, result);
+}
+
+int32_t FHLSLMaterialTranslator::ConstResultValue(EMaterialValueType t, float constant_value){
+	return ConstResultValue(t, Vec4(constant_value, constant_value, constant_value, constant_value));
+}
+
+// =================== 代码块管理（纯代码块路径）====================
+
 std::string FHLSLMaterialTranslator::CreateSymbolName(const char* symbol_name_hint) {
 	return symbol_name_hint + std::to_string(next_symbol_index++);
 }
@@ -143,7 +332,12 @@ int32_t FHLSLMaterialTranslator::AddCodeChunkInner(uint64_t hash, const char* fo
 	return code_index;
 }
 
-int32_t FHLSLMaterialTranslator::AddCodeChunkInner(EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined, const char* format, ...) {
+int32_t FHLSLMaterialTranslator::AddCodeChunkInner(uint64_t Hash, const char* formatted_code, EMaterialValueType t, EDerivativeStatus derivative_status, bool in_lined) {
+	const EMaterialValueType effective_type = EMaterialValueType(t & ~MCT_TextureCollection);
+	return AddCodeChunkInner(Hash, HLSLTypeString(effective_type), formatted_code, t, derivative_status, in_lined);
+}
+
+int32_t FHLSLMaterialTranslator::AddCodeChunkInner(EMaterialValueType t, const char* formated_type, EDerivativeStatus derivative_status, bool in_lined, const char* format, ...) {
 	FStringBuilderBase builder(256);
 	va_list args;
 	va_start(args, format);
@@ -154,189 +348,23 @@ int32_t FHLSLMaterialTranslator::AddCodeChunkInner(EMaterialValueType t, EDeriva
 	return AddCodeChunkInner(hash, HLSLTypeString(effective_type), formatted_code, t, derivative_status, in_lined);
 }
 
-int32_t FHLSLMaterialTranslator::AddUniformExpression(FAddUniformExpressionScope& scope, FMaterialUniformExpression* uniform_expression, EMaterialValueType t, const char* format, ...) {
-	FStringBuilderBase builder(256);
-	va_list args;
-	va_start(args, format);
-	const char* formatted_code = builder.AppendV(format, args).GetData();
-	va_end(args);
-	int64_t hash = HashString(formatted_code);
-	return AddUniformExpressionInner(hash, uniform_expression, t, formatted_code);
+// =================== 算子（⑥，基类接口 override）====================
 
-}
-
-int32_t FHLSLMaterialTranslator::AddUniformExpressionInner(int64_t hash, FMaterialUniformExpression* uniform_expression, EMaterialValueType t, const char* formatted_code) {
-	if (t == MCT_Unknown) {
-		return INDEX_NONE;
-	}
-
-	ME_CHECK(uniform_expression);
-	// Only a texture uniform expression can have MCT_Texture type
-	//if ((t & MCT_Texture) && !uniform_expression->GetTextureUniformExpression()
-	//	&& !uniform_expression->GetExternalTextureUniformExpression())
-	//{
-	//	ME_LOG_ERROR("Operation not supported on a Texture");
-	//	return INDEX_NONE;
-	//}
-
-	//// External textures must have an external texture uniform expression
-	//if ((t & MCT_TextureExternal) && !uniform_expression->GetExternalTextureUniformExpression())
-	//{
-	//	ME_LOG_ERROR("Operation not supported on an external texture");
-	//	return INDEX_NONE;
-	//}
-
-	if (t == MCT_StaticBool)
-	{
-		ME_LOG_ERROR("Operation not supported on a Static Bool");
-		return INDEX_NONE;
-	}
-	if (t == MCT_MaterialAttributes)
-	{
-		ME_LOG_ERROR("Operation not supported on a MaterialAttributes");
-		return INDEX_NONE;
-	}
-	
-	bool b_found_existing_expression = false;
-	for (int32_t expression_index = 0; expression_index < uniform_expressions.size() && !b_found_existing_expression; expression_index++) {
-		FMaterialUniformExpression* test_expression = (uniform_expressions[expression_index]->uniform_expression).get();
-		ME_CHECK(test_expression);
-		if (test_expression->IsIdentical(uniform_expression)) {
-			b_found_existing_expression = true;
-			ME_CHECK(t == uniform_expressions[expression_index]->type_);
-			for (int32_t chunk_index = 0; chunk_index < current_scope_chunks.size(); chunk_index++) {
-				FMaterialUniformExpression* other_expression = current_scope_chunks[chunk_index]->uniform_expression.get();
-				if (other_expression && other_expression->IsIdentical(uniform_expression)) {
-					delete uniform_expression;
-					AddCodeChunkToCurrentScope(chunk_index);
-					return chunk_index;
-				}
-			}
-			delete uniform_expression;
-			uniform_expression = test_expression;
-			break;
-		}
-	}
-	const int32_t return_index = current_scope_chunks.size();
-	current_scope_chunks.push_back(allocator->New<FShaderCodeChunk>(hash, uniform_expression, formatted_code, formatted_code, t, EDerivativeStatus::Zero));
-	if (!b_found_existing_expression) {
-		uniform_expressions.push_back(current_scope_chunks[return_index]);
-	}
-	AddCodeChunkToCurrentScope(return_index);
-	return return_index;
-}
-
-EMaterialValueType FHLSLMaterialTranslator::GetType(int32_t code){
-	if(code != INDEX_NONE){
-		return GetParameterType(code);
-	}
-	else{
-		return MCT_Unknown;
-	}
-}
-
-int32_t FHLSLMaterialTranslator::AccessUniformExpression(int32_t index){
-	ME_CHECK(index>=0&&index<current_scope_chunks.size());
-	const FShaderCodeChunk& code_chunk = *(current_scope_chunks[index]);
-	ME_CHECK(code_chunk.uniform_expression && !code_chunk.uniform_expression->IsConstant());
-	const bool b_is_lwc = IsLWCType(code_chunk.type_);
-	return AddInlinedCodeChunkZeroDeriv(code_chunk.type_, "%s", code_chunk.definition_finite.c_str());
-}
-
-EMaterialValueType FHLSLMaterialTranslator::GetParameterType(int32_t index) const{
-	ME_CHECK(index>=0 && index<current_scope_chunks.size());
-	return current_scope_chunks[index]->type_;
-}
-
-FMaterialUniformExpression* FHLSLMaterialTranslator::GetParameterUniformExpression(int32_t index) const{
-	ME_CHECK(index >= 0 && index<current_scope_chunks.size());
-	return current_scope_chunks[index]->uniform_expression.get();
-}
-
-FDerivInfo FHLSLMaterialTranslator::GetDerivInfo(int32_t index, bool b_allow_non_float){
-	ad
-}
-
-int32_t FHLSLMaterialTranslator::ForceCast(int32_t code, EMaterialValueType dest_type, uint32_t force_cast_flags){
-
-	if(code == INDEX_NONE){
-		return INDEX_NONE;
-	}
-	if(GetParameterUniformExpression(code) && !GetParameterUniformExpression(code)->IsConstant()){
-		return ForceCast(AccessUniformExpression(code), dest_type, force_cast_flags);
-	}
-
-	const EMaterialValueType source_type = GetParameterType(code);
-	if((force_cast_flags&MFCF_ExactMatch)?(source_type==dest_type):(source_type&dest_type)){
-		return code;
-	}
-	else if(IsFloatNumericType(source_type)&&IsFloatNumericType(dest_type)){
-		const FDerivInfo code_deriv_info = GetDerivInfo(code);
-	}
-
-
-}
-
-int32_t FHLSLMaterialTranslator::LWCCastIfNeccessary(EMaterialValueType result_type, int32_t result_code){
-	if(!IsNumericType(result_type)){
-		ME_LOG_ERROR("LWCCastIfNeccessary Cannot cast non numeric type");
-		return INDEX_NONE;
-	}
-	EMaterialValueType current_type = GetType(result_code);
-	if(current_type == result_type){
-		return result_code;
-	}
-
-	EMaterialValueType result_non_lwc_t = MakeNonLWCType(result_type);
-	EMaterialValueType current_non_lwc_t = MakeNonLWCType(current_type);
-	if (result_non_lwc_t == current_non_lwc_t || result_non_lwc_t == MCT_Float || current_non_lwc_t == MCT_Float)
-	{
-		return ForceCast(result_code, result_type);
-	}
-	ME_LOG_ERROR("LWCCastIfNeccessary can only cast between LWC and Non LWC types.  Current result has a different number of components than requested type");
-	return INDEX_NONE;
-}
-
-int32_t FHLSLMaterialTranslator::ConstResultValue(EMaterialValueType t, Vec4 constant_value){
-	EMaterialValueType non_lwc_t = MakeNonLWCType(t);
-	int32_t result;
-	switch(non_lwc_t){
-		case MCT_Float:
-		case MCT_Float1:
-			result = Constant(constant_value.r);
-			break;
-		case MCT_Float2:
-			result = Constant2(constant_value.r, constant_value.g);
-			break;
-		case MCT_Float3:
-			result = Constant3(constant_value.r, constant_value.g, constant_value.b);
-			break;
-		case MCT_Float4:
-			result = Constant4(constant_value.r, constant_value.g, constant_value.b, constant_value.a);
-			break;
-		default:
-			return INDEX_NONE;
-	}
-	return LWCCastIfNeccessary(t, result);
-}
-int32_t FHLSLMaterialTranslator::ConstResultValue(EMaterialValueType t, float constant_value){
-	return ConstResultValue(t, Vec4(constant_value, constant_value, constant_value, constant_value));
-}
-
-
-// ====================表达式========================
 int32_t FHLSLMaterialTranslator::Constant(float x){
 	FAddUniformExpressionScope scope(this);
 	return AddUniformExpression(scope, new FMaterialUniformExpressionConstant(Vec4(x,x,x,x), MCT_Float), MCT_Float, "%0.8ff", x);
 }
+
 int32_t FHLSLMaterialTranslator::Constant2(float x, float y){
 	FAddUniformExpressionScope scope(this);
 	return AddUniformExpression(scope, new FMaterialUniformExpressionConstant(Vec4(x,y,0,0), MCT_Float2), MCT_Float2, "MaterialFloat2(%0.8ff, %0.8ff)", x, y);
 }
+
 int32_t FHLSLMaterialTranslator::Constant3(float x, float y, float z){
 	FAddUniformExpressionScope scope(this);
 	return AddUniformExpression(scope, new FMaterialUniformExpressionConstant(Vec4(x,y,z,0), MCT_Float3), MCT_Float3, "MaterialFloat3(%0.8ff, %0.8ff, %0.8ff)", x, y, z);
 }
+
 int32_t FHLSLMaterialTranslator::Constant4(float x, float y, float z, float w){
 	FAddUniformExpressionScope scope(this);
 	return AddUniformExpression(scope, new FMaterialUniformExpressionConstant(Vec4(x,y,z,w), MCT_Float4), MCT_Float4, "MaterialFloat4(%0.8ff, %0.8ff, %0.8ff, %0.8ff)", x, y, z, w);

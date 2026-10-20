@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include "MaterialTypes/Public/ValueType.h"
+#include "Core/Public/Logger.h"
 
 enum class EDerivativeType
 {
@@ -31,3 +33,5 @@ struct FDerivInfo{
     EDerivativeType deriv_type;
     EDerivativeStatus derivative_status;
 };
+
+EDerivativeType GetDerivType(EMaterialValueType value_type, bool b_allow_non_float=false);
