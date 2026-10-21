@@ -1,6 +1,7 @@
 #pragma once
 #include "MaterialTypes/Public/ValueType.h"
 #include "Core/Public/MathTypes.h"
+#include "Core/Public/EnumClassFlags.h"
 #include "Compiler/Public/HLSLMaterialDerivativeAutogen.h"
 #include "Core/Public/MemStack.h"
 #include "Compiler/Public/MaterialCompiler.h"
@@ -15,6 +16,18 @@
 
 
 class FAddUniformExpressionScope;
+
+enum class EMaterialCastFlags : uint32_t
+{
+	None = 0u,
+	ReplicateScalar = (1u << 0),
+	AllowTruncate = (1u << 1),
+	AllowAppendZeroes = (1u << 2),
+	AllowInteger = (1u << 3),
+
+	ValidCast = ReplicateScalar | AllowTruncate,
+};
+ENUM_CLASS_FLAGS(EMaterialCastFlags);
 
 class FHLSLMaterialTranslator : public FMaterialCompiler {
 
@@ -54,6 +67,7 @@ public:
 
     // =================== 类型转换 ===================
     // 对照 UE ForceCast（MaterialCompiler.h:238，接口属于基类——基类重整时上移）
+    std::string CastValue(const std::string& code, EMaterialValueType source_type, EMaterialValueType dest_type, EMaterialCastFlags flags);
     int32_t ForceCast(int32_t code, EMaterialValueType dest_type, uint32_t force_cast_flags = 0);
     // LWC 结果与当前类型不符时截断/提升（对照 UE LWCCastIfNeccessary）
     int32_t LWCCastIfNeccessary(EMaterialValueType result_type, int32_t result_code);
@@ -116,6 +130,7 @@ public:
     int32_t next_symbol_index = 0;                          // 变量名计数器
     int32_t adding_uniform_expression = 0;                  // 表达式树构建深度（Scope RAII 维护）
     uint32_t b_cull_intermediate_uniform_expression : 1;    // 是否剔除中间表达式（构造时定格）
+    FMaterialDerivativeAutogen derivative_autogen;
 
     friend class FAddUniformExpressionScope;
 };

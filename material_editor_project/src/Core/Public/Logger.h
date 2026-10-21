@@ -44,10 +44,11 @@ inline void LogToFile(const char* msg) {
     } while(0)
 
 
-#define ME_CHECK(expr)\
+#define ME_CHECK(expr, ...)\
     do{\
         if(!(expr)){\
             ME_LOG_ERROR("CHECK failed: %s\n  file:%s\n  line:%d", #expr, __FILE__, __LINE__);\
+            ME_LOG_ERROR(" " ##__VA_ARGS__);\
             assert(false&&#expr);\
         }\
     } while(0)

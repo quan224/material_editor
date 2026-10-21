@@ -6,6 +6,18 @@
 
 // =================== 工具 ===================
 
+EMaterialCastFlags GetForceCastFlags(uint32_t force_cast_flags){
+	EMaterialCastFlags cast_flags = EMaterialCastFlags::AllowTruncate|EMaterialCastFlags::AllowAppendZeroes;
+	if ((force_cast_flags & MFCF_ReplicateValue) || !(force_cast_flags & MFCF_ExactMatch))
+	{
+		// Replicate scalar if requested, or if we don't require an exact match (this can happen when force-casting to/from LWC
+		// The only way we *don't* replicate scalar is requesting an exact match without the ReplicateValue flag
+		// TODO - My guess is that case probably isn't relevant, and we should just always replicate scalar on cast, but trying to preserve behavior for now
+		cast_flags |= EMaterialCastFlags::ReplicateScalar;
+	}
+	return cast_flags;
+}
+
 const char* FHLSLMaterialTranslator::HLSLTypeString(EMaterialValueType Type) const
 {
 	switch (Type)
@@ -55,7 +67,11 @@ const FShaderCodeChunk& FHLSLMaterialTranslator::AtParameterCodeChunk(int32_t in
 
 FDerivInfo FHLSLMaterialTranslator::GetDerivInfo(int32_t index, bool b_allow_non_float){
 	const FShaderCodeChunk& code_chunk = AtParameterCodeChunk(index);
-	if(!b_allow_non_float && GetDerivType)
+	if(!b_allow_non_float && GetDerivType(code_chunk.type_, true) == EDerivativeType::None){
+		ME_LOG_ERROR("Internal error: unexpected non-numeric derivative argument type found (%s).", DescribeType(code_chunk.type_));
+		return FDerivInfo{code_chunk.type_, EDerivativeType::None, EDerivativeStatus::NotValid};
+	}
+	return FDerivInfo{code_chunk.type_, GetDerivType(code_chunk.type_, b_allow_non_float), code_chunk.derivative_status};
 }
 
 // =================== 查询（基类接口 override）====================
@@ -81,6 +97,19 @@ FMaterialUniformExpression* FHLSLMaterialTranslator::GetParameterUniformExpressi
 
 // =================== 类型转换 ===================
 
+std::string FHLSLMaterialTranslator::CastValue(const std::string& code, EMaterialValueType source_type, EMaterialValueType dest_type, EMaterialCastFlags flags){
+	if(source_type == dest_type){
+		return code;
+	}
+	const bool b_allow_truncate = EnumHasAnyFlags(flags, EMaterialCastFlags::AllowTruncate);
+	const bool b_allow_append_zeroes = EnumHasAnyFlags(flags, EMaterialCastFlags::AllowAppendZeroes);
+	const bool b_allow_replicate_scalar = EnumHasAnyFlags(flags, EMaterialCastFlags::ReplicateScalar);
+	const bool b_allow_integer = EnumHasAnyFlags(flags, EMaterialCastFlags::AllowInteger);
+
+	const EMaterialValueType allowed_types = EMaterialValueType(MCT_Float | MCT_LWCType | (b_allow_integer ? MCT_UInt : 0));
+	
+}
+
 int32_t FHLSLMaterialTranslator::ForceCast(int32_t code, EMaterialValueType dest_type, uint32_t force_cast_flags){
 
 	if(code == INDEX_NONE){
@@ -96,6 +125,41 @@ int32_t FHLSLMaterialTranslator::ForceCast(int32_t code, EMaterialValueType dest
 	}
 	else if(IsFloatNumericType(source_type)&&IsFloatNumericType(dest_type)){
 		const FDerivInfo code_deriv_info = GetDerivInfo(code);
+		EMaterialCastFlags cast_flags = GetForceCastFlags(force_cast_flags);
+		std::string finite_code = CastValue(GetParameterCode(code), source_type, dest_type, cast_flags);
+		if(IsAnalyticDerivEnabled() && IsDerivativeValid(code_deriv_info.derivative_status)){
+			if(code_deriv_info.derivative_status == EDerivativeStatus::Valid){
+				std::string deriv_string = *GetParameterCodeDeriv(code, CompiledPDV_Analytic);
+				std::string ddx_code = CastValue(deriv_string+".Ddx", MakeNonLWCType(source_type), MakeNonLWCType(dest_type), cast_flags);
+				std::string ddy_code = CastValue(deriv_string+".Ddy", MakeNonLWCType(source_type), MakeNonLWCType(dest_type), cast_flags);
+				std::string analytic_code = derivative_autogen.ConstructDeriv(finite_code, ddx_code, ddy_code, GetDerivType(dest_type));
+				return AddCodeChunkInnerDeriv(finite_code, analytic_code, dest_type, false, EDerivativeStatus::Valid);
+			}
+			else{
+				return AddInlinedCodeChunkZeroDeriv(dest_type, finite_code.c_str());
+			}
+		}
+		else{
+			return AddInlinedCodeChunk(dest_type, finite_code.c_str());
+		}
+	}
+	else if (IsNumericType(source_type)&&IsNumericType(dest_type)){
+		EMaterialCastFlags cast_flags = GetForceCastFlags(force_cast_flags)|EMaterialCastFlags::AllowInteger;
+		std::string finite_code = CastValue(GetParameterCode(code), source_type, dest_type, cast_flags);
+		return AddInlinedCodeChunk(dest_type, finite_code.c_str());
+	}
+	else if((source_type & MCT_StaticBool)&&IsFloatNumericType(dest_type)){
+		std::string static_bool_to_float = GetParameterCode(code) =="true"? "1.0f":"0.0f";
+		static_bool_to_float = CastValue(static_bool_to_float, MCT_Float, dest_type, GetForceCastFlags(force_cast_flags));
+		return AddInlinedCodeChunk(dest_type, static_bool_to_float.c_str());
+	}
+	else if ((source_type & (MCT_TextureVirtual|MCT_TextureMeshPaint|MCT_TextureMaterialCache)) && (dest_type & MCT_Texture2D))
+	{
+		return code;
+	}
+	else{
+		ME_LOG_ERROR("Cannot force a cast between non-numeric types.");
+		return INDEX_NONE;
 	}
 
 

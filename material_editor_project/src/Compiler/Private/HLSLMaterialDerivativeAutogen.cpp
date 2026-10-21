@@ -23,6 +23,7 @@ EDerivativeType GetDerivType(EMaterialValueType value_type, bool b_allow_non_flo
         case MCT_LWCVector4:
             return EDerivativeType::LWCVector4;
         default:
-            ME_CHECK()
+            ME_CHECK(false, "Invalid EDerivativeType value: %d for GetDerivType", static_cast<int32_t>(value_type));
+            return EDerivativeType::None;
     }
 }

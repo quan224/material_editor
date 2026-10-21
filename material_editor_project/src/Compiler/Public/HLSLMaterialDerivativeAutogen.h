@@ -17,6 +17,7 @@ enum class EDerivativeType
 	Num,
 };
 
+
 enum class EDerivativeStatus:uint8_t{
     NotAware,  // 表达式不感知导数(普通路径)
     NotValid,  // 导数无效(分支/采样后)
@@ -35,3 +36,7 @@ struct FDerivInfo{
 };
 
 EDerivativeType GetDerivType(EMaterialValueType value_type, bool b_allow_non_float=false);
+
+class FMaterialDerivativeAutogen{
+
+};
