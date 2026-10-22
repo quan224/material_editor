@@ -6,6 +6,18 @@
 
 // =================== 工具 ===================
 
+static int32_t GAnalyticDerivEnabled = 1;
+
+// static FAutoConsoleVariableRef CVarAnalyticDerivEnabled(
+// 	TEXT("r.MaterialEditor.AnalyticDeriv"),
+// 	GAnalyticDerivEnabled,
+// 	TEXT("Enable analytic derivative code generation.")
+// 	);
+
+static inline bool IsAnalyticDerivEnabled(){
+	return GAnalyticDerivEnabled != 0;
+}
+
 EMaterialCastFlags GetForceCastFlags(uint32_t force_cast_flags){
 	EMaterialCastFlags cast_flags = EMaterialCastFlags::AllowTruncate|EMaterialCastFlags::AllowAppendZeroes;
 	if ((force_cast_flags & MFCF_ReplicateValue) || !(force_cast_flags & MFCF_ExactMatch))
@@ -97,6 +109,23 @@ FMaterialUniformExpression* FHLSLMaterialTranslator::GetParameterUniformExpressi
 
 // =================== 类型转换 ===================
 
+// LWC 函数使用计数。对照 UE .cpp:3293 原文：previous frame 编译不重复计数，按频率分 VS/PS/CS 三组
+void FHLSLMaterialTranslator::AddLWCFuncUsage(ELWCFunctionKind kind, uint32_t count){
+	if(IsCurrentlyCompilingForPreviousFrame()){
+		// Ignore non-actionable cases
+		return;
+	}
+	if(shader_frequency == SF_Pixel){
+		compile_result.estimated_lwc_func_usages_ps[(int)kind] += count;
+	}
+	else if(shader_frequency == SF_Compute){
+		compile_result.estimated_lwc_func_usages_cs[(int)kind] += count;
+	}
+	else{
+		compile_result.estimated_lwc_func_usages_vs[(int)kind] += count;
+	}
+}
+
 std::string FHLSLMaterialTranslator::CastValue(const std::string& code, EMaterialValueType source_type, EMaterialValueType dest_type, EMaterialCastFlags flags){
 	if(source_type == dest_type){
 		return code;
@@ -107,7 +136,99 @@ std::string FHLSLMaterialTranslator::CastValue(const std::string& code, EMateria
 	const bool b_allow_integer = EnumHasAnyFlags(flags, EMaterialCastFlags::AllowInteger);
 
 	const EMaterialValueType allowed_types = EMaterialValueType(MCT_Float | MCT_LWCType | (b_allow_integer ? MCT_UInt : 0));
-	
+	if(IsMaterialValueType(source_type, allowed_types)&&IsMaterialValueType(dest_type, allowed_types)){
+		const uint32_t num_source_components = GetNumComponents(source_type);
+		const uint32_t num_dest_components = GetNumComponents(dest_type);
+		const bool b_replicate_scalar = b_allow_replicate_scalar && (num_source_components==1);
+		if(!b_replicate_scalar&&!b_allow_append_zeroes&&num_dest_components>num_source_components){
+			ME_LOG_ERROR("Cannot cast from smaller type %s to larger type %s.", DescribeType(source_type), DescribeType(dest_type));
+			return "";
+		}
+		if(!b_replicate_scalar&&!b_allow_truncate&&num_dest_components<num_source_components){
+			ME_LOG_ERROR("Cannot cast from larger type %s to smaller type %s.", DescribeType(source_type), DescribeType(dest_type));
+			return "";
+		}
+		const bool b_is_lwc = IsLWCType(dest_type);
+		if(b_is_lwc!=IsLWCType(source_type)){
+			if(b_is_lwc){
+				// float->LWC
+				AddLWCFuncUsage(ELWCFunctionKind::Promote);
+				return FStringBuilderBase().Appendf("WSPromote(%s)", CastValue(code, source_type, MakeNonLWCType(dest_type), flags)).GetData();
+			}
+			else{
+				// LWC->float
+				AddLWCFuncUsage(ELWCFunctionKind::Demote);
+				return CastValue(FStringBuilderBase().Appendf("WSDemote(%s)", code).GetData(), MakeNonLWCType(source_type), dest_type, flags);
+			}
+		}
+
+		std::string result;
+		uint32_t num_components = 0u;
+		bool b_need_closing_paren = false;
+		if(b_is_lwc){
+			AddLWCFuncUsage(ELWCFunctionKind::Constructor);
+			result = "MakeWSVector(";
+			b_need_closing_paren = true;
+		}
+		else{
+			if(num_source_components == num_dest_components){
+				num_components = num_dest_components;
+				result+=code;
+			}
+			else if(b_replicate_scalar){
+				num_components = num_dest_components;
+				result+=FStringBuilderBase().Appendf("((%s)%s)", HLSLTypeString(dest_type), code ).GetData();
+			}
+			else{
+				num_components = std::min(num_source_components, num_dest_components);
+				if(num_components < num_dest_components){
+					result = (std::string)HLSLTypeString(dest_type)+"(";
+					b_need_closing_paren = true;
+				}
+				if(num_components == num_source_components){
+					result+=code;
+				}
+				else{
+					static const std::string mask[]={"<ERROR>", "x", "xy", "xyz", "xyzw"};
+					ME_CHECK(num_components<=4);
+					result+=FStringBuilderBase().Appendf("%s.%s", code, mask[num_components]).GetData();
+				}
+			}
+		}
+		if(b_need_closing_paren){
+			for(uint32_t component_index=num_components; component_index<num_dest_components;++component_index){
+				if(component_index>0u){
+					result+=",";
+				}
+				if(b_is_lwc){
+					if(!b_replicate_scalar&&component_index>=num_source_components){
+						ME_CHECK(b_allow_append_zeroes);
+						AddLWCFuncUsage(ELWCFunctionKind::Promote);
+						result+="WSPromote(0.0f)";
+					}
+					else{
+						result+=FStringBuilderBase().Appendf("WSGetComponent(%s, %d)", code, b_replicate_scalar?0:component_index).GetData();
+					}
+				}
+				else{
+					ME_CHECK(b_allow_append_zeroes);
+					ME_CHECK(!b_replicate_scalar);
+					ME_CHECK(component_index>=num_source_components);
+					result+="0.0f";
+				}
+			}
+			num_components = num_dest_components;
+			result += ")";
+		}
+		ME_CHECK(num_components==num_dest_components);
+		return result;
+	}
+	if (source_type & MCT_TextureCollection && source_type != MCT_TextureCollection)
+	{
+		return CastValue(code, EMaterialValueType(source_type & ~MCT_TextureCollection), dest_type, flags);
+	}
+	ME_LOG_ERROR("Cannot cast between non-numeric types %s to %s.", DescribeType(source_type), DescribeType(dest_type));
+	return "";
 }
 
 int32_t FHLSLMaterialTranslator::ForceCast(int32_t code, EMaterialValueType dest_type, uint32_t force_cast_flags){

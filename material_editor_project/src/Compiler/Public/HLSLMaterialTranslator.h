@@ -1,5 +1,6 @@
 #pragma once
 #include "MaterialTypes/Public/ValueType.h"
+#include "MaterialTypes/Public/ShaderFrequency.h"
 #include "Core/Public/MathTypes.h"
 #include "Core/Public/EnumClassFlags.h"
 #include "Compiler/Public/HLSLMaterialDerivativeAutogen.h"
@@ -71,6 +72,8 @@ public:
     int32_t ForceCast(int32_t code, EMaterialValueType dest_type, uint32_t force_cast_flags = 0);
     // LWC 结果与当前类型不符时截断/提升（对照 UE LWCCastIfNeccessary）
     int32_t LWCCastIfNeccessary(EMaterialValueType result_type, int32_t result_code);
+    // LWC 函数使用计数（对照 UE .h:628/.cpp:3293：previous frame 编译不重复计数，按频率分 VS/PS/CS 三组）
+    void AddLWCFuncUsage(ELWCFunctionKind kind, uint32_t count = 1);
 
     // =================== 表达式树（表达式块路径）====================
     // 把挂着表达式树的 chunk 兑换成能写进 HLSL 的代码
@@ -131,6 +134,9 @@ public:
     int32_t adding_uniform_expression = 0;                  // 表达式树构建深度（Scope RAII 维护）
     uint32_t b_cull_intermediate_uniform_expression : 1;    // 是否剔除中间表达式（构造时定格）
     FMaterialDerivativeAutogen derivative_autogen;
+    // 当前编译中的 shader 频率（对照 UE .h:288，UE 由频率编译循环赋值；教学版暂无循环，初值取首个编译的 VS）
+    EShaderFrequency shader_frequency = SF_Vertex;
+    CompileResult compile_result;                           // 编译输出（LWC 统计等，对照 UE MaterialCompilationOutput）
 
     friend class FAddUniformExpressionScope;
 };

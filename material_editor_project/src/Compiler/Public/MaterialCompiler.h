@@ -2,6 +2,7 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <cstdint>
 #include "MaterialGraph/Public/Graph.h"
 #include "Compiler/Public/ConstantFolding.h"
 #include "Compiler/Public/CodeChunk.h"
@@ -9,6 +10,7 @@
 #include "Core/Public/Hash.h"
 #include "Compiler/Public/TypeSystem.h"
 #include "Compiler/Public/CompileError.h"
+#include "Compiler/Public/MaterialShared.h"
 
 enum EMaterialForceCastFlags
 {
@@ -26,6 +28,11 @@ public:
         std::string hlsl_code;
         std::string error_message;  // 兼容字段：第一个Error级错误
         std::vector<CompilerError> errors;  // 所有错误
+
+        // LWC 算子出现次数估计，按 VS/PS/CS 三组（对照 UE EstimatedLWCFuncUsagesVS/PS/CS，uint16 原样）
+        uint16_t estimated_lwc_func_usages_vs[(int)ELWCFunctionKind::Max] = {};
+        uint16_t estimated_lwc_func_usages_ps[(int)ELWCFunctionKind::Max] = {};
+        uint16_t estimated_lwc_func_usages_cs[(int)ELWCFunctionKind::Max] = {};
 
         bool HasError() const {
             for (const auto& e : errors) {
@@ -83,6 +90,8 @@ public:
     virtual FMaterialUniformExpression* GetParameterUniformExpression(int32_t index) const;
     bool IsConstant(int32_t index) const;
     ConstValue GetConstantValue(int32_t index) const;
+    // previous frame 重编译时统计不重复计数（UE 基类默认 false，有该状态机的 translator 才 override）
+    virtual bool IsCurrentlyCompilingForPreviousFrame() const { return false; }
 
 
 private:

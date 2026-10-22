@@ -165,6 +165,30 @@ inline int GetComponentCount(const EMaterialValueType& t){
     }
 }
 
+inline uint32_t GetNumComponents(EMaterialValueType t)
+{
+	switch (t)
+	{
+	case MCT_UInt:
+	case MCT_UInt1:
+	case MCT_Float:
+	case MCT_Float1: return 1;
+	case MCT_UInt2:
+	case MCT_Float2: return 2;
+	case MCT_UInt3:
+	case MCT_Float3: return 3;
+	case MCT_UInt4:
+	case MCT_Float4: return 4;
+	case MCT_LWCScalar: return 1;
+	case MCT_LWCVector2: return 2;
+	case MCT_LWCVector3: return 3;
+	case MCT_LWCVector4: return 4;
+	case MCT_StaticBool: return 1;
+	case MCT_Bool: return 1;
+	default: return 0;
+	}
+}
+
 
 // 类型可读名（报错信息用；对照 UE DescribeType）
 inline const char* DescribeType(EMaterialValueType type){
