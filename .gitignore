@@ -21,6 +21,10 @@ cmake_install.cmake
 *.dll
 *.exe
 
+# === Vulkan 第三方预编译包（教学仓库自包含，需连二进制一起进库）===
+!Vulkan/thirdparty/**/*.lib
+!Vulkan/thirdparty/**/*.dll
+
 # === Qt 自动生成 ===
 moc_*.cpp
 ui_*.h
