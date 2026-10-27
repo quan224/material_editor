@@ -351,7 +351,7 @@ void createInstance() {
 
 ## 测试
 
-故意犯个错看验证层的表现：临时删掉 `cleanup` 里的 `DestroyDebugUtilsMessengerEXT` 调用再运行，程序退出时应该看到验证层的泄漏警告（原网页此处有截图）。没消息就检查 SDK 安装。想知道是哪次调用触发的，可以在消息回调里打断点看调用栈。
+故意犯个错看验证层的表现：临时删掉 `cleanup` 里的 `DestroyDebugUtilsMessengerEXT` 调用再运行，程序退出时应该看到类似下图的东西【原文此处有一张截图（validation_layer_test.png），md 中未嵌入，需要时到原网页查看】。没消息就检查 SDK 安装。想知道是哪次调用触发的，可以在消息回调里打断点看调用栈。
 
 ## 配置
 

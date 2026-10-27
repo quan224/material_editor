@@ -112,7 +112,7 @@ if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
 }
 ```
 
-（Windows + NVIDIA 不涉及此问题。）
+【译注：Windows + NVIDIA 不涉及此问题。】
 
 ## 检查扩展支持
 
