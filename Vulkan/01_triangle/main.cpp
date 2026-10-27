@@ -43,6 +43,30 @@ bool checkValidationLayerSupport() {
     return true;
 }
 
+std::vector<const char*> getRequiredExtensions(){
+    uint32_t glfwExtensionCount = 0;
+    const char** glfwExtensions;
+    glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+    // 因为vector数据才能append
+    std::vector<const char*> extensions(glfwExtensions, glfwExtensions+glfwExtensionCount);
+    if(enableValidationLayers){
+        // 开调试工具集
+        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+    return extensions;
+}
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+    void* pUserData) {
+
+    std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+
+    return VK_FALSE;
+}
+
 class HelloTriangleApplication {
 public:
     void run() {
@@ -82,9 +106,9 @@ private:
         // 申请哪些接口
         uint32_t glfwExtensionCount = 0;
         const char** glfwExtensions;
-        glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-        create_info.enabledExtensionCount = glfwExtensionCount;
-        create_info.ppEnabledExtensionNames = glfwExtensions;
+        auto extensions = getRequiredExtensions();
+        create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+        create_info.ppEnabledExtensionNames = extensions.data();
         // 启用时带上验证层的名字
         if (enableValidationLayers) {
             create_info.enabledLayerCount = validationLayers.size();
