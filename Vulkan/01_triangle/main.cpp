@@ -6,7 +6,7 @@
 #include <vulkan/vulkan.h>   // 显式包含：GLFW 嵌套包含在 /external:I 路径下未生效
 #include <cstdio>
 #include <vector>
-
+#include <optional>
 #include <iostream>
 #include <cstdlib>
 
@@ -84,6 +84,55 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
     }
 }
 
+
+struct QueueFamilyIndices{
+    std::optional<uint32_t> graphicsFamily;
+
+    bool isComplete(){
+        return graphicsFamily.has_value();
+    }
+};
+
+// 获取队列族
+QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device){
+    QueueFamilyIndices indices;
+
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+    int i=0;
+    for(const auto& queueFamily:queueFamilies){
+        if(indices.isComplete()){
+            break;
+        }
+
+        if(queueFamily.queueFlags&VK_QUEUE_GRAPHICS_BIT){
+            // 队列族没有句柄、不是对象——它在 Vulkan 里的身份就是下标。
+            indices.graphicsFamily=i;
+        }
+        i++;
+    }
+
+    return indices;
+}
+
+bool isDeviceSuitable(VkPhysicalDevice device){
+    // 设备级 获取些物理设备的名字、类型、支持的Vulkan版本这类属性
+    VkPhysicalDeviceProperties deviceProperties;
+    // 可选特性（纹理压缩、64位浮点、多视口渲染）
+    VkPhysicalDeviceFeatures deviceFeatures;
+    vkGetPhysicalDeviceProperties(device, &deviceProperties);
+    vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+    // 独立显卡，且支持几何着色器
+    return deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU 
+            && deviceFeatures.geometryShader && findQueueFamilies(device).isComplete();
+}
+
+
+
+
 class HelloTriangleApplication {
 public:
     void run() {
@@ -145,6 +194,8 @@ private:
     void init_vulkan() {
         create_instance();
         setupDebugMessenger();
+        pickPhysicalDevice();
+        createLogicalDevice();
 
     }
 
@@ -161,6 +212,57 @@ private:
         }
     }
 
+    void pickPhysicalDevice(){
+        uint32_t deviceCount = 0;
+        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+        if(deviceCount == 0){
+            throw std::runtime_error("failed to find GPUs with Vulkan support!");
+        }
+        std::vector<VkPhysicalDevice> devices(deviceCount);
+        vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+        for(const auto& device : devices){
+            if(isDeviceSuitable(device)){
+                physicalDevice = device;
+                break;
+            }
+        }
+        if (physicalDevice == VK_NULL_HANDLE) {
+            throw std::runtime_error("failed to find a suitable GPU!");
+        }
+    }
+
+    void createLogicalDevice(){
+        QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+        // 一个queue_create_info对应一个族
+        // 图形族
+        VkDeviceQueueCreateInfo queueCreateInfo{};
+        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
+        queueCreateInfo.queueCount = 1;  // 申请一个队列
+        float queuePriority = 1.0f;
+        queueCreateInfo.pQueuePriorities = &queuePriority;
+
+        // 创建逻辑设备
+        VkPhysicalDeviceFeatures deviceFeatures{};
+        VkDeviceCreateInfo create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        create_info.pQueueCreateInfos = &queueCreateInfo;
+        create_info.queueCreateInfoCount = 1;
+        create_info.pEnabledFeatures = &deviceFeatures;
+        create_info.enabledExtensionCount = 0; // 没扩展
+        if(enableValidationLayers){
+            create_info.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+            create_info.ppEnabledLayerNames = validationLayers.data();
+        }
+        else{
+            create_info.enabledLayerCount = 0;
+        }
+        if(vkCreateDevice(physicalDevice, &create_info, nullptr, &device)!=VK_SUCCESS){
+            throw std::runtime_error("failed to create logical device!");
+        }
+        vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
+    }
+
     void main_loop() {
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -171,7 +273,7 @@ private:
         if (enableValidationLayers) {
             DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
         }
-
+        vkDestroyDevice(device, nullptr);
         vkDestroyInstance(instance, nullptr);
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -181,6 +283,9 @@ private:
     GLFWwindow* window;
     VkInstance instance;
     VkDebugUtilsMessengerEXT debugMessenger;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkDevice device;
+    VkQueue graphicsQueue;  // 队列句柄
 };
 
 int main() {
