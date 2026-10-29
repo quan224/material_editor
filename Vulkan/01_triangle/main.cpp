@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>   // 显式包含：GLFW 嵌套包含在 /external:I 路径下未生效
 #include <cstdio>
 #include <vector>
+#include <set>
 #include <optional>
 #include <iostream>
 #include <cstdlib>
@@ -87,54 +88,17 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
 
 struct QueueFamilyIndices{
     std::optional<uint32_t> graphicsFamily;
+    std::optional<uint32_t> presentFamily;
 
     bool isComplete(){
-        return graphicsFamily.has_value();
+        return graphicsFamily.has_value()&&presentFamily.has_value();
     }
 };
-
-// 获取队列族
-QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device){
-    QueueFamilyIndices indices;
-
-    uint32_t queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
-    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
-
-    int i=0;
-    for(const auto& queueFamily:queueFamilies){
-        if(indices.isComplete()){
-            break;
-        }
-
-        if(queueFamily.queueFlags&VK_QUEUE_GRAPHICS_BIT){
-            // 队列族没有句柄、不是对象——它在 Vulkan 里的身份就是下标。
-            indices.graphicsFamily=i;
-        }
-        i++;
-    }
-
-    return indices;
-}
-
-bool isDeviceSuitable(VkPhysicalDevice device){
-    // 设备级 获取些物理设备的名字、类型、支持的Vulkan版本这类属性
-    VkPhysicalDeviceProperties deviceProperties;
-    // 可选特性（纹理压缩、64位浮点、多视口渲染）
-    VkPhysicalDeviceFeatures deviceFeatures;
-    vkGetPhysicalDeviceProperties(device, &deviceProperties);
-    vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
-    // 独立显卡，且支持几何着色器
-    return deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU 
-            && deviceFeatures.geometryShader && findQueueFamilies(device).isComplete();
-}
-
-
 
 
 class HelloTriangleApplication {
 public:
+    // 主流程：开窗口 → 初始化 Vulkan → 主循环 → 清理
     void run() {
         init_window();
         init_vulkan();
@@ -142,6 +106,7 @@ public:
         clean_up();
     }
 private:
+    // 开 GLFW 窗口（禁 OpenGL 上下文、禁拉伸）
     void init_window() {
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -151,7 +116,18 @@ private:
 
     }
 
-    void create_instance() {
+    // Vulkan 初始化总调度（顺序即依赖顺序，勿乱动）
+    void init_vulkan() {
+        create_instance();
+        setupDebugMessenger();
+        createSurface();
+        pickPhysicalDevice();
+        createLogicalDevice();
+
+    }
+
+    // 创建实例：与 Vulkan 的会话起点（装载驱动、启用扩展与验证层）
+        void create_instance() {
         // 检查权限
         if (enableValidationLayers && !checkValidationLayerSupport()) {
             throw std::runtime_error("validation layers requested, but not available!");
@@ -191,14 +167,14 @@ private:
         }
     }
 
-    void init_vulkan() {
-        create_instance();
-        setupDebugMessenger();
-        pickPhysicalDevice();
-        createLogicalDevice();
-
+    // 创建窗口表面：渲染图像的呈现目标（GLFW 替我们挡平台差异）
+    void createSurface(){
+        if(glfwCreateWindowSurface(instance, window, nullptr, &surface)!= VK_SUCCESS){
+            throw std::runtime_error("failed to create window surface!");
+        }
     }
 
+    // 注册调试信使：验证层的报错经回调送到手（仅开发期）
     void setupDebugMessenger() {
         if (!enableValidationLayers) return;
         VkDebugUtilsMessengerCreateInfoEXT createInfo{};
@@ -212,6 +188,7 @@ private:
         }
     }
 
+    // 枚举显卡，挑第一个满足需求的
     void pickPhysicalDevice(){
         uint32_t deviceCount = 0;
         vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
@@ -231,23 +208,28 @@ private:
         }
     }
 
+    // 创建逻辑设备（申请图形+呈现队列）并取回队列句柄
     void createLogicalDevice(){
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
-        // 一个queue_create_info对应一个族
-        // 图形族
-        VkDeviceQueueCreateInfo queueCreateInfo{};
-        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
-        queueCreateInfo.queueCount = 1;  // 申请一个队列
+
+        std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+        std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
         float queuePriority = 1.0f;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
+        for(uint32_t queueFamily:uniqueQueueFamilies){
+            VkDeviceQueueCreateInfo queueCreateInfo{};
+            queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queueCreateInfo.queueFamilyIndex = queueFamily;
+            queueCreateInfo.queueCount = 1;  // 申请一个队列
+            queueCreateInfo.pQueuePriorities = &queuePriority;
+            queueCreateInfos.push_back(queueCreateInfo);
+        }
 
         // 创建逻辑设备
         VkPhysicalDeviceFeatures deviceFeatures{};
         VkDeviceCreateInfo create_info{};
         create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        create_info.pQueueCreateInfos = &queueCreateInfo;
-        create_info.queueCreateInfoCount = 1;
+        create_info.pQueueCreateInfos = queueCreateInfos.data();
+        create_info.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
         create_info.pEnabledFeatures = &deviceFeatures;
         create_info.enabledExtensionCount = 0; // 没扩展
         if(enableValidationLayers){
@@ -261,19 +243,68 @@ private:
             throw std::runtime_error("failed to create logical device!");
         }
         vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
+        vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
     }
 
+    // 设备够不够格：独显 + 几何着色器 + 图形/呈现队列族齐
+    bool isDeviceSuitable(VkPhysicalDevice device){
+        // 设备级 获取些物理设备的名字、类型、支持的Vulkan版本这类属性
+        VkPhysicalDeviceProperties deviceProperties;
+        // 可选特性（纹理压缩、64位浮点、多视口渲染）
+        VkPhysicalDeviceFeatures deviceFeatures;
+        vkGetPhysicalDeviceProperties(device, &deviceProperties);
+        vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+        // 独立显卡，且支持几何着色器
+        return deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+                && deviceFeatures.geometryShader && findQueueFamilies(device).isComplete();
+    }
+
+    // 查图形族/呈现族的门牌号（队列族无句柄，身份就是下标）
+    QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device){
+        QueueFamilyIndices indices;
+
+        uint32_t queueFamilyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+
+        int i=0;
+        for(const auto& queueFamily:queueFamilies){
+            if(indices.isComplete()){
+                break;
+            }
+
+            if(queueFamily.queueFlags&VK_QUEUE_GRAPHICS_BIT){
+                // 队列族没有句柄、不是对象——它在 Vulkan 里的身份就是下标。
+                indices.graphicsFamily=i;
+            }
+            VkBool32 presentSupport = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+            if(presentSupport){
+                indices.presentFamily = i;
+            }
+
+            i++;
+        }
+
+        return indices;
+    }
+
+    // 主循环：泵窗口消息直到关窗（以后在这里画帧）
     void main_loop() {
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
         }
 
     }
+    // 清理：按依赖逆序销毁（孩子先死，instance 最后）
     void clean_up() {
         if (enableValidationLayers) {
             DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
         }
         vkDestroyDevice(device, nullptr);
+        vkDestroySurfaceKHR(instance, surface, nullptr);
         vkDestroyInstance(instance, nullptr);
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -283,9 +314,13 @@ private:
     GLFWwindow* window;
     VkInstance instance;
     VkDebugUtilsMessengerEXT debugMessenger;
+
+    VkSurfaceKHR surface;
+
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device;
-    VkQueue graphicsQueue;  // 队列句柄
+    VkQueue graphicsQueue;  // 图形队列
+    VkQueue presentQueue;  // 呈现队列
 };
 
 int main() {
