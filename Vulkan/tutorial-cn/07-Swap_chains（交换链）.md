@@ -404,7 +404,7 @@ void cleanup() {
 
 现在跑一下程序，确认交换链创建成功！如果此时 `vkCreateSwapchainKHR` 报访问违例，或看到 `Failed to find 'vkGetInstanceProcAddress' in layer SteamOverlayVulkanLayer.dll` 之类的消息，参见 FAQ 里关于 Steam 覆盖层的条目。
 
-试试在开着验证层时删掉 `createInfo.imageExtent = extent;` 这一行——验证层立刻逮住错误并打印有用的消息。
+试试在开着验证层时删掉 `createInfo.imageExtent = extent;` 这一行——验证层立刻逮住错误并打印有用的消息【原文此处有一张截图（swap_chain_validation_layer.png），md 中未嵌入，需要时到原网页查看】。
 
 ## 取回交换链图像（Retrieving the swap chain images）
 
