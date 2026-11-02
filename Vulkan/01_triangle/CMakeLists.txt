@@ -11,7 +11,7 @@ find_package(Vulkan REQUIRED)
 # GLFW：Vulkan/thirdparty/glfw 预编译包（与主项目 vcpkg 完全无关）
 set(GLFW_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/glfw)
 
-add_executable(vk_triangle main.cpp)
+add_executable(vk_triangle main.cpp vulkan.cpp vulkan.h)
 target_compile_options(vk_triangle PRIVATE /utf-8)   # 源码含中文注释，MSVC 默认按 GBK 解码会错乱
 target_include_directories(vk_triangle PRIVATE ${GLFW_DIR}/include)
 target_link_libraries(vk_triangle PRIVATE Vulkan::Vulkan ${GLFW_DIR}/lib-vc2022/glfw3dll.lib)
