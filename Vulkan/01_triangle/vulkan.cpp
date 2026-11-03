@@ -104,6 +104,7 @@ void HelloTriangleApplication::init_vulkan() {
     createLogicalDevice();
     createSwapChain();
     createImageViews();
+    createGraphicsPipelne();
 }
 
 // 创建实例：与 Vulkan 的会话起点（装载驱动、启用扩展与验证层）
@@ -298,6 +299,10 @@ void HelloTriangleApplication::createImageViews() {
         }
 
     }
+}
+
+void HelloTriangleApplication::createGraphicsPipelne(){
+    
 }
 
 // 设备够不够格：独显 + 几何着色器 + 图形/呈现队列族齐

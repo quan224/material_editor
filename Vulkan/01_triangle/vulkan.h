@@ -43,6 +43,7 @@ private:
     void createLogicalDevice();    // 创建逻辑设备（申请图形+呈现队列）并取回队列句柄
     void createSwapChain();  // 创建交换链
     void createImageViews();
+    void createGraphicsPipelne();  // 图形管线
     bool isDeviceSuitable(VkPhysicalDevice device);  // 设备够不够格
     bool checkDeviceExtensionSupport(VkPhysicalDevice device);  // 设备的额外所需
     SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
