@@ -9,6 +9,7 @@
 #include <limits>
 #include <algorithm>
 
+
 struct QueueFamilyIndices {
     std::optional<uint32_t> graphicsFamily;
     std::optional<uint32_t> presentFamily;
@@ -41,16 +42,17 @@ private:
     void setupDebugMessenger();    // 注册调试信使（仅开发期）
     void pickPhysicalDevice();     // 枚举显卡，挑第一个满足需求的
     void createLogicalDevice();    // 创建逻辑设备（申请图形+呈现队列）并取回队列句柄
-    void createSwapChain();  // 创建交换链
-    void createImageViews();
-    void createGraphicsPipelne();  // 图形管线
-    bool isDeviceSuitable(VkPhysicalDevice device);  // 设备够不够格
-    bool checkDeviceExtensionSupport(VkPhysicalDevice device);  // 设备的额外所需
-    SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
-    VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availavleFormats);
-    VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
-    VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
+    void createSwapChain();  // 创建交换链：显示接力池（三方协商格式/模式/尺寸）
+    void createImageViews();  // 每张交换链图配取景器（格式+范围）
+    void createGraphicsPipeline();  // 图形管线（着色器+固定功能，10-13 课在此展开）
+    bool isDeviceSuitable(VkPhysicalDevice device);  // 设备够不够格：独显+几何着色器+族齐+swapchain 扩展
+    bool checkDeviceExtensionSupport(VkPhysicalDevice device);  // 设备扩展在不在（VK_KHR_swapchain）
+    SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);  // 问 surface 能力三筐（六次两段式）
+    VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availavleFormats);  // 三选①格式（B8G8R8A8_SRGB）
+    VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);  // 三选②呈现模式（MAILBOX→FIFO 兜底）
+    VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);  // 三选③尺寸（currentExtent 或 clamp）
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);                // 查图形族/呈现族门牌号
+    VkShaderModule createShaderModule(const std::vector<char>& code);
     void main_loop();              // 泵窗口消息直到关窗（以后在这里画帧）
     void clean_up();               // 按依赖逆序销毁（孩子先死，instance 最后）
 

@@ -4,6 +4,21 @@
 #include <set>
 #include <iostream>
 #include <cstdlib>
+#include <fstream>
+#include <string>
+
+static std::vector<char> readFile(const std::string& filename) {
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("file is not open");
+    }
+    size_t fileSize = file.tellg();
+    std::vector<char> buffer(fileSize);
+    file.seekg(0);
+    file.read(buffer.data(), fileSize);
+    file.close();
+    return buffer;
+}
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -104,7 +119,7 @@ void HelloTriangleApplication::init_vulkan() {
     createLogicalDevice();
     createSwapChain();
     createImageViews();
-    createGraphicsPipelne();
+    createGraphicsPipeline();
 }
 
 // 创建实例：与 Vulkan 的会话起点（装载驱动、启用扩展与验证层）
@@ -301,8 +316,69 @@ void HelloTriangleApplication::createImageViews() {
     }
 }
 
-void HelloTriangleApplication::createGraphicsPipelne(){
-    
+void HelloTriangleApplication::createGraphicsPipeline(){
+    auto vertShaderCode = readFile("shaders/vert.spv");
+    auto fragShaderCode = readFile("shaders/frag.spv");
+
+    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+    VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = fragShaderModule;
+    fragShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+
+    // ===== 课 11：固定功能阶段（8 个结构体，逐块填）=====
+
+    // ① 动态状态：视口和裁剪在绘制时设置（不烘焙进管线，窗口缩放不用重建管线）
+    // VkPipelineDynamicStateCreateInfo
+
+    // ② 顶点输入：空（顶点写死在着色器里；课 19 顶点缓冲再回来填）
+    // VkPipelineVertexInputStateCreateInfo
+
+    // ③ 输入装配：每 3 个顶点画一个三角形（不复用）
+    // VkPipelineInputAssemblyStateCreateInfo
+
+    // ④ 视口/裁剪：只填数量（实际值绘制时 vkCmdSetViewport/Scissor 设——①的动态状态）
+    // VkPipelineViewportStateCreateInfo
+
+    // ⑤ 光栅化：填充多边形 + 剔除背面 + 顺时针为正面（Vulkan Y 朝下时的正面判定！）
+    // VkPipelineRasterizationStateCreateInfo
+
+    // ⑥ 多重采样：禁用（后面抗锯齿课再回来开）
+    // VkPipelineMultisampleStateCreateInfo
+
+    // ⑦ 颜色混合：禁用（片元颜色直通写入帧缓冲）
+    // VkPipelineColorBlendAttachmentState + VkPipelineColorBlendStateCreateInfo
+
+    // ⑧ 管线布局：空壳（uniform/descriptor set 的挂载点——课 19+ 填；push constant 也在这）
+    // VkPipelineLayoutCreateInfo → vkCreatePipelineLayout → 成员 pipelineLayout（cleanup 里销毁）
+
+    // ===== 课 12-13 在这里继续：render pass + vkCreateGraphicsPipelines =====
+
+    vkDestroyShaderModule(device, vertShaderModule, nullptr);
+    vkDestroyShaderModule(device, fragShaderModule, nullptr);
+}
+
+VkShaderModule HelloTriangleApplication::createShaderModule(const std::vector<char>& code) {
+    VkShaderModuleCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    createInfo.codeSize = code.size();
+    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+    VkShaderModule shaderModule;
+    if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create shader module!");
+    }
+    return shaderModule;
 }
 
 // 设备够不够格：独显 + 几何着色器 + 图形/呈现队列族齐
