@@ -341,18 +341,63 @@ void HelloTriangleApplication::createGraphicsPipeline(){
 
     // ① 动态状态：视口和裁剪在绘制时设置（不烘焙进管线，窗口缩放不用重建管线）
     // VkPipelineDynamicStateCreateInfo
+    std::vector<VkDynamicState> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
 
     // ② 顶点输入：空（顶点写死在着色器里；课 19 顶点缓冲再回来填）
     // VkPipelineVertexInputStateCreateInfo
+    VkPipelineVertexInputStateCreateInfo vertesInputInfo{};
+    vertesInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertesInputInfo.vertexBindingDescriptionCount = 0;
+    vertesInputInfo.pVertexBindingDescriptions = nullptr;
+    vertesInputInfo.vertexAttributeDescriptionCount = 0;
+    vertesInputInfo.pVertexAttributeDescriptions = nullptr;
+
+
 
     // ③ 输入装配：每 3 个顶点画一个三角形（不复用）
     // VkPipelineInputAssemblyStateCreateInfo
 
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
     // ④ 视口/裁剪：只填数量（实际值绘制时 vkCmdSetViewport/Scissor 设——①的动态状态）
     // VkPipelineViewportStateCreateInfo
+    //VkViewport viewport{};
+    //viewport.x = 0.0f;
+    //viewport.y = 0.0f;
+    //viewport.width = (float) swapChainExtent.width;
+    //viewport.height = (float) swapChainExtent.height;
+    //viewport.minDepth = 0.0f;
+    //viewport.maxDepth = 1.0f;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
 
     // ⑤ 光栅化：填充多边形 + 剔除背面 + 顺时针为正面（Vulkan Y 朝下时的正面判定！）
     // VkPipelineRasterizationStateCreateInfo
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+    rasterizer.depthBiasConstantFactor = 0.0f; // Optional
+    rasterizer.depthBiasClamp = 0.0f; // Optional
+    rasterizer.depthBiasSlopeFactor = 0.0f; // Optional
+
 
     // ⑥ 多重采样：禁用（后面抗锯齿课再回来开）
     // VkPipelineMultisampleStateCreateInfo
