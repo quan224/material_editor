@@ -3,6 +3,115 @@
 > 原文：https://vulkan-tutorial.com/Drawing_a_triangle/Graphics_pipeline_basics/Fixed_functions
 > DX12 对照：全部这些结构对应 DX12 的 `D3D12_GRAPHICS_PIPELINE_STATE_DESC` 的各个子结构——Vulkan 拆成 8 个独立 CreateInfo，DX12 塞在一个巨型 desc 里
 
+## 术语表（先认词，正文再认人）
+
+**章级核心**
+
+| 英文 | 中文 | 是什么 |
+|---|---|---|
+| fixed functions | 固定功能 | 管线里**不可编程、只能配置参数**的阶段（对比着色器这种可编程阶段） |
+| pipeline state object | 管线状态对象（PSO） | 把所有配置"烘焙"成的不可变整体，改一个参数就得重建 |
+| baked | 烘焙 | 配置在创建时**固化**进对象，之后不可改 |
+
+**动态状态**
+
+| 英文 | 中文 |
+|---|---|
+| dynamic state | 动态状态——可以绘制时再指定、不用烘焙进管线的少量状态 |
+| viewport | 视口 |
+| scissor (rect) | 裁剪矩形 |
+| blend constant | 混合常量 |
+
+**顶点输入**
+
+| 英文 | 中文 |
+|---|---|
+| vertex input | 顶点输入 |
+| binding | 绑定——一块顶点数据缓冲的"间距/步长"描述（英文原词 stride = 步长） |
+| attribute description | 属性描述——每个属性（位置/颜色/UV）的类型、从哪块绑定加载、偏移多少 |
+| instancing | 实例化——一次绘制画 N 份相同几何体 |
+| vertex buffer | 顶点缓冲 |
+
+**输入装配**
+
+| 英文 | 中文 |
+|---|---|
+| input assembly | 输入装配——把离散顶点组装成几何图元 |
+| topology | 拓扑——顶点怎么连成点/线/三角形 |
+| point list | 点列表——每顶点一个点 |
+| line list / line strip | 线列表 / 线带——strip = 首尾相连复用端点 |
+| triangle list / triangle strip | 三角形列表 / 三角形带——strip = 相邻三角形共用两个顶点 |
+| primitive restart | 图元重启——strip 模式里用特殊索引（0xFFFF…）断开重来 |
+| element/index buffer | 元素缓冲 / 索引缓冲——自己指定顶点索引顺序，复用顶点 |
+
+**视口与裁剪**
+
+| 英文 | 中文 |
+|---|---|
+| viewport | 视口——3D 结果映射到帧缓冲的哪个区域（变换） |
+| scissor | 裁剪矩形——框外的像素直接丢弃（过滤器，不是变换） |
+| minDepth / maxDepth | 深度映射的上下端点（必须在 [0,1]，可反过来做**反向深度** reverse depth） |
+| framebuffer | 帧缓冲 |
+
+**光栅化器**
+
+| 英文 | 中文 |
+|---|---|
+| rasterizer / rasterization | 光栅化器 / 光栅化——把三角形"铺"成像素片元 |
+| fragment | 片元——三角形盖住的一个像素候选（还没成为最终像素） |
+| depth test | 深度测试——按深度决定前后遮挡 |
+| face culling / cull mode | 面剔除 / 剔除模式——背面朝相机的三角形直接不画 |
+| front face (clockwise / counter-clockwise) | 正面（顺时针 / 逆时针）——什么绕向的三角形算正面 |
+| wireframe | 线框模式 |
+| polygon mode | 多边形模式（FILL 填充 / LINE 描边 / POINT 画点） |
+| depth clamp | 深度钳位——超近/远的片元"夹"回平面而不是丢弃 |
+| depth bias (constant / slope factor) | 深度偏移（常数 / 斜率因子）——给深度加偏移，阴影贴图用 |
+
+**多重采样**
+
+| 英文 | 中文 |
+|---|---|
+| multisampling (MSAA) | 多重采样——一种抗锯齿手段 |
+| anti-aliasing | 抗锯齿——消掉斜边上的"楼梯" |
+| sample shading / sample mask | 采样着色 / 采样掩码 |
+| alpha to coverage | 用透明度控制采样覆盖（植被边缘常用） |
+
+**深度与模板**
+
+| 英文 | 中文 |
+|---|---|
+| stencil (test/buffer) | 模板（测试/缓冲）——按像素做"留/丢"标记的测试（做轮廓、镜面反射等） |
+
+**颜色混合**
+
+| 英文 | 中文 |
+|---|---|
+| color blending | 颜色混合——片元新颜色与帧缓冲旧颜色怎么合并 |
+| blend factor | 混合因子——新旧颜色各乘个系数（src = 源/新的，dst = 目标/旧的） |
+| blend op | 混合操作——乘完之后加减还是别的（ADD 最常用） |
+| alpha | 透明度（颜色的第 4 分量） |
+| alpha blending | 透明混合：`新α·新色 + (1−新α)·旧色` |
+| logic op | 逻辑操作——按位运算合并（与/或/异或） |
+| bitwise | 按位（的运算） |
+| color write mask | 颜色写入掩码——允许 R/G/B/A 哪些通道写入 |
+| channel | 通道（R/G/B/A 各一个） |
+
+**管线布局**
+
+| 英文 | 中文 |
+|---|---|
+| pipeline layout | 管线布局——声明这条管线用哪些 uniform 资源 |
+| uniform | 统一值——着色器里的全局变量，绘制时可换值不重建（传矩阵/纹理） |
+| descriptor set layout | 描述符集布局——uniform 的正式声明结构（后面章节主角） |
+| push constant | 推送常量——传小量动态值给着色器的另一通道（不用建缓冲） |
+
+**下一章预告**
+
+| 英文 | 中文 |
+|---|---|
+| render pass | 渲染通道——声明这次渲染读写哪些附件、什么格式（创建管线前最后一个缺口） |
+
+
 老 API 给管线的多数阶段提供了默认状态。**Vulkan 里你必须显式指定所有管线状态**——它们会被烘焙进一个不可变的管线状态对象。本章填完所有配置这些固定功能操作的结构。
 
 ## 动态状态（Dynamic state）
