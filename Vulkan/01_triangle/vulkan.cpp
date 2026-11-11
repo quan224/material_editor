@@ -437,6 +437,15 @@ void HelloTriangleApplication::createGraphicsPipeline(){
 
     // ⑧ 管线布局：空壳（uniform/descriptor set 的挂载点——课 19+ 填；push constant 也在这）
     // VkPipelineLayoutCreateInfo → vkCreatePipelineLayout → 成员 pipelineLayout（cleanup 里销毁）
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 0;
+    pipelineLayoutInfo.pSetLayouts = nullptr;
+    pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
+    pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
+    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create pipeline layout!");
+    }
 
     // ===== 课 12-13 在这里继续：render pass + vkCreateGraphicsPipelines =====
 
@@ -585,6 +594,7 @@ void HelloTriangleApplication::main_loop() {
 
 // 清理：按依赖逆序销毁（孩子先死，instance 最后）
 void HelloTriangleApplication::clean_up() {
+    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
     if (enableValidationLayers) {
         DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
     }
