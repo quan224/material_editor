@@ -44,6 +44,7 @@ private:
     void createLogicalDevice();    // 创建逻辑设备（申请图形+呈现队列）并取回队列句柄
     void createSwapChain();  // 创建交换链：显示接力池（三方协商格式/模式/尺寸）
     void createImageViews();  // 每张交换链图配取景器（格式+范围）
+    void createRenderPass();  // 创建渲染通道
     void createGraphicsPipeline();  // 图形管线（着色器+固定功能，10-13 课在此展开）
     bool isDeviceSuitable(VkPhysicalDevice device);  // 设备够不够格：独显+几何着色器+族齐+swapchain 扩展
     bool checkDeviceExtensionSupport(VkPhysicalDevice device);  // 设备扩展在不在（VK_KHR_swapchain）
@@ -66,8 +67,9 @@ private:
     VkFormat swapChainImageFormat;
     VkExtent2D swapChainExtent;
     std::vector<VkImageView> swapChainImageViews;
-
+    VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
+    VkPipeline graphicsPipeline;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device;
     VkQueue graphicsQueue;  // 图形队列
