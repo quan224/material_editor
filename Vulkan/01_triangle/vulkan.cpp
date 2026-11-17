@@ -166,6 +166,7 @@ void HelloTriangleApplication::create_instance() {
 
 // 创建窗口表面：渲染图像的呈现目标（GLFW 替我们挡平台差异）
 void HelloTriangleApplication::createSurface() {
+    // 内部：掏出 HWND 填 VkWin32SurfaceCreateInfoKHR → 调 vkCreateWin32SurfaceKHR
     if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS) {
         throw std::runtime_error("failed to create window surface!");
     }
