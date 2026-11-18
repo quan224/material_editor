@@ -533,9 +533,9 @@ bool HelloTriangleApplication::isDeviceSuitable(VkPhysicalDevice device) {
     vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
     // 独立显卡，且支持几何着色器
     QueueFamilyIndices indices = findQueueFamilies(device);
-    // 支持画surface
+    // 显卡支持交换链
     bool extensionsSupported = checkDeviceExtensionSupport(device);
-    // 支持交换链
+    // 交换链真的有用
     bool swapChainAdequate = false;
     if (extensionsSupported) {
         SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device);
